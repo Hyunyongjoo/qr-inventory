@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+<title>QR 자재 입출고 관리</title>
+<meta name="theme-color" content="#0f172a" />
+<meta name="description" content="QR 스캔으로 자재 입고/출고/이동을 처리하는 재고 관리 PWA" />
+<link rel="manifest" href="manifest.json" />
+<link rel="icon" href="icons/icon-192.png" />
+<link rel="apple-touch-icon" href="icons/icon-192.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+<div id="app">
+
+  <header id="app-header" class="hidden">
+    <div class="header-title">
+      <strong>자재 입출고 관리</strong>
+      <span id="offline-badge" class="badge hidden">오프라인 대기 0건</span>
+    </div>
+    <div class="header-user">
+      <button id="site-badge" class="site-badge hidden"></button>
+      <span id="worker-name"></span>
+      <button id="logout-btn" class="btn-link">로그아웃</button>
+    </div>
+  </header>
+
+  <main id="view-container">
+
+    <!-- 로그인 -->
+    <section id="view-login" class="view">
+      <div class="login-card">
+        <h1>자재 입출고 관리</h1>
+        <p class="muted">PIN 코드를 입력하세요</p>
+        <div id="pin-display" class="pin-display">
+          <span class="pin-dot"></span><span class="pin-dot"></span>
+          <span class="pin-dot"></span><span class="pin-dot"></span>
+        </div>
+        <div id="login-error" class="error-text hidden"></div>
+        <div class="pin-pad">
+          <button class="pin-key" data-key="1">1</button>
+          <button class="pin-key" data-key="2">2</button>
+          <button class="pin-key" data-key="3">3</button>
+          <button class="pin-key" data-key="4">4</button>
+          <button class="pin-key" data-key="5">5</button>
+          <button class="pin-key" data-key="6">6</button>
+          <button class="pin-key" data-key="7">7</button>
+          <button class="pin-key" data-key="8">8</button>
+          <button class="pin-key" data-key="9">9</button>
+          <button class="pin-key pin-key-ghost" data-key="clear">지움</button>
+          <button class="pin-key" data-key="0">0</button>
+          <button class="pin-key pin-key-ghost" data-key="back">←</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 사이트 선택 (로그인 직후 첫 화면) -->
+    <section id="view-site" class="view hidden">
+      <div class="view-header"><h2>사이트를 선택하세요</h2></div>
+      <div class="site-grid">
+        <button class="site-btn" data-site="기흥">기흥</button>
+        <button class="site-btn" data-site="화성">화성</button>
+        <button class="site-btn" data-site="평택">평택</button>
+      </div>
+    </section>
+
+    <!-- 입고/출고 선택 -->
+    <section id="view-actions" class="view hidden">
+      <div class="view-header"><h2>무엇을 하시겠어요?</h2></div>
+      <div class="action-grid">
+        <button class="action-btn action-btn-in" id="action-in-btn">
+          <span class="action-icon">📥</span>
+          <span class="action-label">입고</span>
+        </button>
+        <button class="action-btn action-btn-out" id="action-out-btn">
+          <span class="action-icon">📤</span>
+          <span class="action-label">출고</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- 출고 Line 선택 -->
+    <section id="view-line" class="view hidden">
+      <div class="view-header">
+        <h2>출고할 Line을 선택하세요</h2>
+        <button class="btn-link" id="line-back-btn">← 뒤로</button>
+      </div>
+      <div class="site-grid" id="line-grid"></div>
+    </section>
+
+    <!-- 홈 / 재고 현황 -->
+    <section id="view-home" class="view hidden">
+      <div class="view-header">
+        <h2>재고 현황</h2>
+      </div>
+      <input type="search" id="home-search" class="input" placeholder="자재명 또는 코드로 검색" />
+      <div id="home-stock-list" class="list"></div>
+    </section>
+
+    <!-- QR 스캔 -->
+    <section id="view-scan" class="view hidden">
+      <div class="view-header">
+        <h2>QR 스캔</h2>
+        <button class="btn-link" id="scan-back-btn">← 뒤로</button>
+      </div>
+      <div class="scan-context muted" id="scan-context-label"></div>
+
+      <div id="scan-reader-wrap">
+        <div id="qr-reader"></div>
+        <button id="scan-toggle-btn" class="btn btn-primary btn-block">카메라 스캔 시작</button>
+      </div>
+
+      <div class="manual-entry">
+        <input type="text" id="manual-code-input" class="input" placeholder="또는 자재코드 직접 입력 (예: IT-000001)" />
+        <button id="manual-lookup-btn" class="btn btn-secondary">조회</button>
+      </div>
+
+      <div id="scan-result-card" class="card hidden">
+        <div class="card-title">
+          <span id="scan-item-name"></span>
+          <span id="scan-item-id" class="muted"></span>
+        </div>
+        <div id="scan-item-stock" class="stock-breakdown"></div>
+
+        <label class="field-label">수량</label>
+        <input type="number" id="scan-quantity" class="input" min="1" step="1" placeholder="수량 입력" inputmode="numeric" />
+
+        <label class="field-label">메모 (선택)</label>
+        <input type="text" id="scan-note" class="input" placeholder="예: 발주서 #123" />
+
+        <button id="scan-add-btn" class="btn btn-primary btn-block">추가</button>
+      </div>
+
+      <div id="scan-cart-section" class="cart-section hidden">
+        <div class="cart-header">
+          <h3>담은 목록 (<span id="cart-count">0</span>)</h3>
+          <button class="btn-link" id="cart-clear-btn">전체 삭제</button>
+        </div>
+        <div id="cart-list" class="list"></div>
+      </div>
+    </section>
+
+    <!-- 자재 -->
+    <section id="view-items" class="view hidden">
+      <div class="view-header">
+        <h2>자재 목록</h2>
+        <button id="new-item-btn" class="btn btn-secondary btn-small">+ 신규 등록</button>
+      </div>
+      <input type="search" id="items-search" class="input" placeholder="자재명, 코드, 분류로 검색" />
+      <div id="items-list" class="list"></div>
+    </section>
+
+    <!-- 이력 -->
+    <section id="view-history" class="view hidden">
+      <div class="view-header"><h2>입출고 이력</h2></div>
+      <div class="history-filters">
+        <select id="history-type-filter" class="select">
+          <option value="">전체 유형</option>
+          <option value="IN">입고</option>
+          <option value="OUT">출고</option>
+        </select>
+      </div>
+      <div id="history-list" class="list"></div>
+    </section>
+
+  </main>
+
+  <nav id="bottom-nav" class="hidden">
+    <button class="nav-btn active" data-view="actions"><span class="nav-icon">🔄</span>입출고</button>
+    <button class="nav-btn" data-view="home"><span class="nav-icon">🏠</span>재고</button>
+    <button class="nav-btn" data-view="items"><span class="nav-icon">📦</span>자재</button>
+    <button class="nav-btn" data-view="history"><span class="nav-icon">🕒</span>이력</button>
+  </nav>
+
+  <div id="cart-footer" class="cart-footer hidden">
+    <button id="cart-submit-btn" class="btn btn-primary btn-block">
+      <span id="cart-submit-label">입고 완료</span> (<span id="cart-submit-count">0</span>건)
+    </button>
+  </div>
+
+</div>
+
+<div id="modal-root"></div>
+<div id="toast-container"></div>
+
+<div id="batch-loading-overlay" class="batch-loading-overlay hidden">
+  <div class="batch-loading-box">
+    <div class="spinner"></div>
+    <div id="batch-loading-text">처리 중...</div>
+  </div>
+</div>
+
+<script src="lib/html5-qrcode.min.js"></script>
+<script src="lib/qrcode.min.js"></script>
+<script src="js/api.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

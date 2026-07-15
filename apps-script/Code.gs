@@ -11,7 +11,7 @@
  * 본문(body)은 JSON 문자열입니다. (Apps Script는 doOptions를 지원하지 않음)
  *
  * 재고/입출고는 사이트(기흥/화성/평택) 단위로 완전히 분리되어 있으며,
- * 각 사이트는 자신만의 재고/입고/출고 시트를 가집니다. (Setup.gs 참고)
+ * 각 사이트는 자신만의 재고/구매발주및입고/출고 시트를 가집니다. (Setup.gs 참고)
  */
 
 const SITES = ['기흥', '화성', '평택'];
@@ -139,12 +139,14 @@ function stockSheetName_(site) {
   return site + '_재고';
 }
 
-function txSheetName_(site, type) {
-  return site + '_' + (type === 'IN' ? '입고' : '출고');
+// 출고 이력 시트 (입고는 구매발주및입고 시트로 통합되어 여기서 다루지 않는다)
+function txSheetName_(site) {
+  return site + '_출고';
 }
 
-function inSheetName_(site) {
-  return site + '_입고';
+// 구매발주 + 입고 통합 시트 (발주 1건 = 1행, FIFO 입고 시 그 자리에서 갱신)
+function poInSheetName_(site) {
+  return site + '_구매발주및입고';
 }
 
 function headers_(sheet) {
@@ -345,7 +347,7 @@ function poSortComparator_(a, b) {
 }
 
 function findOpenPurchaseOrders_(site, itemId) {
-  const rows = readAll_(sheet_(inSheetName_(site)));
+  const rows = readAll_(sheet_(poInSheetName_(site)));
   return rows
     .filter(r => String(r['자재코드']) === String(itemId) && r['입고여부'] !== '입고완료')
     .sort(poSortComparator_);
@@ -377,7 +379,7 @@ function listOpenPurchaseOrders_(site, itemId) {
 // 한 발주의 잔여수량을 채우고도 수량이 남으면 다음 발주로 넘어간다.
 // 모든 미완료 발주를 다 채우고도 남는 수량은 unmatchedQty로 반환한다(매칭되는 발주가 아예 없는 경우도 동일).
 function applyFifoReceipt_(site, itemId, qty) {
-  const sheet = sheet_(inSheetName_(site));
+  const sheet = sheet_(poInSheetName_(site));
   const candidates = findOpenPurchaseOrders_(site, itemId);
   const allocations = [];
   let remaining = qty;
@@ -419,7 +421,7 @@ function applyFifoReceipt_(site, itemId, qty) {
 
 // 발주와 매칭되지 않은(또는 모든 발주를 채우고 남은) 입고수량은 별도 행으로 기록한다.
 function appendAdhocReceiptRow_(site, item, qty, note) {
-  appendRow_(sheet_(inSheetName_(site)), {
+  appendRow_(sheet_(poInSheetName_(site)), {
     '구매요청번호': '',
     '신청자': '',
     '자재코드': item.ItemID,
@@ -489,7 +491,7 @@ function stockOut_(body) {
     const newQty = current - qty;
     setStockQuantity_(site, itemId, newQty, item);
 
-    logTransaction_(site, 'OUT', {
+    logTransaction_(site, {
       itemId, itemName: item.ItemName, zone,
       quantity: qty, balanceAfter: newQty, worker: worker.name, note
     });
@@ -500,8 +502,8 @@ function stockOut_(body) {
   }
 }
 
-function logTransaction_(site, type, t) {
-  const sheet = sheet_(txSheetName_(site, type));
+function logTransaction_(site, t) {
+  const sheet = sheet_(txSheetName_(site));
   const txId = 'TX-' + Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyyMMddHHmmss') + '-' + Math.floor(Math.random() * 900 + 100);
   appendRow_(sheet, {
     TransactionID: txId,
@@ -543,12 +545,12 @@ function listTransactions_(filter) {
   const site = assertSite_(filter.site);
   let rows;
   if (filter.type === 'IN') {
-    rows = readAll_(sheet_(inSheetName_(site))).filter(r => r['최종입고일']).map(normalizeInRow_);
+    rows = readAll_(sheet_(poInSheetName_(site))).filter(r => r['최종입고일']).map(normalizeInRow_);
   } else if (filter.type === 'OUT') {
-    rows = readAll_(sheet_(txSheetName_(site, 'OUT'))).map(r => Object.assign({ Type: 'OUT' }, r));
+    rows = readAll_(sheet_(txSheetName_(site))).map(r => Object.assign({ Type: 'OUT' }, r));
   } else {
-    const inRows = readAll_(sheet_(inSheetName_(site))).filter(r => r['최종입고일']).map(normalizeInRow_);
-    const outRows = readAll_(sheet_(txSheetName_(site, 'OUT'))).map(r => Object.assign({ Type: 'OUT' }, r));
+    const inRows = readAll_(sheet_(poInSheetName_(site))).filter(r => r['최종입고일']).map(normalizeInRow_);
+    const outRows = readAll_(sheet_(txSheetName_(site))).map(r => Object.assign({ Type: 'OUT' }, r));
     rows = inRows.concat(outRows);
   }
 

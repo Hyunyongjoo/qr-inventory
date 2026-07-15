@@ -231,6 +231,7 @@
     $('#scan-result-card').classList.add('hidden');
     $('#manual-code-input').value = '';
     clearScanError();
+    clearLookupError();
     switchView('scan');
     updateScanContext();
     renderCart();
@@ -424,14 +425,43 @@
     $('#scan-toggle-btn').textContent = '카메라 스캔 시작';
   }
 
-  async function handleScannedCode(code) {
+  // QR 라벨은 "CODE:0137-100-030|NAME:TRANSMITTER|SPEC:P-77..." 같은
+  // 파이프(|) 구분 형식이거나, 자체 발급한 QR처럼 자재코드 그대로일 수 있음.
+  // CODE: 항목이 있으면 그 값만 추출하고, 없으면 전체 문자열을 코드로 취급한다.
+  function parseQrPayload(text) {
+    const raw = String(text || '').trim();
+    const match = raw.match(/(?:^|\|)\s*CODE\s*:\s*([^|]+)/i);
+    return match ? match[1].trim() : raw;
+  }
+
+  function showLookupError(message) {
+    const el = $('#scan-lookup-error');
+    el.textContent = message;
+    el.classList.remove('hidden');
+  }
+
+  function clearLookupError() {
+    const el = $('#scan-lookup-error');
+    el.textContent = '';
+    el.classList.add('hidden');
+  }
+
+  async function handleScannedCode(rawCode) {
+    clearLookupError();
+    const code = parseQrPayload(rawCode);
+    if (!code) {
+      showLookupError('QR 코드에서 자재코드를 읽을 수 없습니다.');
+      return;
+    }
     try {
       const item = await Api.get('itemByCode', { code });
       state.currentScanItem = item;
       renderScanResult(item);
       $('#manual-code-input').value = '';
     } catch (err) {
-      toast(err.message, 'error');
+      const message = err.message || '조회 중 알 수 없는 오류가 발생했습니다.';
+      showLookupError(message);
+      toast(message, 'error');
     }
   }
 

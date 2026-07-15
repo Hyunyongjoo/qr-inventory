@@ -5,6 +5,32 @@ const API_BASE_URL = 'https://script.google.com/macros/s/AKfycbyQqfiv4hsU-MQtndy
 
 const PENDING_QUEUE_KEY = 'qr_inv_pending_queue';
 
+// fetch 자체 실패(오프라인, DNS 오류), HTTP 오류, JSON 파싱 오류를 구분해
+// "API 연결 실패" 같은 구체적인 메시지로 변환한다. isNetworkError 플래그로
+// 표시해 오프라인 큐 판단(isNetworkError_)이 메시지 문구가 아닌 실제 원인에 기반하도록 한다.
+async function fetchJson_(url, options) {
+  let res;
+  try {
+    res = await fetch(url, options);
+  } catch (networkErr) {
+    const e = new Error('API 연결 실패: 인터넷 연결 또는 Apps Script 배포 URL을 확인하세요.');
+    e.isNetworkError = true;
+    throw e;
+  }
+  if (!res.ok) {
+    const e = new Error(`API 연결 실패 (HTTP ${res.status}). Apps Script 배포 상태를 확인하세요.`);
+    e.isNetworkError = true;
+    throw e;
+  }
+  try {
+    return await res.json();
+  } catch (parseErr) {
+    const e = new Error('API 응답 형식이 올바르지 않습니다. Apps Script 배포 상태를 확인하세요.');
+    e.isNetworkError = true;
+    throw e;
+  }
+}
+
 const Api = {
   async get(action, params = {}) {
     const url = new URL(API_BASE_URL);
@@ -12,20 +38,18 @@ const Api = {
     Object.entries(params).forEach(([k, v]) => {
       if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, v);
     });
-    const res = await fetch(url.toString(), { method: 'GET' });
-    const json = await res.json();
+    const json = await fetchJson_(url.toString(), { method: 'GET' });
     if (!json.success) throw new Error(json.error || '요청 실패');
     return json.data;
   },
 
   // text/plain 으로 전송해 CORS 프리플라이트(OPTIONS)를 피합니다.
   async post(action, payload = {}) {
-    const res = await fetch(API_BASE_URL, {
+    const json = await fetchJson_(API_BASE_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       body: JSON.stringify(Object.assign({ action }, payload))
     });
-    const json = await res.json();
     if (!json.success) throw new Error(json.error || '요청 실패');
     return json.data;
   },
@@ -45,7 +69,7 @@ const Api = {
 };
 
 function isNetworkError_(err) {
-  return err instanceof TypeError || /network|fetch/i.test(String(err.message || ''));
+  return err instanceof TypeError || err.isNetworkError === true;
 }
 
 function queueGet_() {

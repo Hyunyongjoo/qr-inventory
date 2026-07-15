@@ -48,7 +48,7 @@ html, body {
 }
 .header-title { display: flex; flex-direction: column; gap: 2px; }
 .header-title strong { font-size: 15px; }
-.header-user { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--text-muted); }
+.header-user { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 6px 10px; font-size: 13px; color: var(--text-muted); }
 .site-badge {
   font-size: 12px;
   font-weight: 700;

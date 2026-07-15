@@ -28,6 +28,18 @@
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
+  // 버튼 클릭 등에서 예외가 발생하면 화면이 아무 반응 없이 멈춘 것처럼 보인다.
+  // 어떤 오류든 토스트로 바로 보이게 해서, 다음에 같은 문제가 생겨도 원인을 바로 알 수 있게 한다.
+  window.addEventListener('error', (e) => {
+    console.error('전역 오류:', e.error || e.message);
+    try { toast('오류 발생: ' + (e.message || '알 수 없는 오류'), 'error'); } catch (_) {}
+  });
+  window.addEventListener('unhandledrejection', (e) => {
+    const reason = e.reason;
+    console.error('처리되지 않은 오류(Promise):', reason);
+    try { toast('오류 발생: ' + ((reason && reason.message) || reason), 'error'); } catch (_) {}
+  });
+
   // ------------------------- 초기화 -------------------------
 
   window.addEventListener('DOMContentLoaded', init);
@@ -47,6 +59,7 @@
     bindItems();
     bindHistory();
     bindLogout();
+    bindHardRefresh();
 
     window.addEventListener('online', () => flushQueue(true));
 
@@ -135,6 +148,28 @@
       state.currentView = null;
       stopScanning();
       showLoginView();
+    });
+  }
+
+  // 서비스워커/캐시가 예전 버전을 계속 서빙해서 화면이 이상하게 멈추는 경우를 위한 강제 초기화 버튼.
+  // 로그인/사이트 정보(localStorage)는 남겨두고, 캐시된 앱 파일만 지운 뒤 새로고침한다.
+  function bindHardRefresh() {
+    $('#hard-refresh-btn').addEventListener('click', async () => {
+      if (!confirm('앱 캐시를 초기화하고 새로고침할까요? (로그인 정보는 유지됩니다)')) return;
+      try {
+        if ('serviceWorker' in navigator) {
+          const regs = await navigator.serviceWorker.getRegistrations();
+          await Promise.all(regs.map((r) => r.unregister()));
+        }
+        if ('caches' in window) {
+          const keys = await caches.keys();
+          await Promise.all(keys.map((k) => caches.delete(k)));
+        }
+      } catch (err) {
+        console.error('캐시 초기화 실패', err);
+      } finally {
+        location.reload();
+      }
     });
   }
 

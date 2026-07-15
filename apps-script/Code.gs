@@ -43,6 +43,9 @@ function doGet(e) {
       case 'itemByCode':
         result = getItemByCode_(e.parameter.code);
         break;
+      case 'poMatch':
+        result = peekPurchaseOrder_(e.parameter.site || '', e.parameter.itemId || '');
+        break;
       case 'sites':
         result = SITES;
         break;
@@ -138,6 +141,14 @@ function stockSheetName_(site) {
 
 function txSheetName_(site, type) {
   return site + '_' + (type === 'IN' ? '입고' : '출고');
+}
+
+function inSheetName_(site) {
+  return site + '_입고';
+}
+
+function poSheetName_(site) {
+  return site + '_구매발주';
 }
 
 function headers_(sheet) {
@@ -302,14 +313,21 @@ function getStockQuantity_(site, itemId) {
   return { row, quantity: row ? Number(row.Quantity) || 0 : 0 };
 }
 
-function setStockQuantity_(site, itemId, newQuantity) {
+// item을 넘기면 재고 시트에 ItemName/Spec도 함께 저장한다 (해당 컬럼이 있는 시트에서만 반영됨).
+function setStockQuantity_(site, itemId, newQuantity, item) {
   const sheet = sheet_(stockSheetName_(site));
   const rows = readAll_(sheet);
   const existing = rows.find(s => String(s.ItemID) === String(itemId));
+  const payload = { Quantity: newQuantity, UpdatedAt: new Date() };
+  if (item) {
+    payload.ItemName = item.ItemName || '';
+    payload.Spec = item.Spec || '';
+  }
   if (existing) {
-    updateRow_(sheet, existing._row, { Quantity: newQuantity, UpdatedAt: new Date() });
+    updateRow_(sheet, existing._row, payload);
   } else {
-    appendRow_(sheet, { ItemID: itemId, Quantity: newQuantity, UpdatedAt: new Date() });
+    payload.ItemID = itemId;
+    appendRow_(sheet, payload);
   }
 }
 
@@ -317,6 +335,72 @@ function assertItemExists_(itemId) {
   const item = readAll_(sheet_('Items')).find(it => String(it.ItemID) === String(itemId));
   if (!item) throw new Error('자재를 찾을 수 없습니다: ' + itemId);
   return item;
+}
+
+// ------------------------- 구매발주 매칭 -------------------------
+
+// 자재코드로 아직 입고완료되지 않은 발주 중 가장 우선순위가 높은 것 하나를 고른다.
+// (필요일자가 이른 것 우선, 같으면 구매요청번호 오름차순)
+function poSortComparator_(a, b) {
+  const da = a['필요일자'] ? new Date(a['필요일자']).getTime() : Infinity;
+  const db = b['필요일자'] ? new Date(b['필요일자']).getTime() : Infinity;
+  if (da !== db) return da - db;
+  return String(a['구매요청번호']).localeCompare(String(b['구매요청번호']));
+}
+
+function findOpenPurchaseOrders_(site, itemId) {
+  const rows = readAll_(sheet_(poSheetName_(site)));
+  return rows
+    .filter(r => String(r['자재코드']) === String(itemId) && r['입고여부'] !== '입고완료')
+    .sort(poSortComparator_);
+}
+
+// 조회만 하고 시트는 변경하지 않음 (QR 스캔 직후 화면 표시용)
+function peekPurchaseOrder_(site, itemId) {
+  assertSite_(site);
+  if (!itemId) throw new Error('ItemID가 필요합니다.');
+  const candidates = findOpenPurchaseOrders_(site, itemId);
+  if (!candidates.length) return null;
+  const po = candidates[0];
+  const requested = Number(po['요청수량']) || 0;
+  const cumulative = Number(po['누적입고수량']) || 0;
+  return {
+    poNumber: po['구매요청번호'],
+    requester: po['신청자'] || '',
+    requestedQty: requested,
+    cumulativeQty: cumulative,
+    remainingQty: requested - cumulative,
+    status: po['입고여부'] || (cumulative <= 0 ? '미입고' : (cumulative < requested ? '부분입고' : '입고완료'))
+  };
+}
+
+// 실제 입고 처리 시 호출: 가장 우선순위 높은 미완료 발주에 입고수량을 반영하고 시트를 갱신한다.
+// 매칭되는 발주가 없으면 null을 반환한다 (호출부에서 "발주 없음 - 입고 이력만 기록"으로 처리).
+function applyPurchaseOrderReceipt_(site, itemId, qty) {
+  const candidates = findOpenPurchaseOrders_(site, itemId);
+  if (!candidates.length) return null;
+  const po = candidates[0];
+
+  const requested = Number(po['요청수량']) || 0;
+  const cumulative = (Number(po['누적입고수량']) || 0) + qty;
+  const remaining = requested - cumulative;
+  const status = cumulative <= 0 ? '미입고' : (cumulative < requested ? '부분입고' : '입고완료');
+
+  updateRow_(sheet_(poSheetName_(site)), po._row, {
+    '누적입고수량': cumulative,
+    '잔여수량': remaining,
+    '입고여부': status,
+    '최종입고일': new Date()
+  });
+
+  return {
+    poNumber: po['구매요청번호'],
+    requester: po['신청자'] || '',
+    requestedQty: requested,
+    cumulativeQty: cumulative,
+    remainingQty: remaining,
+    status
+  };
 }
 
 // ------------------------- 입고 / 출고 -------------------------
@@ -334,14 +418,20 @@ function stockIn_(body) {
 
     const { quantity: current } = getStockQuantity_(site, itemId);
     const newQty = current + qty;
-    setStockQuantity_(site, itemId, newQty);
+    setStockQuantity_(site, itemId, newQty, item);
+
+    // 자재코드로 미완료 발주를 찾아 누적입고수량/잔여수량/입고여부를 갱신한다.
+    // 매칭되는 발주가 없으면 poMatch는 null이며, 입고 이력만 기록된다.
+    const poMatch = applyPurchaseOrderReceipt_(site, itemId, qty);
 
     logTransaction_(site, 'IN', {
-      itemId, itemName: item.ItemName,
-      quantity: qty, balanceAfter: newQty, worker: worker.name, note
+      itemId, itemName: item.ItemName, spec: item.Spec, unit: item.Unit,
+      poNumber: poMatch ? poMatch.poNumber : '',
+      requester: poMatch ? poMatch.requester : '',
+      quantity: qty, handler: worker.name, note
     });
 
-    return { newQuantity: newQty };
+    return { newQuantity: newQty, purchaseOrder: poMatch };
   } finally {
     lock.releaseLock();
   }
@@ -362,7 +452,7 @@ function stockOut_(body) {
     const { quantity: current } = getStockQuantity_(site, itemId);
     if (current < qty) throw new Error(`재고 부족: 현재 ${current}${item.Unit || ''}, 출고 요청 ${qty}${item.Unit || ''}`);
     const newQty = current - qty;
-    setStockQuantity_(site, itemId, newQty);
+    setStockQuantity_(site, itemId, newQty, item);
 
     logTransaction_(site, 'OUT', {
       itemId, itemName: item.ItemName, zone,
@@ -376,6 +466,22 @@ function stockOut_(body) {
 }
 
 function logTransaction_(site, type, t) {
+  if (type === 'IN') {
+    appendRow_(sheet_(inSheetName_(site)), {
+      '입고일시': new Date(),
+      '구매요청번호': t.poNumber || '',
+      '자재코드': t.itemId,
+      '자재명': t.itemName,
+      '규격': t.spec || '',
+      '단위': t.unit || '',
+      '입고수량': t.quantity,
+      '신청자': t.requester || '',
+      '담당자': t.handler,
+      '비고': t.note || ''
+    });
+    return;
+  }
+
   const sheet = sheet_(txSheetName_(site, type));
   const txId = 'TX-' + Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyyMMddHHmmss') + '-' + Math.floor(Math.random() * 900 + 100);
   appendRow_(sheet, {
@@ -391,13 +497,35 @@ function logTransaction_(site, type, t) {
   });
 }
 
+// 입고 시트는 컬럼명이 한글(구매발주 연동)이라, 이력 화면에서 공통으로 쓰는
+// 영문 필드명(Timestamp/ItemID/ItemName/Quantity/Worker/Note 등)으로 맞춰준다.
+function normalizeInRow_(r) {
+  return {
+    _row: r._row,
+    Type: 'IN',
+    Timestamp: r['입고일시'],
+    PoNumber: r['구매요청번호'] || '',
+    ItemID: r['자재코드'],
+    ItemName: r['자재명'],
+    Spec: r['규격'] || '',
+    Unit: r['단위'] || '',
+    Quantity: r['입고수량'],
+    Requester: r['신청자'] || '',
+    Worker: r['담당자'],
+    Note: r['비고'] || '',
+    Zone: ''
+  };
+}
+
 function listTransactions_(filter) {
   const site = assertSite_(filter.site);
   let rows;
-  if (filter.type === 'IN' || filter.type === 'OUT') {
-    rows = readAll_(sheet_(txSheetName_(site, filter.type))).map(r => Object.assign({ Type: filter.type }, r));
+  if (filter.type === 'IN') {
+    rows = readAll_(sheet_(inSheetName_(site))).map(normalizeInRow_);
+  } else if (filter.type === 'OUT') {
+    rows = readAll_(sheet_(txSheetName_(site, 'OUT'))).map(r => Object.assign({ Type: 'OUT' }, r));
   } else {
-    const inRows = readAll_(sheet_(txSheetName_(site, 'IN'))).map(r => Object.assign({ Type: 'IN' }, r));
+    const inRows = readAll_(sheet_(inSheetName_(site))).map(normalizeInRow_);
     const outRows = readAll_(sheet_(txSheetName_(site, 'OUT'))).map(r => Object.assign({ Type: 'OUT' }, r));
     rows = inRows.concat(outRows);
   }

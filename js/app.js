@@ -232,6 +232,7 @@
     $('#manual-code-input').value = '';
     clearScanError();
     clearLookupError();
+    hidePoInfo();
     switchView('scan');
     updateScanContext();
     renderCart();
@@ -475,6 +476,51 @@
 
     $('#scan-quantity').value = '';
     $('#scan-note').value = '';
+
+    if (state.scanType === 'IN') {
+      loadPoMatch(item.ItemID);
+    } else {
+      hidePoInfo();
+    }
+  }
+
+  // ------------------------- 구매발주 매칭 표시 (입고 전용) -------------------------
+
+  function hidePoInfo() {
+    $('#scan-po-info').classList.add('hidden');
+    $('#scan-po-none').classList.add('hidden');
+  }
+
+  async function loadPoMatch(itemId) {
+    hidePoInfo();
+    try {
+      const match = await Api.get('poMatch', { site: state.site, itemId });
+      renderPoMatch(match);
+    } catch (err) {
+      $('#scan-po-none').textContent = '발주 정보를 불러오지 못했습니다. 입고 이력만 기록됩니다.';
+      $('#scan-po-none').classList.remove('hidden');
+    }
+  }
+
+  function renderPoMatch(match) {
+    if (!match) {
+      $('#scan-po-none').textContent = '발주 없음 - 입고 이력만 기록';
+      $('#scan-po-none').classList.remove('hidden');
+      return;
+    }
+    $('#po-number').textContent = match.poNumber;
+    $('#po-requested').textContent = Number(match.requestedQty).toLocaleString();
+    $('#po-received').textContent = Number(match.cumulativeQty).toLocaleString();
+    $('#po-remaining').textContent = Number(match.remainingQty).toLocaleString();
+
+    const statusClass = match.status === '입고완료' ? 'po-status-done'
+      : match.status === '부분입고' ? 'po-status-partial'
+      : 'po-status-none';
+    const statusEl = $('#po-status');
+    statusEl.textContent = match.status;
+    statusEl.className = 'po-status-tag ' + statusClass;
+
+    $('#scan-po-info').classList.remove('hidden');
   }
 
   // ------------------------- 스캔 장바구니 -------------------------

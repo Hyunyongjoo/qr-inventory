@@ -22,10 +22,14 @@ function setupSpreadsheet() {
 
   SITES.forEach(site => {
     createSheetIfMissing_(ss, site + '_재고', [
-      'ItemID', 'Quantity', 'UpdatedAt'
+      'ItemID', 'ItemName', 'Spec', 'Quantity', 'UpdatedAt'
+    ]);
+    createSheetIfMissing_(ss, site + '_구매발주', [
+      '구매요청번호', '신청자', '자재코드', '자재명', '규격', '조달구분', '단위',
+      '필요일자', '요청수량', '누적입고수량', '잔여수량', '입고여부', '최종입고일'
     ]);
     createSheetIfMissing_(ss, site + '_입고', [
-      'TransactionID', 'Timestamp', 'ItemID', 'ItemName', 'Quantity', 'BalanceAfter', 'Worker', 'Note'
+      '입고일시', '구매요청번호', '자재코드', '자재명', '규격', '단위', '입고수량', '신청자', '담당자', '비고'
     ]);
     createSheetIfMissing_(ss, site + '_출고', [
       'TransactionID', 'Timestamp', 'ItemID', 'ItemName', 'Zone', 'Quantity', 'BalanceAfter', 'Worker', 'Note'
@@ -60,6 +64,12 @@ function createSheetIfMissing_(ss, name, headers) {
   const existing = range.getValues()[0];
   const needsHeader = headers.some((h, i) => existing[i] !== h);
   if (needsHeader) {
+    // 이미 데이터가 있는 시트는 헤더가 달라도 자동으로 덮어쓰지 않는다.
+    // (컬럼 구조가 바뀌면 기존 행의 값과 새 헤더가 어긋나 데이터가 깨질 수 있음)
+    if (sheet.getLastRow() > 1) {
+      Logger.log('경고: "' + name + '" 시트에 이미 데이터가 있어 헤더를 자동 변경하지 않았습니다. 필요하면 수동으로 마이그레이션하세요.');
+      return sheet;
+    }
     range.setValues([headers]);
     sheet.setFrozenRows(1);
     sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold').setBackground('#f1f3f4');

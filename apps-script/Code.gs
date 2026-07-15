@@ -519,7 +519,7 @@ function stockOut_(body) {
 
     logTransaction_(site, {
       itemId, itemName: item.ItemName, spec: item.Spec, unit: item.Unit, zone,
-      quantity: qty, worker: worker.name
+      quantity: qty, balanceAfter: newQty, worker: worker.name
     });
 
     return { newQuantity: newQty };
@@ -528,34 +528,30 @@ function stockOut_(body) {
   }
 }
 
-// 출고 이력 한 줄을 기록한다. 거래코드(구 TransactionID)와 시간은 조회/정렬 편의를 위해
-// 맨 뒤로, 출고일자는 맨 앞으로 두는 컬럼 순서를 따른다 (Setup.gs 헤더와 반드시 일치해야 함).
+// 출고 이력 한 줄을 기록한다 (Setup.gs 헤더와 반드시 일치해야 함).
 function logTransaction_(site, t) {
   const sheet = sheet_(txSheetName_(site));
   const txId = 'TX-' + Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyyMMddHHmmss') + '-' + Math.floor(Math.random() * 900 + 100);
-  const now = new Date();
   appendRow_(sheet, {
-    '출고일자': Utilities.formatDate(now, 'Asia/Seoul', 'yyyy-MM-dd'),
-    '라인': t.zone || '',
+    '거래코드': txId,
+    '시간': new Date(),
     '자재코드': t.itemId,
     '자재명': t.itemName,
     '규격': t.spec || '',
     '단위': t.unit || '',
     '출고수량': t.quantity,
+    '잔여재고': t.balanceAfter,
     '담당자': t.worker,
-    '거래코드': txId,
-    '시간': Utilities.formatDate(now, 'Asia/Seoul', 'HH:mm:ss')
+    '라인': t.zone || ''
   });
 }
 
 // 출고 시트도 컬럼명이 한글이라, 이력 화면이 공통으로 쓰는 영문 필드명으로 맞춰준다.
 function normalizeOutRow_(r) {
-  const dateStr = r['출고일자'] || '';
-  const timeStr = r['시간'] || '';
   return {
     _row: r._row,
     Type: 'OUT',
-    Timestamp: dateStr ? `${dateStr}T${timeStr || '00:00:00'}` : (timeStr || ''),
+    Timestamp: r['시간'],
     TransactionID: r['거래코드'] || '',
     ItemID: r['자재코드'],
     ItemName: r['자재명'],
@@ -563,6 +559,7 @@ function normalizeOutRow_(r) {
     Unit: r['단위'] || '',
     Zone: r['라인'] || '',
     Quantity: r['출고수량'],
+    BalanceAfter: r['잔여재고'],
     Worker: r['담당자'],
     Note: ''
   };

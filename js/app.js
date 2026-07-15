@@ -22,7 +22,8 @@
     html5QrCode: null,
     scanning: false,
     cart: [],
-    currentView: null
+    currentView: null,
+    hasOpenPo: false
   };
 
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -537,14 +538,25 @@
       debugSetLookup('조회 안 함 (파싱된 코드가 없음)');
       return;
     }
-    debugSetLookup('Items 시트 조회 중...');
+
     try {
-      const item = await Api.get('itemByCode', { code });
-      state.currentScanItem = item;
-      renderScanResult(item);
+      if (state.scanType === 'IN') {
+        // 입고 화면 전용 경량 조회: 재고 시트는 읽지 않고, 자재 정보 + 미완료 발주만 한 번에 받아온다.
+        debugSetLookup('자재 + 발주 이력 조회 중...');
+        const result = await Api.get('scanLookup', { site: state.site, code });
+        state.currentScanItem = result.item;
+        renderScanResultIn(result.item, result.openPos);
+        debugSetLookup(`조회 성공: ${result.item.ItemName} (${result.item.ItemID}), 미완료 발주 ${result.openPos.length}건`);
+        if (DEBUG_QR) toast(`조회 결과: ${result.item.ItemName} · 발주 ${result.openPos.length}건`, 'success');
+      } else {
+        debugSetLookup('Items 시트 조회 중...');
+        const item = await Api.get('itemByCode', { code });
+        state.currentScanItem = item;
+        renderScanResultOut(item);
+        debugSetLookup(`조회 성공: ${item.ItemName} (${item.ItemID})`);
+        if (DEBUG_QR) toast(`조회 결과: ${item.ItemName} (${item.ItemID}) 발견`, 'success');
+      }
       $('#manual-code-input').value = '';
-      debugSetLookup(`조회 성공: ${item.ItemName} (${item.ItemID})`);
-      if (DEBUG_QR) toast(`조회 결과: ${item.ItemName} (${item.ItemID}) 발견`, 'success');
     } catch (err) {
       const message = err.message || '조회 중 알 수 없는 오류가 발생했습니다.';
       showLookupError(message);
@@ -553,22 +565,54 @@
     }
   }
 
-  function renderScanResult(item) {
+  // 입고 화면: 자재코드/품명/규격만 보여주고, 재고 현황과 메모 입력은 표시하지 않는다.
+  // 미완료 발주(미입고/부분입고)가 하나도 없으면 수량 입력/추가 버튼을 막는다.
+  function renderScanResultIn(item, openPos) {
     $('#scan-result-card').classList.remove('hidden');
+    $('#scan-item-title').classList.add('hidden');
+    $('#scan-item-info-in').classList.remove('hidden');
+    $('#in-item-code').textContent = item.ItemID;
+    $('#in-item-name').textContent = item.ItemName;
+    $('#in-item-spec').textContent = item.Spec || '-';
+
+    $('#scan-item-stock').classList.add('hidden');
+    $('#scan-note-field').classList.add('hidden');
+    $('#scan-note').value = '';
+
+    $('#scan-quantity').value = '';
+
+    const hasOpenPo = !!(openPos && openPos.length);
+    state.hasOpenPo = hasOpenPo;
+    renderOpenPos(openPos);
+
+    $('#scan-quantity').disabled = !hasOpenPo;
+    $('#scan-add-btn').disabled = !hasOpenPo;
+    if (!hasOpenPo) {
+      showLookupError('발주 이력이 없습니다. 입고할 수 없습니다.');
+    }
+  }
+
+  // 출고 화면: 기존처럼 재고 현황 + 메모 입력을 보여준다 (구매발주 매칭은 입고 전용이라 표시하지 않음).
+  function renderScanResultOut(item) {
+    $('#scan-result-card').classList.remove('hidden');
+    $('#scan-item-title').classList.remove('hidden');
+    $('#scan-item-info-in').classList.add('hidden');
     $('#scan-item-name').textContent = item.ItemName;
     $('#scan-item-id').textContent = ` ${item.ItemID}${item.Spec ? ' · ' + item.Spec : ''}`;
+
+    $('#scan-item-stock').classList.remove('hidden');
     $('#scan-item-stock').innerHTML = item.stockBySite.map((s) => `
       <div class="sb-row"><span>${escapeHtml(s.Site)}</span><strong>${s.Quantity.toLocaleString()} ${escapeHtml(item.Unit)}</strong></div>
     `).join('') + `<div class="sb-row"><span>합계</span><strong>${item.totalQuantity.toLocaleString()} ${escapeHtml(item.Unit)}</strong></div>`;
 
+    $('#scan-note-field').classList.remove('hidden');
     $('#scan-quantity').value = '';
     $('#scan-note').value = '';
+    $('#scan-quantity').disabled = false;
+    $('#scan-add-btn').disabled = false;
+    state.hasOpenPo = true;
 
-    if (state.scanType === 'IN') {
-      loadPoMatch(item.ItemID);
-    } else {
-      hidePoInfo();
-    }
+    hidePoInfo();
   }
 
   // ------------------------- 구매발주 FIFO 매칭 표시 (입고 전용) -------------------------
@@ -577,7 +621,7 @@
     return status === '입고완료' ? 'po-status-done' : status === '부분입고' ? 'po-status-partial' : 'po-status-none';
   }
 
-  // 필요일자에서 "N월 발주" 형태의 짧은 라벨을 만든다. 날짜가 없으면 구매요청번호로 대신한다.
+  // 필요일자에서 "N월 발주" 형태의 짧은 라벨을 만든다 (입고 완료 후 요약 토스트용). 날짜가 없으면 구매요청번호로 대신한다.
   function formatPoLabel(entry) {
     if (entry.dueDate) {
       const d = new Date(entry.dueDate);
@@ -586,35 +630,38 @@
     return entry.poNumber ? `발주 ${entry.poNumber}` : '발주';
   }
 
+  // 필요일자를 YYYY-MM-DD로 표시한다 (스캔 직후 발주 현황 목록용).
+  function formatPoDate(dueDate) {
+    if (!dueDate) return '날짜 없음';
+    const d = new Date(dueDate);
+    if (isNaN(d.getTime())) return String(dueDate);
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  }
+
   function hidePoInfo() {
+    $('#scan-po-header').classList.add('hidden');
     $('#scan-po-list').classList.add('hidden');
     $('#scan-po-none').classList.add('hidden');
   }
 
-  async function loadPoMatch(itemId) {
-    hidePoInfo();
-    try {
-      const list = await Api.get('poMatch', { site: state.site, itemId });
-      renderPoMatch(list);
-    } catch (err) {
-      $('#scan-po-none').textContent = '발주 정보를 불러오지 못했습니다. 입고 이력만 기록됩니다.';
-      $('#scan-po-none').classList.remove('hidden');
-    }
-  }
-
   // list는 필요일자 오름차순(오래된 발주 먼저) 배열. 첫 번째 항목이 FIFO상 다음 입고 대상이라 강조 표시한다.
-  function renderPoMatch(list) {
+  function renderOpenPos(list) {
     if (!list || !list.length) {
-      $('#scan-po-none').textContent = '발주 없음 - 입고 이력만 기록';
+      $('#scan-po-header').classList.add('hidden');
+      $('#scan-po-list').classList.add('hidden');
+      $('#scan-po-none').textContent = '발주 이력이 없습니다. 입고할 수 없습니다.';
       $('#scan-po-none').classList.remove('hidden');
       return;
     }
 
+    $('#scan-po-none').classList.add('hidden');
+    $('#scan-po-header').classList.remove('hidden');
     $('#scan-po-list').innerHTML = list.map((po, i) => `
       <div class="po-row${i === 0 ? ' po-row-current' : ''}">
         <div class="po-row-main">
-          <span class="po-row-title">${escapeHtml(formatPoLabel(po))}${i === 0 ? '<span class="po-row-current-badge">현재 입고 대상</span>' : ''}</span>
-          <span class="po-row-detail">요청 ${Number(po.requestedQty).toLocaleString()} / 입고 ${Number(po.cumulativeQty).toLocaleString()} / 잔여 ${Number(po.remainingQty).toLocaleString()}</span>
+          <span class="po-row-title">${formatPoDate(po.dueDate)}${i === 0 ? '<span class="po-row-current-badge">현재 입고 대상</span>' : ''}</span>
+          <span class="po-row-detail">요청 ${Number(po.requestedQty).toLocaleString()}개 / 입고 ${Number(po.cumulativeQty).toLocaleString()}개 / 잔여 ${Number(po.remainingQty).toLocaleString()}개</span>
         </div>
         <span class="po-status-tag ${poStatusClass(po.status)}">${escapeHtml(po.status)}</span>
       </div>
@@ -627,6 +674,10 @@
   function addToCart() {
     if (!state.currentScanItem) return;
     if (!state.site) { toast('사이트를 선택하세요.', 'error'); return; }
+    if (state.scanType === 'IN' && !state.hasOpenPo) {
+      toast('발주 이력이 없어 입고할 수 없습니다.', 'error');
+      return;
+    }
     const quantity = Number($('#scan-quantity').value);
 
     if (!quantity || quantity <= 0) {

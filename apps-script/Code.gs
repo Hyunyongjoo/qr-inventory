@@ -46,6 +46,9 @@ function doGet(e) {
       case 'poMatch':
         result = listOpenPurchaseOrders_(e.parameter.site || '', e.parameter.itemId || '');
         break;
+      case 'scanLookup':
+        result = scanLookupForStockIn_(e.parameter.site || '', e.parameter.code || '');
+        break;
       case 'sites':
         result = SITES;
         break;
@@ -375,12 +378,29 @@ function listOpenPurchaseOrders_(site, itemId) {
   return findOpenPurchaseOrders_(site, itemId).map(poRowToView_);
 }
 
+// 입고 화면 전용 QR 스캔 조회. Items 시트에서 자재코드로 찾고, 그 사이트의 미완료 발주만 함께 반환한다.
+// 재고 시트는 전혀 읽지 않는다 (입고 화면은 더 이상 재고 현황을 보여주지 않으므로 itemByCode보다 훨씬 가볍다).
+function scanLookupForStockIn_(site, code) {
+  assertSite_(site);
+  if (!code) throw new Error('QR 코드 값이 없습니다.');
+  const items = readAll_(sheet_('Items'));
+  if (!items.length) {
+    throw new Error('Items 시트에 등록된 자재가 없습니다. 자재 데이터를 먼저 업로드하세요.');
+  }
+  const normalized = String(code).trim();
+  const item = items.find(it => String(it.ItemID).trim() === normalized);
+  if (!item) throw new Error('코드 불일치: "' + normalized + '"는 Items 시트의 ItemID와 일치하지 않습니다.');
+
+  const openPos = findOpenPurchaseOrders_(site, item.ItemID).map(poRowToView_);
+  return { item: stripRow_(item), openPos };
+}
+
 // FIFO 입고 처리: 필요일자가 이른 발주부터 순서대로 입고수량을 채워나간다.
 // 한 발주의 잔여수량을 채우고도 수량이 남으면 다음 발주로 넘어간다.
-// 모든 미완료 발주를 다 채우고도 남는 수량은 unmatchedQty로 반환한다(매칭되는 발주가 아예 없는 경우도 동일).
-function applyFifoReceipt_(site, itemId, qty) {
+// 모든 미완료 발주를 다 채우고도 남는 수량은 unmatchedQty로 반환한다.
+// candidates는 호출부에서 미리 조회해 전달한다 (발주 존재 여부를 먼저 검사해야 하므로 중복 조회를 피하기 위함).
+function applyFifoReceipt_(site, candidates, qty) {
   const sheet = sheet_(poInSheetName_(site));
-  const candidates = findOpenPurchaseOrders_(site, itemId);
   const allocations = [];
   let remaining = qty;
 
@@ -452,13 +472,19 @@ function stockIn_(body) {
     const item = assertItemExists_(itemId);
     const worker = handleLogin_(pin);
 
+    // 발주 이력이 전혀 없는 자재는 입고를 막는다 (프런트엔드에서도 막지만, 서버에서도 한 번 더 검증).
+    const openPos = findOpenPurchaseOrders_(site, itemId);
+    if (!openPos.length) {
+      throw new Error('발주 이력이 없습니다. 입고할 수 없습니다.');
+    }
+
     const { quantity: current } = getStockQuantity_(site, itemId);
     const newQty = current + qty;
     setStockQuantity_(site, itemId, newQty, item);
 
     // 필요일자가 이른 발주부터 FIFO로 입고수량을 채운다. 모든 미완료 발주를 채우고도
-    // 남는 수량(또는 애초에 매칭되는 발주가 없는 경우)은 별도 행으로 기록한다.
-    const fifoResult = applyFifoReceipt_(site, itemId, qty);
+    // 남는 수량(예: 발주 수량보다 많이 입고)은 별도 행으로 기록한다.
+    const fifoResult = applyFifoReceipt_(site, openPos, qty);
     if (fifoResult.unmatchedQty > 0) {
       const adhocNote = (note ? note + ' · ' : '') + '담당: ' + worker.name;
       appendAdhocReceiptRow_(site, item, fifoResult.unmatchedQty, adhocNote);

@@ -130,20 +130,30 @@
       <div id="scan-lookup-error" class="scan-error-text hidden"></div>
 
       <div id="scan-result-card" class="card hidden">
-        <div class="card-title">
+        <div id="scan-item-title" class="card-title">
           <span id="scan-item-name"></span>
           <span id="scan-item-id" class="muted"></span>
         </div>
-        <div id="scan-item-stock" class="stock-breakdown"></div>
 
+        <div id="scan-item-info-in" class="item-info-in hidden">
+          <div class="info-row"><span class="info-label">자재코드</span><span id="in-item-code"></span></div>
+          <div class="info-row"><span class="info-label">품명</span><span id="in-item-name"></span></div>
+          <div class="info-row"><span class="info-label">규격</span><span id="in-item-spec"></span></div>
+        </div>
+
+        <div id="scan-item-stock" class="stock-breakdown hidden"></div>
+
+        <div id="scan-po-header" class="po-list-header hidden">📋 발주 현황</div>
         <div id="scan-po-list" class="po-list hidden"></div>
         <div id="scan-po-none" class="po-info-none hidden"></div>
 
         <label class="field-label">수량</label>
         <input type="number" id="scan-quantity" class="input" min="1" step="1" placeholder="수량 입력" inputmode="numeric" />
 
-        <label class="field-label">메모 (선택)</label>
-        <input type="text" id="scan-note" class="input" placeholder="예: 발주서 #123" />
+        <div id="scan-note-field">
+          <label class="field-label">메모 (선택)</label>
+          <input type="text" id="scan-note" class="input" placeholder="예: 발주서 #123" />
+        </div>
 
         <button id="scan-add-btn" class="btn btn-primary btn-block">추가</button>
       </div>

@@ -160,6 +160,22 @@ html, body {
 .card-title { display: flex; flex-direction: column; margin-bottom: 10px; }
 .card-title span:first-child { font-size: 16px; font-weight: 600; }
 
+.item-info-in {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.item-info-in .info-row { display: flex; justify-content: space-between; gap: 10px; font-size: 14px; }
+.item-info-in .info-label { color: var(--text-muted); }
+.item-info-in .info-row span:last-child { font-weight: 600; text-align: right; }
+
+.po-list-header { font-size: 13px; font-weight: 700; color: var(--text-muted); margin-bottom: 8px; }
+
+.input:disabled, .btn:disabled { opacity: .5; cursor: not-allowed; }
+
 .stock-row, .item-row, .tx-row {
   background: var(--surface);
   border: 1px solid var(--border);

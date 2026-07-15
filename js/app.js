@@ -576,9 +576,6 @@
     $('#in-item-spec').textContent = item.Spec || '-';
 
     $('#scan-item-stock').classList.add('hidden');
-    $('#scan-note-field').classList.add('hidden');
-    $('#scan-note').value = '';
-
     $('#scan-quantity').value = '';
 
     const hasOpenPo = !!(openPos && openPos.length);
@@ -592,7 +589,7 @@
     }
   }
 
-  // 출고 화면: 기존처럼 재고 현황 + 메모 입력을 보여준다 (구매발주 매칭은 입고 전용이라 표시하지 않음).
+  // 출고 화면: 기존처럼 재고 현황을 보여준다 (구매발주 매칭은 입고 전용이라 표시하지 않음).
   function renderScanResultOut(item) {
     $('#scan-result-card').classList.remove('hidden');
     $('#scan-item-title').classList.remove('hidden');
@@ -605,9 +602,7 @@
       <div class="sb-row"><span>${escapeHtml(s.Site)}</span><strong>${s.Quantity.toLocaleString()} ${escapeHtml(item.Unit)}</strong></div>
     `).join('') + `<div class="sb-row"><span>합계</span><strong>${item.totalQuantity.toLocaleString()} ${escapeHtml(item.Unit)}</strong></div>`;
 
-    $('#scan-note-field').classList.remove('hidden');
     $('#scan-quantity').value = '';
-    $('#scan-note').value = '';
     $('#scan-quantity').disabled = false;
     $('#scan-add-btn').disabled = false;
     state.hasOpenPo = true;
@@ -685,7 +680,7 @@
       return;
     }
     if (state.scanType === 'OUT' && !state.scanZone) {
-      toast('출고 구역을 선택하세요.', 'error');
+      toast('출고 라인을 선택하세요.', 'error');
       return;
     }
 
@@ -697,7 +692,6 @@
       spec: item.Spec,
       unit: item.Unit,
       quantity,
-      note: $('#scan-note').value.trim(),
       zone: state.scanType === 'OUT' ? state.scanZone : ''
     });
     renderCart();
@@ -707,7 +701,6 @@
     state.currentScanItem = null;
     $('#scan-result-card').classList.add('hidden');
     $('#scan-quantity').value = '';
-    $('#scan-note').value = '';
     $('#manual-code-input').value = '';
   }
 
@@ -726,7 +719,7 @@
       <div class="cart-row${c.error ? ' cart-row-error' : ''}" data-uid="${c.uid}">
         <div class="row-main">
           <span class="primary">${escapeHtml(c.itemName)}${c.spec ? ' / ' + escapeHtml(c.spec) : ''}</span>
-          <span class="secondary">${escapeHtml(c.itemId)} · 수량 ${Number(c.quantity).toLocaleString()}${escapeHtml(c.unit || '')}${c.note ? ' · ' + escapeHtml(c.note) : ''}</span>
+          <span class="secondary">${escapeHtml(c.itemId)} · 수량 ${Number(c.quantity).toLocaleString()}${escapeHtml(c.unit || '')}</span>
           ${c.error ? `<span class="cart-error-msg">${escapeHtml(c.error)}</span>` : ''}
         </div>
         <button class="cart-delete-btn" data-uid="${c.uid}" aria-label="삭제">🗑️</button>
@@ -785,7 +778,7 @@
       showBatchLoading(i + 1, state.cart.length);
       try {
         const action = state.scanType === 'IN' ? 'stockIn' : 'stockOut';
-        const payload = { itemId: c.itemId, site: state.site, quantity: c.quantity, note: c.note, pin: state.user.pin };
+        const payload = { itemId: c.itemId, site: state.site, quantity: c.quantity, pin: state.user.pin };
         if (state.scanType === 'OUT') payload.zone = c.zone;
 
         const result = await Api.postWithQueue(action, payload);

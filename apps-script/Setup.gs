@@ -20,12 +20,22 @@ function setupSpreadsheet() {
     'PIN', 'Name', 'Role'
   ]);
 
+  // 출고 시트 마이그레이션 시 자재코드로 규격/단위를 채워 넣기 위해 Items 시트를 미리 읽어둔다.
+  const itemsSheet = ss.getSheetByName('Items');
+  const itemMap = {};
+  if (itemsSheet) {
+    readAll_(itemsSheet).forEach(it => { itemMap[String(it.ItemID)] = it; });
+  }
+
   SITES.forEach(site => {
     // 예전 "_구매발주"/"_입고" 시트가 남아있다면 새 통합 시트 이름으로 정리한다 (한 번만 실행되면 충분, 안전하게 반복 실행 가능).
     migrateToIntegratedPoSheet_(ss, site);
+    // 예전 영문 컬럼 구조의 출고/재고 시트를 새 한글 컬럼 순서로 데이터 보존하며 변환한다 (한 번만 실행되면 충분).
+    migrateOutSheetColumns_(ss, site, itemMap);
+    migrateStockSheetColumns_(ss, site);
 
     createSheetIfMissing_(ss, site + '_재고', [
-      'ItemID', 'ItemName', 'Spec', 'Quantity', 'UpdatedAt'
+      '자재코드', '자재명', '규격', '월초재고', '현재고', '최종업데이트'
     ]);
     // 구매발주 + 입고이력 통합 시트: 한 행이 발주 1건을 나타내며,
     // FIFO 입고 처리 시 누적입고수량/잔여수량/입고여부/최종입고일이 그 자리에서 갱신된다.
@@ -35,7 +45,7 @@ function setupSpreadsheet() {
       '필요일자', '요청수량', '누적입고수량', '잔여수량', '입고여부', '최종입고일', '비고'
     ]);
     createSheetIfMissing_(ss, site + '_출고', [
-      'TransactionID', 'Timestamp', 'ItemID', 'ItemName', 'Zone', 'Quantity', 'BalanceAfter', 'Worker', 'Note'
+      '출고일자', '라인', '자재코드', '자재명', '규격', '단위', '출고수량', '담당자', '거래코드', '시간'
     ]);
   });
 
@@ -91,6 +101,116 @@ function migrateToIntegratedPoSheet_(ss, site) {
       Logger.log('경고: "' + site + '_입고" 시트에 데이터가 남아 있어 자동 삭제하지 않았습니다. 확인 후 수동으로 정리하세요.');
     }
   }
+}
+
+function arraysEqual_(a, b) {
+  if (a.length !== b.length) return false;
+  return a.every((v, i) => v === b[i]);
+}
+
+const OLD_OUT_HEADERS_ = ['TransactionID', 'Timestamp', 'ItemID', 'ItemName', 'Zone', 'Quantity', 'BalanceAfter', 'Worker', 'Note'];
+const NEW_OUT_HEADERS_ = ['출고일자', '라인', '자재코드', '자재명', '규격', '단위', '출고수량', '담당자', '거래코드', '시간'];
+
+/**
+ * 예전 영문 컬럼의 "_출고" 시트를 새 한글 컬럼 순서로 데이터를 유지하며 재구성한다.
+ * (TransactionID→거래코드, Timestamp→날짜/시간 분리, Zone→라인, BalanceAfter/Note는 새 구조에 없어 제외)
+ * 규격/단위는 예전 로그에 없던 값이라 자재코드로 Items 시트에서 찾아 채운다.
+ * 이미 새 헤더면 아무 것도 하지 않고, 헤더가 예상과 다르면 안전하게 건너뛰고 경고만 남긴다.
+ */
+function migrateOutSheetColumns_(ss, site, itemMap) {
+  const name = site + '_출고';
+  const sheet = ss.getSheetByName(name);
+  if (!sheet) return;
+
+  const lastCol = sheet.getLastColumn();
+  const currentHeader = lastCol ? sheet.getRange(1, 1, 1, lastCol).getValues()[0] : [];
+
+  if (arraysEqual_(currentHeader, NEW_OUT_HEADERS_)) return;
+  if (!arraysEqual_(currentHeader.slice(0, OLD_OUT_HEADERS_.length), OLD_OUT_HEADERS_)) {
+    Logger.log('경고: "' + name + '" 시트 헤더가 예상과 달라 자동 마이그레이션을 건너뛰었습니다. 수동으로 확인하세요.');
+    return;
+  }
+
+  const lastRow = sheet.getLastRow();
+  const oldRows = lastRow > 1 ? sheet.getRange(2, 1, lastRow - 1, OLD_OUT_HEADERS_.length).getValues() : [];
+
+  const newRows = oldRows.map(r => {
+    const obj = {};
+    OLD_OUT_HEADERS_.forEach((h, i) => (obj[h] = r[i]));
+    const ts = obj.Timestamp ? new Date(obj.Timestamp) : null;
+    const hasTs = ts && !isNaN(ts.getTime());
+    const dateStr = hasTs ? Utilities.formatDate(ts, 'Asia/Seoul', 'yyyy-MM-dd') : '';
+    const timeStr = hasTs ? Utilities.formatDate(ts, 'Asia/Seoul', 'HH:mm:ss') : '';
+    const item = itemMap[String(obj.ItemID)] || {};
+    return [
+      dateStr,
+      obj.Zone || '',
+      obj.ItemID || '',
+      obj.ItemName || '',
+      item.Spec || '',
+      item.Unit || '',
+      obj.Quantity || 0,
+      obj.Worker || '',
+      obj.TransactionID || '',
+      timeStr
+    ];
+  });
+
+  sheet.clear();
+  sheet.getRange(1, 1, 1, NEW_OUT_HEADERS_.length).setValues([NEW_OUT_HEADERS_]);
+  sheet.setFrozenRows(1);
+  sheet.getRange(1, 1, 1, NEW_OUT_HEADERS_.length).setFontWeight('bold').setBackground('#f1f3f4');
+  if (newRows.length) {
+    sheet.getRange(2, 1, newRows.length, NEW_OUT_HEADERS_.length).setValues(newRows);
+  }
+  Logger.log(name + ': ' + newRows.length + '행 컬럼 구조 마이그레이션 완료 (BalanceAfter/Note 컬럼은 새 구조에 없어 제외됨)');
+}
+
+const OLD_STOCK_HEADERS_ = ['ItemID', 'ItemName', 'Spec', 'Quantity', 'UpdatedAt'];
+const NEW_STOCK_HEADERS_ = ['자재코드', '자재명', '규격', '월초재고', '현재고', '최종업데이트'];
+
+/**
+ * 예전 영문 컬럼의 "_재고" 시트를 새 한글 컬럼 순서로 데이터를 유지하며 재구성한다.
+ * 월초재고는 과거에 없던 값이라 빈 값으로 추가되며, 필요하면 수동으로 채워 넣어야 한다.
+ */
+function migrateStockSheetColumns_(ss, site) {
+  const name = site + '_재고';
+  const sheet = ss.getSheetByName(name);
+  if (!sheet) return;
+
+  const lastCol = sheet.getLastColumn();
+  const currentHeader = lastCol ? sheet.getRange(1, 1, 1, lastCol).getValues()[0] : [];
+
+  if (arraysEqual_(currentHeader, NEW_STOCK_HEADERS_)) return;
+  if (!arraysEqual_(currentHeader.slice(0, OLD_STOCK_HEADERS_.length), OLD_STOCK_HEADERS_)) {
+    Logger.log('경고: "' + name + '" 시트 헤더가 예상과 달라 자동 마이그레이션을 건너뛰었습니다. 수동으로 확인하세요.');
+    return;
+  }
+
+  const lastRow = sheet.getLastRow();
+  const oldRows = lastRow > 1 ? sheet.getRange(2, 1, lastRow - 1, OLD_STOCK_HEADERS_.length).getValues() : [];
+
+  const newRows = oldRows.map(r => {
+    const obj = {};
+    OLD_STOCK_HEADERS_.forEach((h, i) => (obj[h] = r[i]));
+    return [
+      obj.ItemID || '',
+      obj.ItemName || '',
+      obj.Spec || '',
+      '',
+      obj.Quantity || 0,
+      obj.UpdatedAt || ''
+    ];
+  });
+
+  sheet.clear();
+  sheet.getRange(1, 1, 1, NEW_STOCK_HEADERS_.length).setValues([NEW_STOCK_HEADERS_]);
+  sheet.setFrozenRows(1);
+  sheet.getRange(1, 1, 1, NEW_STOCK_HEADERS_.length).setFontWeight('bold').setBackground('#f1f3f4');
+  if (newRows.length) {
+    sheet.getRange(2, 1, newRows.length, NEW_STOCK_HEADERS_.length).setValues(newRows);
+  }
+  Logger.log(name + ': ' + newRows.length + '행 컬럼 구조 마이그레이션 완료 (월초재고는 빈 값으로 추가됨)');
 }
 
 function createSheetIfMissing_(ss, name, headers) {

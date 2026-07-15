@@ -134,7 +134,7 @@ function assertSite_(site) {
 
 function assertZone_(site, zone) {
   const zones = ZONES[site] || [];
-  if (!zones.includes(zone)) throw new Error('올바르지 않은 구역입니다: ' + zone);
+  if (!zones.includes(zone)) throw new Error('올바르지 않은 라인입니다: ' + zone);
   return zone;
 }
 
@@ -242,8 +242,8 @@ function getItemDetail_(itemId) {
 
   const stockBySite = SITES.map(site => {
     const stockRows = readAll_(sheet_(stockSheetName_(site)));
-    const row = stockRows.find(s => String(s.ItemID) === String(itemId));
-    return { Site: site, Quantity: row ? Number(row.Quantity) || 0 : 0 };
+    const row = stockRows.find(s => String(s['자재코드']) === String(itemId));
+    return { Site: site, Quantity: row ? Number(row['현재고']) || 0 : 0 };
   });
   const total = stockBySite.reduce((sum, s) => sum + s.Quantity, 0);
 
@@ -285,16 +285,16 @@ function listStock_(site, query) {
   items.forEach(it => (itemMap[String(it.ItemID)] = it));
 
   let rows = stockRows
-    .filter(s => Number(s.Quantity) !== 0)
+    .filter(s => Number(s['현재고']) !== 0)
     .map(s => {
-      const item = itemMap[String(s.ItemID)] || {};
+      const item = itemMap[String(s['자재코드'])] || {};
       return {
-        ItemID: s.ItemID,
+        ItemID: s['자재코드'],
         ItemName: item.ItemName || '(삭제된 자재)',
         Spec: item.Spec || '',
         Unit: item.Unit || '',
-        Quantity: Number(s.Quantity) || 0,
-        UpdatedAt: s.UpdatedAt
+        Quantity: Number(s['현재고']) || 0,
+        UpdatedAt: s['최종업데이트']
       };
     });
 
@@ -310,24 +310,24 @@ function listStock_(site, query) {
 
 function getStockQuantity_(site, itemId) {
   const rows = readAll_(sheet_(stockSheetName_(site)));
-  const row = rows.find(s => String(s.ItemID) === String(itemId));
-  return { row, quantity: row ? Number(row.Quantity) || 0 : 0 };
+  const row = rows.find(s => String(s['자재코드']) === String(itemId));
+  return { row, quantity: row ? Number(row['현재고']) || 0 : 0 };
 }
 
-// item을 넘기면 재고 시트에 ItemName/Spec도 함께 저장한다 (해당 컬럼이 있는 시트에서만 반영됨).
+// item을 넘기면 재고 시트에 자재명/규격도 함께 저장한다. 월초재고는 건드리지 않는다(수동 관리 컬럼).
 function setStockQuantity_(site, itemId, newQuantity, item) {
   const sheet = sheet_(stockSheetName_(site));
   const rows = readAll_(sheet);
-  const existing = rows.find(s => String(s.ItemID) === String(itemId));
-  const payload = { Quantity: newQuantity, UpdatedAt: new Date() };
+  const existing = rows.find(s => String(s['자재코드']) === String(itemId));
+  const payload = { '현재고': newQuantity, '최종업데이트': new Date() };
   if (item) {
-    payload.ItemName = item.ItemName || '';
-    payload.Spec = item.Spec || '';
+    payload['자재명'] = item.ItemName || '';
+    payload['규격'] = item.Spec || '';
   }
   if (existing) {
     updateRow_(sheet, existing._row, payload);
   } else {
-    payload.ItemID = itemId;
+    payload['자재코드'] = itemId;
     appendRow_(sheet, payload);
   }
 }
@@ -506,7 +506,7 @@ function stockOut_(body) {
   try {
     const site = assertSite_(body.site);
     const zone = assertZone_(site, body.zone);
-    const { itemId, quantity, pin, note } = body;
+    const { itemId, quantity, pin } = body;
     const qty = Number(quantity);
     if (!qty || qty <= 0) throw new Error('출고 수량은 0보다 커야 합니다.');
     const item = assertItemExists_(itemId);
@@ -518,8 +518,8 @@ function stockOut_(body) {
     setStockQuantity_(site, itemId, newQty, item);
 
     logTransaction_(site, {
-      itemId, itemName: item.ItemName, zone,
-      quantity: qty, balanceAfter: newQty, worker: worker.name, note
+      itemId, itemName: item.ItemName, spec: item.Spec, unit: item.Unit, zone,
+      quantity: qty, worker: worker.name
     });
 
     return { newQuantity: newQty };
@@ -528,20 +528,44 @@ function stockOut_(body) {
   }
 }
 
+// 출고 이력 한 줄을 기록한다. 거래코드(구 TransactionID)와 시간은 조회/정렬 편의를 위해
+// 맨 뒤로, 출고일자는 맨 앞으로 두는 컬럼 순서를 따른다 (Setup.gs 헤더와 반드시 일치해야 함).
 function logTransaction_(site, t) {
   const sheet = sheet_(txSheetName_(site));
   const txId = 'TX-' + Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyyMMddHHmmss') + '-' + Math.floor(Math.random() * 900 + 100);
+  const now = new Date();
   appendRow_(sheet, {
-    TransactionID: txId,
-    Timestamp: new Date(),
-    ItemID: t.itemId,
-    ItemName: t.itemName,
-    Zone: t.zone || '',
-    Quantity: t.quantity,
-    BalanceAfter: t.balanceAfter,
-    Worker: t.worker,
-    Note: t.note || ''
+    '출고일자': Utilities.formatDate(now, 'Asia/Seoul', 'yyyy-MM-dd'),
+    '라인': t.zone || '',
+    '자재코드': t.itemId,
+    '자재명': t.itemName,
+    '규격': t.spec || '',
+    '단위': t.unit || '',
+    '출고수량': t.quantity,
+    '담당자': t.worker,
+    '거래코드': txId,
+    '시간': Utilities.formatDate(now, 'Asia/Seoul', 'HH:mm:ss')
   });
+}
+
+// 출고 시트도 컬럼명이 한글이라, 이력 화면이 공통으로 쓰는 영문 필드명으로 맞춰준다.
+function normalizeOutRow_(r) {
+  const dateStr = r['출고일자'] || '';
+  const timeStr = r['시간'] || '';
+  return {
+    _row: r._row,
+    Type: 'OUT',
+    Timestamp: dateStr ? `${dateStr}T${timeStr || '00:00:00'}` : (timeStr || ''),
+    TransactionID: r['거래코드'] || '',
+    ItemID: r['자재코드'],
+    ItemName: r['자재명'],
+    Spec: r['규격'] || '',
+    Unit: r['단위'] || '',
+    Zone: r['라인'] || '',
+    Quantity: r['출고수량'],
+    Worker: r['담당자'],
+    Note: ''
+  };
 }
 
 // 입고 시트는 이제 "발주 1건 = 1행"의 누적 상태 시트라 컬럼명이 한글이다.
@@ -573,10 +597,10 @@ function listTransactions_(filter) {
   if (filter.type === 'IN') {
     rows = readAll_(sheet_(poInSheetName_(site))).filter(r => r['최종입고일']).map(normalizeInRow_);
   } else if (filter.type === 'OUT') {
-    rows = readAll_(sheet_(txSheetName_(site))).map(r => Object.assign({ Type: 'OUT' }, r));
+    rows = readAll_(sheet_(txSheetName_(site))).map(normalizeOutRow_);
   } else {
     const inRows = readAll_(sheet_(poInSheetName_(site))).filter(r => r['최종입고일']).map(normalizeInRow_);
-    const outRows = readAll_(sheet_(txSheetName_(site))).map(r => Object.assign({ Type: 'OUT' }, r));
+    const outRows = readAll_(sheet_(txSheetName_(site))).map(normalizeOutRow_);
     rows = inRows.concat(outRows);
   }
 

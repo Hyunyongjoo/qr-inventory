@@ -4,6 +4,8 @@
 
   const USER_KEY = 'qr_inv_user';
   const SITE_KEY = 'qr_inv_site';
+  // 임시 디버그 스위치: QR 파싱/조회 확인용 패널을 스캔 화면에 표시한다. 문제 해결 후 false로 바꾸세요.
+  const DEBUG_QR = true;
   const SITES = ['기흥', '화성', '평택'];
   const ZONES = {
     '기흥': ['K2', 'S3', 'S4', 'Display'],
@@ -233,6 +235,11 @@
     clearScanError();
     clearLookupError();
     hidePoInfo();
+    if (DEBUG_QR) {
+      $('#scan-debug-raw').textContent = '';
+      $('#scan-debug-lookup').textContent = '';
+      debugCheckItemsHealth();
+    }
     switchView('scan');
     updateScanContext();
     renderCart();
@@ -431,8 +438,10 @@
   // CODE: 항목이 있으면 그 값만 추출하고, 없으면 전체 문자열을 코드로 취급한다.
   function parseQrPayload(text) {
     const raw = String(text || '').trim();
-    const match = raw.match(/(?:^|\|)\s*CODE\s*:\s*([^|]+)/i);
-    return match ? match[1].trim() : raw;
+    const upperRaw = raw.toUpperCase();
+    const idx = upperRaw.indexOf('CODE:');
+    if (idx === -1) return raw;
+    return raw.slice(idx + 'CODE:'.length).split('|')[0].trim();
   }
 
   function showLookupError(message) {
@@ -447,22 +456,65 @@
     el.classList.add('hidden');
   }
 
+  // ------------------------- 디버그 패널 (임시) -------------------------
+
+  function debugPanelShow() {
+    if (!DEBUG_QR) return;
+    $('#scan-debug-panel').classList.remove('hidden');
+  }
+
+  function debugSetRaw(raw, parsed) {
+    if (!DEBUG_QR) return;
+    debugPanelShow();
+    $('#scan-debug-raw').textContent = `스캔 원본: ${raw}  →  파싱된 코드: ${parsed}`;
+  }
+
+  function debugSetLookup(text) {
+    if (!DEBUG_QR) return;
+    debugPanelShow();
+    $('#scan-debug-lookup').textContent = text;
+  }
+
+  async function debugCheckItemsHealth() {
+    if (!DEBUG_QR) return;
+    debugPanelShow();
+    $('#scan-debug-health').textContent = 'Items 시트 확인 중...';
+    try {
+      const ping = await Api.get('ping');
+      if (ping.itemsSheetOk && ping.itemCount > 0) {
+        $('#scan-debug-health').textContent = `Items 시트 정상 (${ping.itemCount}건 등록됨)`;
+      } else {
+        $('#scan-debug-health').textContent = `⚠ Items 시트 문제: ${ping.itemsError || '등록된 자재 없음 (' + ping.itemCount + '건)'}`;
+      }
+    } catch (err) {
+      $('#scan-debug-health').textContent = '⚠ ping 조회 실패: ' + (err.message || err);
+    }
+  }
+
   async function handleScannedCode(rawCode) {
     clearLookupError();
     const code = parseQrPayload(rawCode);
+    debugSetRaw(rawCode, code || '(빈 값)');
+    if (DEBUG_QR) toast(`스캔된 코드: ${code || '(빈 값)'}`, '');
+
     if (!code) {
       showLookupError('QR 코드에서 자재코드를 읽을 수 없습니다.');
+      debugSetLookup('조회 안 함 (파싱된 코드가 없음)');
       return;
     }
+    debugSetLookup('Items 시트 조회 중...');
     try {
       const item = await Api.get('itemByCode', { code });
       state.currentScanItem = item;
       renderScanResult(item);
       $('#manual-code-input').value = '';
+      debugSetLookup(`조회 성공: ${item.ItemName} (${item.ItemID})`);
+      if (DEBUG_QR) toast(`조회 결과: ${item.ItemName} (${item.ItemID}) 발견`, 'success');
     } catch (err) {
       const message = err.message || '조회 중 알 수 없는 오류가 발생했습니다.';
       showLookupError(message);
       toast(message, 'error');
+      debugSetLookup('조회 실패: ' + message);
     }
   }
 

@@ -234,6 +234,23 @@ html, body {
 
 /* ---------- 스캔 ---------- */
 .scan-context { margin-top: -8px; margin-bottom: 12px; font-weight: 600; }
+.scan-debug-panel {
+  background: var(--surface-2);
+  border: 1px dashed var(--warn);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.scan-debug-row {
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--text-muted);
+  word-break: break-all;
+}
+.scan-debug-row:empty { display: none; }
 #scan-reader-wrap { margin-bottom: 14px; }
 #qr-reader {
   width: 100%;

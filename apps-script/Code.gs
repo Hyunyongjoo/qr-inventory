@@ -44,7 +44,7 @@ function doGet(e) {
         result = getItemByCode_(e.parameter.code);
         break;
       case 'poMatch':
-        result = peekPurchaseOrder_(e.parameter.site || '', e.parameter.itemId || '');
+        result = listOpenPurchaseOrders_(e.parameter.site || '', e.parameter.itemId || '');
         break;
       case 'sites':
         result = SITES;
@@ -145,10 +145,6 @@ function txSheetName_(site, type) {
 
 function inSheetName_(site) {
   return site + '_입고';
-}
-
-function poSheetName_(site) {
-  return site + '_구매발주';
 }
 
 function headers_(sheet) {
@@ -337,10 +333,10 @@ function assertItemExists_(itemId) {
   return item;
 }
 
-// ------------------------- 구매발주 매칭 -------------------------
+// ------------------------- 구매발주 FIFO 매칭 -------------------------
 
-// 자재코드로 아직 입고완료되지 않은 발주 중 가장 우선순위가 높은 것 하나를 고른다.
-// (필요일자가 이른 것 우선, 같으면 구매요청번호 오름차순)
+// 자재코드로, 아직 완료되지 않은 발주만 필요일자 오름차순(오래된 것 먼저)으로 정렬해 반환한다.
+// 입고여부가 비어있는 행(수동 입력 직후 등)도 미입고로 간주해 포함시킨다.
 function poSortComparator_(a, b) {
   const da = a['필요일자'] ? new Date(a['필요일자']).getTime() : Infinity;
   const db = b['필요일자'] ? new Date(b['필요일자']).getTime() : Infinity;
@@ -349,19 +345,13 @@ function poSortComparator_(a, b) {
 }
 
 function findOpenPurchaseOrders_(site, itemId) {
-  const rows = readAll_(sheet_(poSheetName_(site)));
+  const rows = readAll_(sheet_(inSheetName_(site)));
   return rows
     .filter(r => String(r['자재코드']) === String(itemId) && r['입고여부'] !== '입고완료')
     .sort(poSortComparator_);
 }
 
-// 조회만 하고 시트는 변경하지 않음 (QR 스캔 직후 화면 표시용)
-function peekPurchaseOrder_(site, itemId) {
-  assertSite_(site);
-  if (!itemId) throw new Error('ItemID가 필요합니다.');
-  const candidates = findOpenPurchaseOrders_(site, itemId);
-  if (!candidates.length) return null;
-  const po = candidates[0];
+function poRowToView_(po) {
   const requested = Number(po['요청수량']) || 0;
   const cumulative = Number(po['누적입고수량']) || 0;
   return {
@@ -370,37 +360,81 @@ function peekPurchaseOrder_(site, itemId) {
     requestedQty: requested,
     cumulativeQty: cumulative,
     remainingQty: requested - cumulative,
+    dueDate: po['필요일자'] || '',
     status: po['입고여부'] || (cumulative <= 0 ? '미입고' : (cumulative < requested ? '부분입고' : '입고완료'))
   };
 }
 
-// 실제 입고 처리 시 호출: 가장 우선순위 높은 미완료 발주에 입고수량을 반영하고 시트를 갱신한다.
-// 매칭되는 발주가 없으면 null을 반환한다 (호출부에서 "발주 없음 - 입고 이력만 기록"으로 처리).
-function applyPurchaseOrderReceipt_(site, itemId, qty) {
+// 조회만 하고 시트는 변경하지 않음 (QR 스캔 직후 화면 표시용). 필요일자 오름차순 목록을 그대로 반환하며,
+// 프런트엔드는 첫 번째 항목을 "현재 입고 대상"으로 강조 표시한다.
+function listOpenPurchaseOrders_(site, itemId) {
+  assertSite_(site);
+  if (!itemId) throw new Error('ItemID가 필요합니다.');
+  return findOpenPurchaseOrders_(site, itemId).map(poRowToView_);
+}
+
+// FIFO 입고 처리: 필요일자가 이른 발주부터 순서대로 입고수량을 채워나간다.
+// 한 발주의 잔여수량을 채우고도 수량이 남으면 다음 발주로 넘어간다.
+// 모든 미완료 발주를 다 채우고도 남는 수량은 unmatchedQty로 반환한다(매칭되는 발주가 아예 없는 경우도 동일).
+function applyFifoReceipt_(site, itemId, qty) {
+  const sheet = sheet_(inSheetName_(site));
   const candidates = findOpenPurchaseOrders_(site, itemId);
-  if (!candidates.length) return null;
-  const po = candidates[0];
+  const allocations = [];
+  let remaining = qty;
 
-  const requested = Number(po['요청수량']) || 0;
-  const cumulative = (Number(po['누적입고수량']) || 0) + qty;
-  const remaining = requested - cumulative;
-  const status = cumulative <= 0 ? '미입고' : (cumulative < requested ? '부분입고' : '입고완료');
+  for (let i = 0; i < candidates.length && remaining > 0; i++) {
+    const po = candidates[i];
+    const requested = Number(po['요청수량']) || 0;
+    const before = Number(po['누적입고수량']) || 0;
+    const openQty = requested - before;
+    if (openQty <= 0) continue;
 
-  updateRow_(sheet_(poSheetName_(site)), po._row, {
-    '누적입고수량': cumulative,
-    '잔여수량': remaining,
-    '입고여부': status,
-    '최종입고일': new Date()
+    const applied = Math.min(openQty, remaining);
+    const cumulative = before + applied;
+    const remainingQty = requested - cumulative;
+    const status = cumulative <= 0 ? '미입고' : (cumulative < requested ? '부분입고' : '입고완료');
+
+    updateRow_(sheet, po._row, {
+      '누적입고수량': cumulative,
+      '잔여수량': remainingQty,
+      '입고여부': status,
+      '최종입고일': new Date()
+    });
+
+    allocations.push({
+      poNumber: po['구매요청번호'],
+      dueDate: po['필요일자'] || '',
+      appliedQty: applied,
+      cumulativeQty: cumulative,
+      requestedQty: requested,
+      remainingQty: remainingQty,
+      status
+    });
+
+    remaining -= applied;
+  }
+
+  return { allocations, unmatchedQty: remaining };
+}
+
+// 발주와 매칭되지 않은(또는 모든 발주를 채우고 남은) 입고수량은 별도 행으로 기록한다.
+function appendAdhocReceiptRow_(site, item, qty, note) {
+  appendRow_(sheet_(inSheetName_(site)), {
+    '구매요청번호': '',
+    '신청자': '',
+    '자재코드': item.ItemID,
+    '자재명': item.ItemName,
+    '규격': item.Spec || '',
+    '조달구분': '',
+    '단위': item.Unit || '',
+    '필요일자': '',
+    '요청수량': qty,
+    '누적입고수량': qty,
+    '잔여수량': 0,
+    '입고여부': '입고완료',
+    '최종입고일': new Date(),
+    '비고': note || '발주 없음 - 직접입고'
   });
-
-  return {
-    poNumber: po['구매요청번호'],
-    requester: po['신청자'] || '',
-    requestedQty: requested,
-    cumulativeQty: cumulative,
-    remainingQty: remaining,
-    status
-  };
 }
 
 // ------------------------- 입고 / 출고 -------------------------
@@ -420,18 +454,19 @@ function stockIn_(body) {
     const newQty = current + qty;
     setStockQuantity_(site, itemId, newQty, item);
 
-    // 자재코드로 미완료 발주를 찾아 누적입고수량/잔여수량/입고여부를 갱신한다.
-    // 매칭되는 발주가 없으면 poMatch는 null이며, 입고 이력만 기록된다.
-    const poMatch = applyPurchaseOrderReceipt_(site, itemId, qty);
+    // 필요일자가 이른 발주부터 FIFO로 입고수량을 채운다. 모든 미완료 발주를 채우고도
+    // 남는 수량(또는 애초에 매칭되는 발주가 없는 경우)은 별도 행으로 기록한다.
+    const fifoResult = applyFifoReceipt_(site, itemId, qty);
+    if (fifoResult.unmatchedQty > 0) {
+      const adhocNote = (note ? note + ' · ' : '') + '담당: ' + worker.name;
+      appendAdhocReceiptRow_(site, item, fifoResult.unmatchedQty, adhocNote);
+    }
 
-    logTransaction_(site, 'IN', {
-      itemId, itemName: item.ItemName, spec: item.Spec, unit: item.Unit,
-      poNumber: poMatch ? poMatch.poNumber : '',
-      requester: poMatch ? poMatch.requester : '',
-      quantity: qty, handler: worker.name, note
-    });
-
-    return { newQuantity: newQty, purchaseOrder: poMatch };
+    return {
+      newQuantity: newQty,
+      allocations: fifoResult.allocations,
+      unmatchedQty: fifoResult.unmatchedQty
+    };
   } finally {
     lock.releaseLock();
   }
@@ -466,22 +501,6 @@ function stockOut_(body) {
 }
 
 function logTransaction_(site, type, t) {
-  if (type === 'IN') {
-    appendRow_(sheet_(inSheetName_(site)), {
-      '입고일시': new Date(),
-      '구매요청번호': t.poNumber || '',
-      '자재코드': t.itemId,
-      '자재명': t.itemName,
-      '규격': t.spec || '',
-      '단위': t.unit || '',
-      '입고수량': t.quantity,
-      '신청자': t.requester || '',
-      '담당자': t.handler,
-      '비고': t.note || ''
-    });
-    return;
-  }
-
   const sheet = sheet_(txSheetName_(site, type));
   const txId = 'TX-' + Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyyMMddHHmmss') + '-' + Math.floor(Math.random() * 900 + 100);
   appendRow_(sheet, {
@@ -497,23 +516,26 @@ function logTransaction_(site, type, t) {
   });
 }
 
-// 입고 시트는 컬럼명이 한글(구매발주 연동)이라, 이력 화면에서 공통으로 쓰는
-// 영문 필드명(Timestamp/ItemID/ItemName/Quantity/Worker/Note 등)으로 맞춰준다.
+// 입고 시트는 이제 "발주 1건 = 1행"의 누적 상태 시트라 컬럼명이 한글이다.
+// 실제 입고가 발생한 적 있는 행(최종입고일이 있는 행)만 이력으로 취급하고,
+// 이력 화면이 공통으로 쓰는 영문 필드명으로 맞춰준다. Quantity는 이번 이벤트 수량이 아니라
+// 해당 발주의 "누적입고수량" 스냅샷이다 (발주별로 통합 갱신되는 구조라서 개별 이벤트 로그는 없음).
 function normalizeInRow_(r) {
   return {
     _row: r._row,
     Type: 'IN',
-    Timestamp: r['입고일시'],
+    Timestamp: r['최종입고일'],
     PoNumber: r['구매요청번호'] || '',
     ItemID: r['자재코드'],
     ItemName: r['자재명'],
     Spec: r['규격'] || '',
     Unit: r['단위'] || '',
-    Quantity: r['입고수량'],
+    Quantity: r['누적입고수량'],
     Requester: r['신청자'] || '',
-    Worker: r['담당자'],
+    Worker: '',
     Note: r['비고'] || '',
-    Zone: ''
+    Zone: '',
+    Status: r['입고여부'] || ''
   };
 }
 
@@ -521,11 +543,11 @@ function listTransactions_(filter) {
   const site = assertSite_(filter.site);
   let rows;
   if (filter.type === 'IN') {
-    rows = readAll_(sheet_(inSheetName_(site))).map(normalizeInRow_);
+    rows = readAll_(sheet_(inSheetName_(site))).filter(r => r['최종입고일']).map(normalizeInRow_);
   } else if (filter.type === 'OUT') {
     rows = readAll_(sheet_(txSheetName_(site, 'OUT'))).map(r => Object.assign({ Type: 'OUT' }, r));
   } else {
-    const inRows = readAll_(sheet_(inSheetName_(site))).map(normalizeInRow_);
+    const inRows = readAll_(sheet_(inSheetName_(site))).filter(r => r['최종입고일']).map(normalizeInRow_);
     const outRows = readAll_(sheet_(txSheetName_(site, 'OUT'))).map(r => Object.assign({ Type: 'OUT' }, r));
     rows = inRows.concat(outRows);
   }

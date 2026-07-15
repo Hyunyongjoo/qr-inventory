@@ -484,43 +484,55 @@
     }
   }
 
-  // ------------------------- 구매발주 매칭 표시 (입고 전용) -------------------------
+  // ------------------------- 구매발주 FIFO 매칭 표시 (입고 전용) -------------------------
+
+  function poStatusClass(status) {
+    return status === '입고완료' ? 'po-status-done' : status === '부분입고' ? 'po-status-partial' : 'po-status-none';
+  }
+
+  // 필요일자에서 "N월 발주" 형태의 짧은 라벨을 만든다. 날짜가 없으면 구매요청번호로 대신한다.
+  function formatPoLabel(entry) {
+    if (entry.dueDate) {
+      const d = new Date(entry.dueDate);
+      if (!isNaN(d.getTime())) return `${d.getMonth() + 1}월 발주`;
+    }
+    return entry.poNumber ? `발주 ${entry.poNumber}` : '발주';
+  }
 
   function hidePoInfo() {
-    $('#scan-po-info').classList.add('hidden');
+    $('#scan-po-list').classList.add('hidden');
     $('#scan-po-none').classList.add('hidden');
   }
 
   async function loadPoMatch(itemId) {
     hidePoInfo();
     try {
-      const match = await Api.get('poMatch', { site: state.site, itemId });
-      renderPoMatch(match);
+      const list = await Api.get('poMatch', { site: state.site, itemId });
+      renderPoMatch(list);
     } catch (err) {
       $('#scan-po-none').textContent = '발주 정보를 불러오지 못했습니다. 입고 이력만 기록됩니다.';
       $('#scan-po-none').classList.remove('hidden');
     }
   }
 
-  function renderPoMatch(match) {
-    if (!match) {
+  // list는 필요일자 오름차순(오래된 발주 먼저) 배열. 첫 번째 항목이 FIFO상 다음 입고 대상이라 강조 표시한다.
+  function renderPoMatch(list) {
+    if (!list || !list.length) {
       $('#scan-po-none').textContent = '발주 없음 - 입고 이력만 기록';
       $('#scan-po-none').classList.remove('hidden');
       return;
     }
-    $('#po-number').textContent = match.poNumber;
-    $('#po-requested').textContent = Number(match.requestedQty).toLocaleString();
-    $('#po-received').textContent = Number(match.cumulativeQty).toLocaleString();
-    $('#po-remaining').textContent = Number(match.remainingQty).toLocaleString();
 
-    const statusClass = match.status === '입고완료' ? 'po-status-done'
-      : match.status === '부분입고' ? 'po-status-partial'
-      : 'po-status-none';
-    const statusEl = $('#po-status');
-    statusEl.textContent = match.status;
-    statusEl.className = 'po-status-tag ' + statusClass;
-
-    $('#scan-po-info').classList.remove('hidden');
+    $('#scan-po-list').innerHTML = list.map((po, i) => `
+      <div class="po-row${i === 0 ? ' po-row-current' : ''}">
+        <div class="po-row-main">
+          <span class="po-row-title">${escapeHtml(formatPoLabel(po))}${i === 0 ? '<span class="po-row-current-badge">현재 입고 대상</span>' : ''}</span>
+          <span class="po-row-detail">요청 ${Number(po.requestedQty).toLocaleString()} / 입고 ${Number(po.cumulativeQty).toLocaleString()} / 잔여 ${Number(po.remainingQty).toLocaleString()}</span>
+        </div>
+        <span class="po-status-tag ${poStatusClass(po.status)}">${escapeHtml(po.status)}</span>
+      </div>
+    `).join('');
+    $('#scan-po-list').classList.remove('hidden');
   }
 
   // ------------------------- 스캔 장바구니 -------------------------
@@ -602,6 +614,21 @@
     $('#batch-loading-overlay').classList.add('hidden');
   }
 
+  // stockIn 응답의 allocations(FIFO로 채워진 발주별 내역)를 사람이 읽을 문장으로 만든다.
+  // 예: "TRANSMITTER: 1월 발주 3개 완료 + 3월 발주 2개 부분입고"
+  function formatReceiptBreakdown(itemName, data) {
+    const parts = (data.allocations || []).map((a) => {
+      const label = formatPoLabel(a);
+      const statusWord = a.status === '입고완료' ? '완료' : (a.status === '부분입고' ? '부분입고' : '미입고');
+      return `${label} ${Number(a.appliedQty).toLocaleString()}개 ${statusWord}`;
+    });
+    if (data.unmatchedQty > 0) {
+      parts.push(`발주없음 ${Number(data.unmatchedQty).toLocaleString()}개 직접입고`);
+    }
+    if (!parts.length) return null;
+    return `${itemName}: ${parts.join(' + ')}`;
+  }
+
   async function submitCart() {
     if (!state.cart.length) return;
     if (!state.site) { toast('사이트를 선택하세요.', 'error'); return; }
@@ -624,7 +651,15 @@
         if (state.scanType === 'OUT') payload.zone = c.zone;
 
         const result = await Api.postWithQueue(action, payload);
-        if (result.queued) queuedCount++; else successCount++;
+        if (result.queued) {
+          queuedCount++;
+        } else {
+          successCount++;
+          if (state.scanType === 'IN' && result.data) {
+            const breakdown = formatReceiptBreakdown(c.itemName, result.data);
+            if (breakdown) toast(breakdown, 'success');
+          }
+        }
         finishedUids.push(c.uid);
       } catch (err) {
         failCount++;

@@ -24,12 +24,12 @@ function setupSpreadsheet() {
     createSheetIfMissing_(ss, site + '_재고', [
       'ItemID', 'ItemName', 'Spec', 'Quantity', 'UpdatedAt'
     ]);
-    createSheetIfMissing_(ss, site + '_구매발주', [
-      '구매요청번호', '신청자', '자재코드', '자재명', '규격', '조달구분', '단위',
-      '필요일자', '요청수량', '누적입고수량', '잔여수량', '입고여부', '최종입고일'
-    ]);
+    // 구매발주 + 입고이력 통합 시트: 한 행이 발주 1건을 나타내며,
+    // FIFO 입고 처리 시 누적입고수량/잔여수량/입고여부/최종입고일이 그 자리에서 갱신된다.
+    // (발주와 매칭되지 않는 입고는 새 행으로 별도 추가된다 - Code.gs의 appendAdhocReceiptRow_)
     createSheetIfMissing_(ss, site + '_입고', [
-      '입고일시', '구매요청번호', '자재코드', '자재명', '규격', '단위', '입고수량', '신청자', '담당자', '비고'
+      '구매요청번호', '신청자', '자재코드', '자재명', '규격', '조달구분', '단위',
+      '필요일자', '요청수량', '누적입고수량', '잔여수량', '입고여부', '최종입고일', '비고'
     ]);
     createSheetIfMissing_(ss, site + '_출고', [
       'TransactionID', 'Timestamp', 'ItemID', 'ItemName', 'Zone', 'Quantity', 'BalanceAfter', 'Worker', 'Note'
@@ -53,6 +53,52 @@ function setupSpreadsheet() {
 
   SpreadsheetApp.flush();
   Logger.log('설정 완료: Items, Users, 사이트별(기흥/화성/평택) 입고·출고·재고 시트가 준비되었습니다.');
+}
+
+/**
+ * 이전 버전에서 별도의 "_구매발주" 시트에 발주 데이터를 입력해두었다면,
+ * 이 함수를 한 번 실행해 새 통합 "_입고" 시트로 옮길 수 있습니다.
+ * 이미 옮겨진 구매요청번호는 건너뛰므로 여러 번 실행해도 중복되지 않습니다.
+ * (기존 "_구매발주" 시트 자체는 삭제하지 않고 그대로 둡니다.)
+ */
+function migratePurchaseOrdersToInSheet() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  SITES.forEach(site => {
+    const poSheet = ss.getSheetByName(site + '_구매발주');
+    const inSheet = ss.getSheetByName(site + '_입고');
+    if (!poSheet || !inSheet) return;
+
+    const poRows = readAll_(poSheet);
+    if (!poRows.length) return;
+
+    const existingNumbers = new Set(readAll_(inSheet).map(r => String(r['구매요청번호'] || '')));
+    let migrated = 0;
+    poRows.forEach(r => {
+      const poNumber = String(r['구매요청번호'] || '');
+      if (poNumber && existingNumbers.has(poNumber)) return;
+      const requested = Number(r['요청수량']) || 0;
+      const cumulative = Number(r['누적입고수량']) || 0;
+      appendRow_(inSheet, {
+        '구매요청번호': r['구매요청번호'] || '',
+        '신청자': r['신청자'] || '',
+        '자재코드': r['자재코드'] || '',
+        '자재명': r['자재명'] || '',
+        '규격': r['규격'] || '',
+        '조달구분': r['조달구분'] || '',
+        '단위': r['단위'] || '',
+        '필요일자': r['필요일자'] || '',
+        '요청수량': requested,
+        '누적입고수량': cumulative,
+        '잔여수량': r['잔여수량'] !== undefined && r['잔여수량'] !== '' ? r['잔여수량'] : (requested - cumulative),
+        '입고여부': r['입고여부'] || '미입고',
+        '최종입고일': r['최종입고일'] || '',
+        '비고': ''
+      });
+      migrated++;
+    });
+    Logger.log(site + ': ' + migrated + '건 마이그레이션 완료');
+  });
+  SpreadsheetApp.flush();
 }
 
 function createSheetIfMissing_(ss, name, headers) {

@@ -308,12 +308,6 @@ function listStock_(site, query) {
   return rows;
 }
 
-function getStockQuantity_(site, itemId) {
-  const rows = readAll_(sheet_(stockSheetName_(site)));
-  const row = rows.find(s => String(s['자재코드']) === String(itemId));
-  return { row, quantity: row ? Number(row['현재고']) || 0 : 0 };
-}
-
 // item을 넘기면 재고 시트에 자재명/규격도 함께 저장한다. 월초재고는 건드리지 않는다(수동 관리 컬럼).
 function setStockQuantity_(site, itemId, newQuantity, item) {
   const sheet = sheet_(stockSheetName_(site));
@@ -330,6 +324,33 @@ function setStockQuantity_(site, itemId, newQuantity, item) {
     payload['자재코드'] = itemId;
     appendRow_(sheet, payload);
   }
+}
+
+// 현재고 = 월초재고 + 누적입고수량(구매발주및입고 시트에서 그 자재의 모든 행 합계)
+//         - 누적출고수량(출고 시트에서 그 자재의 모든 행 합계)
+// 재고를 독립적으로 증감시키지 않고, 매번 발주/출고 원본 데이터로부터 다시 계산한다.
+function calculateCurrentStock_(site, itemId) {
+  const stockRows = readAll_(sheet_(stockSheetName_(site)));
+  const stockRow = stockRows.find(s => String(s['자재코드']) === String(itemId));
+  const monthStart = stockRow ? Number(stockRow['월초재고']) || 0 : 0;
+
+  const poRows = readAll_(sheet_(poInSheetName_(site)));
+  const totalIn = poRows
+    .filter(r => String(r['자재코드']) === String(itemId))
+    .reduce((sum, r) => sum + (Number(r['누적입고수량']) || 0), 0);
+
+  const outRows = readAll_(sheet_(txSheetName_(site)));
+  const totalOut = outRows
+    .filter(r => String(r['자재코드']) === String(itemId))
+    .reduce((sum, r) => sum + (Number(r['출고수량']) || 0), 0);
+
+  return monthStart + totalIn - totalOut;
+}
+
+function recalculateStock_(site, itemId, item) {
+  const newQty = calculateCurrentStock_(site, itemId);
+  setStockQuantity_(site, itemId, newQty, item);
+  return newQty;
 }
 
 function assertItemExists_(itemId) {
@@ -478,10 +499,6 @@ function stockIn_(body) {
       throw new Error('발주 이력이 없습니다. 입고할 수 없습니다.');
     }
 
-    const { quantity: current } = getStockQuantity_(site, itemId);
-    const newQty = current + qty;
-    setStockQuantity_(site, itemId, newQty, item);
-
     // 필요일자가 이른 발주부터 FIFO로 입고수량을 채운다. 모든 미완료 발주를 채우고도
     // 남는 수량(예: 발주 수량보다 많이 입고)은 별도 행으로 기록한다.
     const fifoResult = applyFifoReceipt_(site, openPos, qty);
@@ -489,6 +506,9 @@ function stockIn_(body) {
       const adhocNote = (note ? note + ' · ' : '') + '담당: ' + worker.name;
       appendAdhocReceiptRow_(site, item, fifoResult.unmatchedQty, adhocNote);
     }
+
+    // 구매발주및입고/출고 원본 데이터로부터 현재고를 다시 계산해 재고 시트에 반영한다.
+    const newQty = recalculateStock_(site, itemId, item);
 
     return {
       newQuantity: newQty,
@@ -512,15 +532,16 @@ function stockOut_(body) {
     const item = assertItemExists_(itemId);
     const worker = handleLogin_(pin);
 
-    const { quantity: current } = getStockQuantity_(site, itemId);
+    const current = calculateCurrentStock_(site, itemId);
     if (current < qty) throw new Error(`재고 부족: 현재 ${current}${item.Unit || ''}, 출고 요청 ${qty}${item.Unit || ''}`);
-    const newQty = current - qty;
-    setStockQuantity_(site, itemId, newQty, item);
 
     logTransaction_(site, {
       itemId, itemName: item.ItemName, spec: item.Spec, unit: item.Unit, zone,
-      quantity: qty, balanceAfter: newQty, worker: worker.name
+      quantity: qty, worker: worker.name
     });
+
+    // 방금 기록한 출고를 포함해 현재고를 다시 계산해 재고 시트에 반영한다.
+    const newQty = recalculateStock_(site, itemId, item);
 
     return { newQuantity: newQty };
   } finally {
@@ -532,26 +553,29 @@ function stockOut_(body) {
 function logTransaction_(site, t) {
   const sheet = sheet_(txSheetName_(site));
   const txId = 'TX-' + Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyyMMddHHmmss') + '-' + Math.floor(Math.random() * 900 + 100);
+  const now = new Date();
   appendRow_(sheet, {
-    '거래코드': txId,
-    '시간': new Date(),
+    '출고일자': Utilities.formatDate(now, 'Asia/Seoul', 'yyyy-MM-dd'),
+    '라인': t.zone || '',
     '자재코드': t.itemId,
     '자재명': t.itemName,
     '규격': t.spec || '',
     '단위': t.unit || '',
     '출고수량': t.quantity,
-    '잔여재고': t.balanceAfter,
     '담당자': t.worker,
-    '라인': t.zone || ''
+    '거래코드': txId,
+    '시간': Utilities.formatDate(now, 'Asia/Seoul', 'HH:mm:ss')
   });
 }
 
 // 출고 시트도 컬럼명이 한글이라, 이력 화면이 공통으로 쓰는 영문 필드명으로 맞춰준다.
 function normalizeOutRow_(r) {
+  const dateStr = r['출고일자'] || '';
+  const timeStr = r['시간'] || '';
   return {
     _row: r._row,
     Type: 'OUT',
-    Timestamp: r['시간'],
+    Timestamp: dateStr ? `${dateStr}T${timeStr || '00:00:00'}` : (timeStr || ''),
     TransactionID: r['거래코드'] || '',
     ItemID: r['자재코드'],
     ItemName: r['자재명'],
@@ -559,7 +583,6 @@ function normalizeOutRow_(r) {
     Unit: r['단위'] || '',
     Zone: r['라인'] || '',
     Quantity: r['출고수량'],
-    BalanceAfter: r['잔여재고'],
     Worker: r['담당자'],
     Note: ''
   };

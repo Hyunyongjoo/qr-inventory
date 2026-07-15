@@ -45,9 +45,14 @@ function setupSpreadsheet() {
       '필요일자', '요청수량', '누적입고수량', '잔여수량', '입고여부', '최종입고일', '비고'
     ]);
     createSheetIfMissing_(ss, site + '_출고', [
-      '거래코드', '시간', '자재코드', '자재명', '규격', '단위', '출고수량', '잔여재고', '담당자', '라인'
+      '출고일자', '라인', '자재코드', '자재명', '규격', '단위', '출고수량', '담당자', '거래코드', '시간'
     ]);
+
+    formatStockSheetNumberColumns_(ss.getSheetByName(site + '_재고'));
   });
+
+  // 매월 1일 00시에 현재고 값을 월초재고로 복사하는 트리거 (이미 설치되어 있으면 건너뜀)
+  ensureMonthlyStockRolloverTrigger_();
 
   // 샘플 데이터 (이미 데이터가 있으면 건너뜀)
   const userSheet = ss.getSheetByName('Users');
@@ -119,19 +124,18 @@ function rewriteSheet_(sheet, headers, rows) {
   }
 }
 
-// 맨 처음 영문 스키마 (2번째로 오래된 버전)
+// 맨 처음 영문 스키마
 const ENGLISH_OUT_HEADERS_ = ['TransactionID', 'Timestamp', 'ItemID', 'ItemName', 'Zone', 'Quantity', 'BalanceAfter', 'Worker', 'Note'];
-// 그 다음 한글 스키마 (거래코드/시간을 맨 뒤로, 출고일자/시간 분리, 잔여재고 제외했던 버전)
-const PREV_KOREAN_OUT_HEADERS_ = ['출고일자', '라인', '자재코드', '자재명', '규격', '단위', '출고수량', '담당자', '거래코드', '시간'];
-// 현재 최종 스키마
-const NEW_OUT_HEADERS_ = ['거래코드', '시간', '자재코드', '자재명', '규격', '단위', '출고수량', '잔여재고', '담당자', '라인'];
+// 바로 직전 한글 스키마 (거래코드/시간을 맨 앞에, 잔여재고 포함했던 버전)
+const PREV_KOREAN_OUT_HEADERS_ = ['거래코드', '시간', '자재코드', '자재명', '규격', '단위', '출고수량', '잔여재고', '담당자', '라인'];
+// 현재 최종 스키마 (출고일자를 맨 앞에, 거래코드/시간은 맨 뒤로, 잔여재고는 재고 시트에서 실시간 계산하므로 제외)
+const NEW_OUT_HEADERS_ = ['출고일자', '라인', '자재코드', '자재명', '규격', '단위', '출고수량', '담당자', '거래코드', '시간'];
 
 /**
- * "_출고" 시트를 최종 한글 컬럼 순서(거래코드/시간/자재코드/자재명/규격/단위/출고수량/잔여재고/담당자/라인)로
+ * "_출고" 시트를 최종 한글 컬럼 순서(출고일자/라인/자재코드/자재명/규격/단위/출고수량/담당자/거래코드/시간)로
  * 데이터를 유지하며 재구성한다. 그동안 시트가 거쳐온 두 가지 예전 구조(영문 원본, 직전 한글 구조)를
  * 모두 인식해서 변환하며, 이미 최종 구조이거나 알아볼 수 없는 헤더면 안전하게 건너뛴다.
- * 규격/단위(영문 스키마 마이그레이션 시)와 잔여재고(직전 한글 스키마 마이그레이션 시)는
- * 과거 로그에 없던 값이라 빈 값으로 채워진다.
+ * 규격/단위는 영문 스키마 마이그레이션 시 과거 로그에 없던 값이라 Items 시트에서 찾아 채운다.
  */
 function migrateOutSheetColumns_(ss, site, itemMap) {
   const name = site + '_출고';
@@ -149,22 +153,25 @@ function migrateOutSheetColumns_(ss, site, itemMap) {
     const newRows = oldRows.map(r => {
       const obj = {};
       PREV_KOREAN_OUT_HEADERS_.forEach((h, i) => (obj[h] = r[i]));
-      const combinedTime = obj['출고일자'] ? `${obj['출고일자']}T${obj['시간'] || '00:00:00'}` : (obj['시간'] || '');
+      const ts = obj['시간'] ? new Date(obj['시간']) : null;
+      const hasTs = ts && !isNaN(ts.getTime());
+      const dateStr = hasTs ? Utilities.formatDate(ts, 'Asia/Seoul', 'yyyy-MM-dd') : '';
+      const timeStr = hasTs ? Utilities.formatDate(ts, 'Asia/Seoul', 'HH:mm:ss') : (obj['시간'] || '');
       return [
-        obj['거래코드'] || '',
-        combinedTime,
+        dateStr,
+        obj['라인'] || '',
         obj['자재코드'] || '',
         obj['자재명'] || '',
         obj['규격'] || '',
         obj['단위'] || '',
         obj['출고수량'] || 0,
-        '', // 잔여재고 - 직전 스키마엔 없던 값
         obj['담당자'] || '',
-        obj['라인'] || ''
+        obj['거래코드'] || '',
+        timeStr
       ];
     });
     rewriteSheet_(sheet, NEW_OUT_HEADERS_, newRows);
-    Logger.log(name + ': ' + newRows.length + '행 컬럼 구조 마이그레이션 완료 (직전 한글 구조 → 최종, 잔여재고는 빈 값)');
+    Logger.log(name + ': ' + newRows.length + '행 컬럼 구조 마이그레이션 완료 (직전 한글 구조 → 최종, 잔여재고 컬럼은 제거됨 - 재고 시트에서 실시간 계산)');
     return;
   }
 
@@ -173,18 +180,22 @@ function migrateOutSheetColumns_(ss, site, itemMap) {
     const newRows = oldRows.map(r => {
       const obj = {};
       ENGLISH_OUT_HEADERS_.forEach((h, i) => (obj[h] = r[i]));
+      const ts = obj.Timestamp ? new Date(obj.Timestamp) : null;
+      const hasTs = ts && !isNaN(ts.getTime());
+      const dateStr = hasTs ? Utilities.formatDate(ts, 'Asia/Seoul', 'yyyy-MM-dd') : '';
+      const timeStr = hasTs ? Utilities.formatDate(ts, 'Asia/Seoul', 'HH:mm:ss') : '';
       const item = itemMap[String(obj.ItemID)] || {};
       return [
-        obj.TransactionID || '',
-        obj.Timestamp || '',
+        dateStr,
+        obj.Zone || '',
         obj.ItemID || '',
         obj.ItemName || '',
         item.Spec || '',
         item.Unit || '',
         obj.Quantity || 0,
-        obj.BalanceAfter || '',
         obj.Worker || '',
-        obj.Zone || ''
+        obj.TransactionID || '',
+        timeStr
       ];
     });
     rewriteSheet_(sheet, NEW_OUT_HEADERS_, newRows);
@@ -234,6 +245,47 @@ function migrateStockSheetColumns_(ss, site) {
 
   rewriteSheet_(sheet, NEW_STOCK_HEADERS_, newRows);
   Logger.log(name + ': ' + newRows.length + '행 컬럼 구조 마이그레이션 완료 (월초재고는 빈 값으로 추가됨)');
+}
+
+// 재고 시트의 월초재고(4열)/현재고(5열) 컬럼을 숫자 서식으로 지정한다.
+// sheet.clear()는 서식도 함께 지우므로, 마이그레이션/생성 이후 항상 다시 호출해야 한다.
+function formatStockSheetNumberColumns_(sheet) {
+  if (!sheet) return;
+  const maxRows = sheet.getMaxRows();
+  if (maxRows < 2) return;
+  sheet.getRange(2, 4, maxRows - 1, 1).setNumberFormat('#,##0'); // 월초재고
+  sheet.getRange(2, 5, maxRows - 1, 1).setNumberFormat('#,##0'); // 현재고
+}
+
+/**
+ * 매월 1일 00시, 그 시점의 현재고 값을 월초재고로 복사하는 시간 트리거를 설치한다.
+ * 이미 설치되어 있으면 다시 만들지 않는다 (setupSpreadsheet()에서 매번 호출해도 안전).
+ */
+function ensureMonthlyStockRolloverTrigger_() {
+  const already = ScriptApp.getProjectTriggers()
+    .some(t => t.getHandlerFunction() === 'monthlyStockRollover_');
+  if (already) return;
+
+  ScriptApp.newTrigger('monthlyStockRollover_')
+    .timeBased()
+    .onMonthDay(1)
+    .atHour(0)
+    .create();
+  Logger.log('월초재고 자동 롤오버 트리거를 설치했습니다 (매월 1일 00시).');
+}
+
+// 트리거가 매월 1일 00시에 실제로 호출하는 함수: 그 시점의 현재고를 월초재고에 복사한다.
+function monthlyStockRollover_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  SITES.forEach(site => {
+    const sheet = ss.getSheetByName(site + '_재고');
+    if (!sheet) return;
+    const rows = readAll_(sheet);
+    rows.forEach(r => {
+      updateRow_(sheet, r._row, { '월초재고': Number(r['현재고']) || 0 });
+    });
+    Logger.log(site + '_재고: ' + rows.length + '건 월초재고 롤오버 완료');
+  });
 }
 
 function createSheetIfMissing_(ss, name, headers) {

@@ -49,6 +49,11 @@ function setupSpreadsheet() {
     ]);
 
     formatStockSheetNumberColumns_(ss.getSheetByName(site + '_재고'));
+
+    // 날짜 컬럼 서식을 'yyyy-MM-dd'(날짜만, 시간 제외)로 통일한다.
+    formatDateColumns_(ss.getSheetByName(site + '_재고'), [6]); // 최종업데이트
+    formatDateColumns_(ss.getSheetByName(site + '_구매발주및입고'), [8, 13]); // 필요일자, 최종입고일
+    formatDateColumns_(ss.getSheetByName(site + '_출고'), [1]); // 출고일자
   });
 
   // 매월 1일 00시에 현재고 값을 월초재고로 복사하는 트리거 (이미 설치되어 있으면 건너뜀)
@@ -255,6 +260,17 @@ function formatStockSheetNumberColumns_(sheet) {
   if (maxRows < 2) return;
   sheet.getRange(2, 4, maxRows - 1, 1).setNumberFormat('#,##0'); // 월초재고
   sheet.getRange(2, 5, maxRows - 1, 1).setNumberFormat('#,##0'); // 현재고
+}
+
+// 날짜 컬럼(들)을 'yyyy-MM-dd' 서식(날짜만 표시, 시간 제외)으로 통일한다.
+// sheet.clear()는 서식도 함께 지우므로, 마이그레이션/생성 이후 항상 다시 호출해야 한다.
+function formatDateColumns_(sheet, colIndexes) {
+  if (!sheet) return;
+  const maxRows = sheet.getMaxRows();
+  if (maxRows < 2) return;
+  colIndexes.forEach(col => {
+    sheet.getRange(2, col, maxRows - 1, 1).setNumberFormat('yyyy-MM-dd');
+  });
 }
 
 /**

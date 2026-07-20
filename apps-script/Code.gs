@@ -313,7 +313,7 @@ function setStockQuantity_(site, itemId, newQuantity, item) {
   const sheet = sheet_(stockSheetName_(site));
   const rows = readAll_(sheet);
   const existing = rows.find(s => String(s['자재코드']) === String(itemId));
-  const payload = { '현재고': newQuantity, '최종업데이트': new Date() };
+  const payload = { '현재고': newQuantity, '최종업데이트': Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd') };
   if (item) {
     payload['자재명'] = item.ItemName || '';
     payload['규격'] = item.Spec || '';
@@ -441,7 +441,7 @@ function applyFifoReceipt_(site, candidates, qty) {
       '누적입고수량': cumulative,
       '잔여수량': remainingQty,
       '입고여부': status,
-      '최종입고일': new Date()
+      '최종입고일': Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd')
     });
 
     allocations.push({
@@ -475,7 +475,7 @@ function appendAdhocReceiptRow_(site, item, qty, note) {
     '누적입고수량': qty,
     '잔여수량': 0,
     '입고여부': '입고완료',
-    '최종입고일': new Date(),
+    '최종입고일': Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd'),
     '비고': note || '발주 없음 - 직접입고'
   });
 }

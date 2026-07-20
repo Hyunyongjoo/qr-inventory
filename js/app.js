@@ -548,6 +548,15 @@
         // 입고 화면 전용 경량 조회: 재고 시트는 읽지 않고, 자재 정보 + 미완료 발주만 한 번에 받아온다.
         debugSetLookup('자재 + 발주 이력 조회 중...');
         const result = await Api.get('scanLookup', { site: state.site, code });
+        const hasOpenPo = !!(result.openPos && result.openPos.length);
+        if (!hasOpenPo) {
+          // 발주 이력이 없는 자재는 카드를 띄우지 않고 토스트만 표시한 뒤, 곧바로 다음 스캔을 받는다
+          // (currentScanItem을 채우지 않아야 스캔 콜백의 가드에 걸리지 않고 연속 스캔이 이어진다).
+          debugSetLookup(`조회 성공: ${result.item.ItemName} (${result.item.ItemID}), 발주 이력 없음`);
+          toast(`${result.item.ItemName}: 발주 이력이 없습니다. 입고할 수 없습니다.`, 'error');
+          $('#manual-code-input').value = '';
+          return;
+        }
         state.currentScanItem = result.item;
         renderScanResultIn(result.item, result.openPos);
         debugSetLookup(`조회 성공: ${result.item.ItemName} (${result.item.ItemID}), 미완료 발주 ${result.openPos.length}건`);
@@ -572,7 +581,8 @@
   }
 
   // 입고 화면: 자재코드/품명/규격만 보여주고, 재고 현황과 메모 입력은 표시하지 않는다.
-  // 미완료 발주(미입고/부분입고)가 하나도 없으면 수량 입력/추가 버튼을 막는다.
+  // 발주 이력이 없는 경우는 handleScannedCode에서 이 함수를 호출하기 전에 걸러지므로,
+  // 여기서는 항상 미완료 발주가 있는 경우만 그린다.
   function renderScanResultIn(item, openPos) {
     $('#scan-result-card').classList.remove('hidden');
     $('#scan-item-title').classList.add('hidden');
@@ -583,16 +593,11 @@
 
     $('#scan-item-stock').classList.add('hidden');
     $('#scan-quantity').value = '';
+    $('#scan-quantity').disabled = false;
+    $('#scan-add-btn').disabled = false;
+    state.hasOpenPo = true;
 
-    const hasOpenPo = !!(openPos && openPos.length);
-    state.hasOpenPo = hasOpenPo;
     renderOpenPos(openPos);
-
-    $('#scan-quantity').disabled = !hasOpenPo;
-    $('#scan-add-btn').disabled = !hasOpenPo;
-    if (!hasOpenPo) {
-      showLookupError('발주 이력이 없습니다. 입고할 수 없습니다.');
-    }
   }
 
   // 출고 화면: 기존처럼 재고 현황을 보여준다 (구매발주 매칭은 입고 전용이라 표시하지 않음).

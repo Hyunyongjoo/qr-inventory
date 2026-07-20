@@ -365,6 +365,7 @@
       if (code) handleScannedCode(code);
     });
     $('#scan-add-btn').addEventListener('click', addToCart);
+    $('#scan-cancel-btn').addEventListener('click', cancelScan);
     $('#cart-clear-btn').addEventListener('click', () => {
       if (!state.cart.length) return;
       if (!confirm('담아둔 목록을 모두 삭제할까요?')) return;
@@ -564,6 +565,16 @@
       } else {
         debugSetLookup('Items 시트 조회 중...');
         const item = await Api.get('itemByCode', { code });
+        const siteStock = (item.stockBySite || []).find((s) => s.Site === state.site);
+        const availableQty = siteStock ? Number(siteStock.Quantity) : 0;
+        if (availableQty <= 0) {
+          // 재고가 없는 자재는 카드를 띄우지 않고 토스트만 표시한 뒤, 곧바로 다음 스캔을 받는다
+          // (마이너스 재고 출고를 애초에 막고, currentScanItem을 채우지 않아 연속 스캔이 이어진다).
+          debugSetLookup(`조회 성공: ${item.ItemName} (${item.ItemID}), 재고 없음`);
+          toast(`${item.ItemName}: 재고가 없습니다.`, 'error');
+          $('#manual-code-input').value = '';
+          return;
+        }
         state.currentScanItem = item;
         renderScanResultOut(item);
         debugSetLookup(`조회 성공: ${item.ItemName} (${item.ItemID})`);
@@ -707,12 +718,20 @@
     });
     renderCart();
     toast(`${item.ItemName} 담았습니다.`, 'success');
+    resetScanCard();
+  }
 
-    // 다음 스캔 대기 상태로 복귀
+  // 자재 정보 화면만 초기화하고 다음 스캔 대기 상태로 복귀 (담은 목록에는 추가하지 않음)
+  function resetScanCard() {
     state.currentScanItem = null;
     $('#scan-result-card').classList.add('hidden');
     $('#scan-quantity').value = '';
     $('#manual-code-input').value = '';
+  }
+
+  function cancelScan() {
+    if (!state.currentScanItem) return;
+    resetScanCard();
   }
 
   function renderCart() {

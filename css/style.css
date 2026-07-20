@@ -464,6 +464,8 @@ html, body {
 .qr-label-preview .qr-item-id { color: #444; font-size: 12px; font-family: monospace; }
 .modal-actions { display: flex; gap: 8px; margin-top: 14px; }
 .modal-actions .btn { flex: 1; }
+.scan-actions { display: flex; gap: 8px; margin-top: 4px; }
+.scan-actions .btn { flex: 1; }
 
 /* ---------- 토스트 ---------- */
 #toast-container {

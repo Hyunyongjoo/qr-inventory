@@ -21,6 +21,7 @@
     scanZone: null,
     html5QrCode: null,
     scanning: false,
+    scanBusy: false,
     cart: [],
     currentView: null,
     hasOpenPo: false
@@ -433,8 +434,10 @@
           }
         },
         (decodedText) => {
+          // 카메라는 계속 켜둔 채 연속으로 스캔한다. 이미 조회 중이거나 결과 카드가
+          // 떠 있는 동안(같은 QR이 화면에 계속 잡히는 경우 등)에는 새 스캔을 무시한다.
+          if (state.scanBusy || state.currentScanItem) return;
           handleScannedCode(decodedText);
-          stopScanning();
         },
         () => {} // 프레임마다 실패하는 것은 정상 (인식 전까지)
       )
@@ -539,6 +542,7 @@
       return;
     }
 
+    state.scanBusy = true;
     try {
       if (state.scanType === 'IN') {
         // 입고 화면 전용 경량 조회: 재고 시트는 읽지 않고, 자재 정보 + 미완료 발주만 한 번에 받아온다.
@@ -562,6 +566,8 @@
       showLookupError(message);
       toast(message, 'error');
       debugSetLookup('조회 실패: ' + message);
+    } finally {
+      state.scanBusy = false;
     }
   }
 
@@ -763,6 +769,8 @@
   async function submitCart() {
     if (!state.cart.length) return;
     if (!state.site) { toast('사이트를 선택하세요.', 'error'); return; }
+
+    stopScanning();
 
     const btn = $('#cart-submit-btn');
     btn.disabled = true;

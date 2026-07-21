@@ -388,10 +388,10 @@ function poSortComparator_(a, b) {
   return (a._row || 0) - (b._row || 0);
 }
 
-// 재고사용이 'O'로 표시된 행(자재담당자가 기존 재고로 충당하기로 확정한 요청)은
+// 재고사용(O,X)이 'O'로 표시된 행(자재담당자가 기존 재고로 충당하기로 확정한 요청)은
 // 실제 입고를 받을 일이 없으므로 FIFO 매칭/입고 화면 표시 대상에서 제외한다.
 function isStockCoveredRow_(r) {
-  return String(r['재고사용'] || '').trim().toUpperCase() === 'O';
+  return String(r['재고사용(O,X)'] || '').trim().toUpperCase() === 'O';
 }
 
 function findOpenPurchaseOrders_(site, itemId) {
@@ -571,7 +571,7 @@ function appendAdhocReceiptRow_(site, item, qty) {
     '필요일자': '',
     '요청수량': qty,
     '현재고수량': '',
-    '재고사용': '',
+    '재고사용(O,X)': '',
     '누적입고수량': qty,
     '잔여수량': 0,
     '입고여부': '입고완료',
@@ -605,8 +605,8 @@ function searchMaterials_(site, query) {
 
 // 구매요청 완료: 장바구니에 담긴 자재마다 "_구매발주및입고" 시트에 새 행을 하나씩 등록한다.
 // 요청일자는 오늘 날짜, 신청자는 로그인한 사용자, 현재고수량은 그 시점 재고 시트 스냅샷으로
-// 자동 채워지고, 재고사용/누적입고수량은 비워둔 채(입고여부는 '미입고') 등록해
-// 자재담당자가 이후 재고사용 여부를 확인하고 실제 입고를 FIFO로 매칭하게 한다.
+// 자동 채워지고, 재고사용(O,X)/누적입고수량은 비워둔 채(입고여부는 '미입고') 등록해
+// 자재담당자가 이후 재고사용(O,X) 여부를 확인하고 실제 입고를 FIFO로 매칭하게 한다.
 function submitPurchase_(body) {
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
@@ -641,7 +641,7 @@ function submitPurchase_(body) {
         '필요일자': requiredDate,
         '요청수량': qty,
         '현재고수량': stockMap[itemId] !== undefined ? stockMap[itemId] : 0,
-        '재고사용': '',
+        '재고사용(O,X)': '',
         '누적입고수량': '',
         '잔여수량': qty,
         '입고여부': '미입고',

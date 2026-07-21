@@ -177,7 +177,16 @@
       <div class="scan-context muted" id="purchase-context-label"></div>
 
       <input type="text" id="purchase-search-input" class="input" placeholder="자재코드 / BQMS / 품명으로 검색" />
+
+      <div id="purchase-select-all-row" class="select-all-row hidden">
+        <label class="checkbox-label">
+          <input type="checkbox" id="purchase-select-all" />
+          전체 선택
+        </label>
+        <span id="purchase-selected-count" class="muted"></span>
+      </div>
       <div id="purchase-search-results" class="list"></div>
+      <button id="purchase-bulk-add-btn" class="btn btn-primary btn-block hidden">선택한 자재 담기</button>
 
       <div id="purchase-result-card" class="card hidden">
         <div class="item-info-in">

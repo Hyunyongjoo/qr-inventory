@@ -26,7 +26,9 @@
     currentView: null,
     hasOpenPo: false,
     currentPurchaseItem: null,
-    purchaseCart: []
+    purchaseCart: [],
+    purchaseSearchRows: [],
+    purchaseSelectedIdx: new Set()
   };
 
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -872,6 +874,8 @@
       if (state.currentView === 'line') renderLineButtons();
     });
     $('#purchase-search-input').addEventListener('input', debounce(searchMaterials, 300));
+    $('#purchase-select-all').addEventListener('change', (e) => togglePurchaseSelectAll(e.target.checked));
+    $('#purchase-bulk-add-btn').addEventListener('click', openPurchaseBulkQuantityModal);
     $('#purchase-add-btn').addEventListener('click', addToPurchaseCart);
     $('#purchase-cancel-btn').addEventListener('click', cancelPurchaseSelection);
     $('#purchase-cart-clear-btn').addEventListener('click', () => {
@@ -886,6 +890,8 @@
   function goToPurchase() {
     state.currentPurchaseItem = null;
     state.purchaseCart = [];
+    state.purchaseSearchRows = [];
+    state.purchaseSelectedIdx = new Set();
     $('#purchase-result-card').classList.add('hidden');
     $('#purchase-search-input').value = '';
     $('#purchase-search-results').innerHTML = '';
@@ -893,24 +899,34 @@
     switchView('purchase');
     $('#purchase-context-label').textContent = `${state.site} · ${state.scanZone} · 구매요청`;
     renderPurchaseCart();
+    renderPurchaseBulkUI();
   }
 
   async function searchMaterials() {
     const q = $('#purchase-search-input').value.trim();
     const resultsEl = $('#purchase-search-results');
+    state.purchaseSearchRows = [];
+    state.purchaseSelectedIdx = new Set();
     if (!q) {
       resultsEl.innerHTML = '';
+      renderPurchaseBulkUI();
       return;
     }
     resultsEl.innerHTML = `<div class="empty-state">검색 중...</div>`;
+    renderPurchaseBulkUI();
     try {
       const rows = await Api.get('searchMaterials', { site: state.site, query: q });
+      state.purchaseSearchRows = rows;
       if (!rows.length) {
         resultsEl.innerHTML = `<div class="empty-state">검색 결과가 없습니다.</div>`;
+        renderPurchaseBulkUI();
         return;
       }
       resultsEl.innerHTML = rows.map((m, i) => `
         <div class="item-row" data-idx="${i}">
+          <label class="item-checkbox-wrap">
+            <input type="checkbox" class="purchase-item-checkbox" data-idx="${i}" />
+          </label>
           <div class="row-main">
             <span class="primary">${escapeHtml(m.itemName)}</span>
             <span class="secondary">${escapeHtml(m.itemId)}${m.bqms ? ' · ' + escapeHtml(m.bqms) : ''}${m.spec ? ' · ' + escapeHtml(m.spec) : ''}${m.equipment ? ' · ' + escapeHtml(m.equipment) : ''}</span>
@@ -920,9 +936,107 @@
       $$('.item-row', resultsEl).forEach((row, i) => {
         row.addEventListener('click', () => selectPurchaseMaterial(rows[i]));
       });
+      $$('.purchase-item-checkbox', resultsEl).forEach((cb, i) => {
+        cb.addEventListener('click', (e) => e.stopPropagation());
+        cb.addEventListener('change', (e) => {
+          if (e.target.checked) state.purchaseSelectedIdx.add(i);
+          else state.purchaseSelectedIdx.delete(i);
+          renderPurchaseBulkUI();
+        });
+      });
+      renderPurchaseBulkUI();
     } catch (err) {
       resultsEl.innerHTML = `<div class="empty-state">오류: ${escapeHtml(err.message)}</div>`;
+      renderPurchaseBulkUI();
     }
+  }
+
+  function togglePurchaseSelectAll(checked) {
+    state.purchaseSelectedIdx = checked
+      ? new Set(state.purchaseSearchRows.map((_, i) => i))
+      : new Set();
+    $$('.purchase-item-checkbox', $('#purchase-search-results')).forEach((cb, i) => {
+      cb.checked = state.purchaseSelectedIdx.has(i);
+    });
+    renderPurchaseBulkUI();
+  }
+
+  function renderPurchaseBulkUI() {
+    const total = state.purchaseSearchRows.length;
+    const selected = state.purchaseSelectedIdx.size;
+
+    $('#purchase-select-all-row').classList.toggle('hidden', total === 0);
+    $('#purchase-selected-count').textContent = selected > 0 ? `${selected}개 선택됨` : '';
+    $('#purchase-bulk-add-btn').classList.toggle('hidden', selected === 0);
+
+    const selectAllCb = $('#purchase-select-all');
+    selectAllCb.checked = total > 0 && selected === total;
+    selectAllCb.indeterminate = selected > 0 && selected < total;
+  }
+
+  function openPurchaseBulkQuantityModal() {
+    const items = state.purchaseSearchRows
+      .map((m, i) => ({ ...m, idx: i }))
+      .filter((m) => state.purchaseSelectedIdx.has(m.idx));
+    if (!items.length) return;
+
+    const html = `
+      <div class="modal-sheet">
+        <h3>선택한 자재 수량 입력 (${items.length}개)</h3>
+        <div class="list">
+          ${items.map((m) => `
+            <div class="bulk-qty-row" data-idx="${m.idx}">
+              <div class="row-main">
+                <span class="primary">${escapeHtml(m.itemName)}</span>
+                <span class="secondary">${escapeHtml(m.itemId)}${m.bqms ? ' · ' + escapeHtml(m.bqms) : ''}${m.spec ? ' · ' + escapeHtml(m.spec) : ''}${m.equipment ? ' · ' + escapeHtml(m.equipment) : ''}</span>
+              </div>
+              <input type="number" class="input bulk-qty-input" data-idx="${m.idx}" min="1" step="1" placeholder="수량" inputmode="numeric" />
+            </div>
+          `).join('')}
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-secondary" id="bulk-qty-cancel">취소</button>
+          <button class="btn btn-primary" id="bulk-qty-confirm">확인</button>
+        </div>
+      </div>
+    `;
+    openModal(html);
+    $('#bulk-qty-cancel').addEventListener('click', closeModal);
+    $('#bulk-qty-confirm').addEventListener('click', () => {
+      const qtyByIdx = new Map();
+      for (const el of $$('.bulk-qty-input')) {
+        const idx = Number(el.dataset.idx);
+        const qty = Number(el.value);
+        if (!qty || qty <= 0) {
+          const m = state.purchaseSearchRows[idx];
+          toast(`${m.itemName}의 수량을 입력하세요.`, 'error');
+          return;
+        }
+        qtyByIdx.set(idx, qty);
+      }
+
+      qtyByIdx.forEach((qty, idx) => {
+        const m = state.purchaseSearchRows[idx];
+        state.purchaseCart.push({
+          uid: 'p' + Date.now() + Math.floor(Math.random() * 1000) + idx,
+          itemId: m.itemId,
+          bqms: m.bqms,
+          itemName: m.itemName,
+          spec: m.spec,
+          quantity: qty
+        });
+      });
+      renderPurchaseCart();
+      closeModal();
+      toast(`${qtyByIdx.size}개 자재를 담았습니다.`, 'success');
+
+      state.purchaseSelectedIdx = new Set();
+      state.purchaseSearchRows = [];
+      $('#purchase-search-input').value = '';
+      $('#purchase-search-results').innerHTML = '';
+      renderPurchaseBulkUI();
+      $('#purchase-search-input').focus();
+    });
   }
 
   function selectPurchaseMaterial(material) {
@@ -935,6 +1049,9 @@
     $('#purchase-item-equipment').textContent = material.equipment || '-';
     $('#purchase-quantity').value = '';
     $('#purchase-search-results').innerHTML = '';
+    state.purchaseSearchRows = [];
+    state.purchaseSelectedIdx = new Set();
+    renderPurchaseBulkUI();
   }
 
   function cancelPurchaseSelection() {

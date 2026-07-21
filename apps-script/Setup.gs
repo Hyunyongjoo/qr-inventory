@@ -4,8 +4,9 @@
  * 필요한 시트와 헤더를 자동으로 생성합니다.
  * (스크립트 편집기 상단 함수 선택 드롭다운에서 setupSpreadsheet 선택 후 ▶ 실행)
  *
- * 없는 시트만 새로 만들고, 이미 있는 시트는 이름만 확인할 뿐 절대 건드리지 않습니다
- * (헤더도, 데이터도, 서식도 변경하지 않습니다). 여러 번 실행해도 안전합니다.
+ * 없는 시트는 새로 만들고, 이미 있는 시트는 헤더가 다를 때만 다시 확인합니다:
+ * 데이터가 없으면(2행 이후가 비어있으면) 헤더를 새 구조로 교체하고, 데이터가 있으면
+ * 절대 건드리지 않습니다. 여러 번 실행해도 안전합니다.
  *
  * 사이트(기흥/화성/평택)별로 구매발주및입고/출고/재고/사용자재 시트가 각각 분리되어 생성됩니다.
  * SITES 상수는 Code.gs에 정의되어 있습니다 (Apps Script는 모든 .gs 파일을
@@ -64,18 +65,43 @@ function setupSpreadsheet() {
   }
 
   SpreadsheetApp.flush();
-  Logger.log('설정 완료: Items, Users, 사이트별(기흥/화성/평택) 구매발주및입고·출고·재고·사용자재 시트가 준비되었습니다. (이미 있던 시트는 변경하지 않았습니다)');
+  Logger.log('설정 완료: Items, Users, 사이트별(기흥/화성/평택) 구매발주및입고·출고·재고·사용자재 시트가 준비되었습니다. (데이터가 있는 기존 시트는 변경하지 않았습니다)');
 }
 
 /**
- * 시트가 이미 있으면 절대 건드리지 않고 그대로 둔다(null 반환). 없을 때만 새로 만들어
- * 헤더를 적고 첫 행 고정 + 헤더 볼드/배경(#f1f3f4) 서식을 적용하고, dateCols로 지정한
- * 1-based 열에는 'yyyy-MM-dd' 날짜 서식을 적용한다.
+ * 시트가 없으면 새로 만들고, 있으면 다음 규칙으로 처리한다:
+ *  - 헤더가 이미 요청한 구조와 같으면 아무 것도 하지 않는다.
+ *  - 헤더가 다르지만 데이터가 없으면(2행 이후가 비어있으면) 헤더만 새 구조로 교체한다.
+ *  - 헤더가 다르고 데이터도 있으면 절대 건드리지 않고 경고만 로그로 남긴다.
+ * 새로 만들거나 헤더를 교체할 때는 첫 행 고정 + 헤더 볼드/배경(#f1f3f4) 서식을 적용하고,
+ * dateCols로 지정한 1-based 열에는 'yyyy-MM-dd' 날짜 서식을 적용한다.
  */
 function createSheetIfMissing_(ss, name, headers, dateCols) {
-  if (ss.getSheetByName(name)) return null; // 기존 시트는 절대 건드리지 않음
+  let sheet = ss.getSheetByName(name);
 
-  const sheet = ss.insertSheet(name);
+  if (!sheet) {
+    sheet = ss.insertSheet(name);
+    writeSheetHeader_(sheet, headers, dateCols);
+    return sheet;
+  }
+
+  const lastCol = sheet.getLastColumn();
+  const currentHeader = lastCol ? sheet.getRange(1, 1, 1, lastCol).getValues()[0] : [];
+  if (arraysEqual_(currentHeader, headers)) return null; // 이미 최신 구조라 손댈 필요 없음
+
+  if (sheet.getLastRow() <= 1) {
+    // 헤더 행(또는 완전히 빈 시트)만 있고 실제 데이터는 없으므로 헤더를 새 구조로 교체해도 안전하다.
+    sheet.clear();
+    writeSheetHeader_(sheet, headers, dateCols);
+    Logger.log('"' + name + '" 시트: 데이터가 없어 헤더를 새 구조로 교체했습니다.');
+    return sheet;
+  }
+
+  Logger.log('경고: "' + name + '" 시트에 데이터가 있어 헤더가 달라도 그대로 두었습니다. 필요하면 수동으로 마이그레이션하세요.');
+  return null;
+}
+
+function writeSheetHeader_(sheet, headers, dateCols) {
   sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
   sheet.setFrozenRows(1);
   sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold').setBackground('#f1f3f4');
@@ -88,7 +114,11 @@ function createSheetIfMissing_(ss, name, headers, dateCols) {
       });
     }
   }
-  return sheet;
+}
+
+function arraysEqual_(a, b) {
+  if (a.length !== b.length) return false;
+  return a.every((v, i) => v === b[i]);
 }
 
 // 재고 시트의 월초재고(4열)/현재고(5열) 컬럼을 숫자 서식으로 지정한다 (새로 만들어진 시트에만 호출됨).

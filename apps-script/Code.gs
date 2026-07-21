@@ -49,6 +49,9 @@ function doGet(e) {
       case 'scanLookup':
         result = scanLookupForStockIn_(e.parameter.site || '', e.parameter.code || '');
         break;
+      case 'scanLookupOut':
+        result = scanLookupForStockOut_(e.parameter.site || '', e.parameter.code || '');
+        break;
       case 'checkInbound':
         result = checkInbound_(e.parameter.site || '', e.parameter.name || '');
         break;
@@ -417,6 +420,27 @@ function scanLookupForStockIn_(site, code) {
 
   const openPos = findOpenPurchaseOrders_(site, item.ItemID).map(poRowToView_);
   return { item: stripRow_(item), openPos };
+}
+
+// 출고 화면 전용 QR 스캔 조회. Items 시트에서 자재코드로 찾고, 현재 선택된 사이트의 재고 시트만 읽는다.
+// itemByCode(getItemDetail_)는 SITES 전체(기흥/화성/평택)의 재고 시트를 다 읽어 느리므로,
+// 출고 화면은 어차피 로그인한 사이트 재고만 보여주면 되기 때문에 이 경량 버전을 사용한다.
+function scanLookupForStockOut_(site, code) {
+  assertSite_(site);
+  if (!code) throw new Error('QR 코드 값이 없습니다.');
+  const items = readAll_(sheet_('Items'));
+  if (!items.length) {
+    throw new Error('Items 시트에 등록된 자재가 없습니다. 자재 데이터를 먼저 업로드하세요.');
+  }
+  const normalized = String(code).trim();
+  const item = items.find(it => String(it.ItemID).trim() === normalized);
+  if (!item) throw new Error('코드 불일치: "' + normalized + '"는 Items 시트의 ItemID와 일치하지 않습니다.');
+
+  const stockRows = readAll_(sheet_(stockSheetName_(site)));
+  const stockRow = stockRows.find(s => String(s['자재코드']) === String(item.ItemID));
+  const quantity = stockRow ? Number(stockRow['현재고']) || 0 : 0;
+
+  return { item: stripRow_(item), quantity };
 }
 
 // 입고확인 화면 전용: 신청자 이름 부분 일치로 그 사이트의 모든 발주(모든 자재)를 찾는다.

@@ -290,10 +290,6 @@ html, body {
 .manual-entry .input { margin-bottom: 12px; }
 .manual-entry .btn { height: 47px; }
 
-.stock-breakdown { display: flex; flex-direction: column; gap: 4px; margin-bottom: 14px; }
-.stock-breakdown .sb-row { display: flex; justify-content: space-between; font-size: 13px; color: var(--text-muted); }
-.stock-breakdown .sb-row strong { color: var(--text); }
-
 /* ---------- 구매발주 FIFO 매칭 목록 ---------- */
 .po-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
 .po-row {

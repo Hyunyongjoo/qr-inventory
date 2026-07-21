@@ -564,22 +564,23 @@
         debugSetLookup(`조회 성공: ${result.item.ItemName} (${result.item.ItemID}), 미완료 발주 ${result.openPos.length}건`);
         if (DEBUG_QR) toast(`조회 결과: ${result.item.ItemName} · 발주 ${result.openPos.length}건`, 'success');
       } else {
-        debugSetLookup('Items 시트 조회 중...');
-        const item = await Api.get('itemByCode', { code });
-        const siteStock = (item.stockBySite || []).find((s) => s.Site === state.site);
-        const availableQty = siteStock ? Number(siteStock.Quantity) : 0;
+        // 출고 화면 전용 경량 조회: 로그인한 사이트의 재고만 1번 읽어온다 (기흥/화성/평택 전체를 읽는
+        // itemByCode 대신 사용해, 스캔할 때마다 시트 3개를 읽던 것을 1개로 줄여 속도를 개선한다).
+        debugSetLookup('자재 + 현재 사이트 재고 조회 중...');
+        const result = await Api.get('scanLookupOut', { site: state.site, code });
+        const availableQty = Number(result.quantity) || 0;
         if (availableQty <= 0) {
           // 재고가 없는 자재는 카드를 띄우지 않고 토스트만 표시한 뒤, 곧바로 다음 스캔을 받는다
           // (마이너스 재고 출고를 애초에 막고, currentScanItem을 채우지 않아 연속 스캔이 이어진다).
-          debugSetLookup(`조회 성공: ${item.ItemName} (${item.ItemID}), 재고 없음`);
-          toast(`${item.ItemName}: 재고가 없습니다.`, 'error');
+          debugSetLookup(`조회 성공: ${result.item.ItemName} (${result.item.ItemID}), 재고 없음`);
+          toast(`${result.item.ItemName}: 재고가 없습니다.`, 'error');
           $('#manual-code-input').value = '';
           return;
         }
-        state.currentScanItem = item;
-        renderScanResultOut(item);
-        debugSetLookup(`조회 성공: ${item.ItemName} (${item.ItemID})`);
-        if (DEBUG_QR) toast(`조회 결과: ${item.ItemName} (${item.ItemID}) 발견`, 'success');
+        state.currentScanItem = result.item;
+        renderScanResultOut(result.item, availableQty);
+        debugSetLookup(`조회 성공: ${result.item.ItemName} (${result.item.ItemID}), 현재고 ${availableQty}`);
+        if (DEBUG_QR) toast(`조회 결과: ${result.item.ItemName} (${result.item.ItemID}) 발견`, 'success');
       }
       $('#manual-code-input').value = '';
     } catch (err) {
@@ -602,8 +603,8 @@
     $('#in-item-code').textContent = item.ItemID;
     $('#in-item-name').textContent = item.ItemName;
     $('#in-item-spec').textContent = item.Spec || '-';
+    $('#in-item-stock-row').classList.add('hidden');
 
-    $('#scan-item-stock').classList.add('hidden');
     $('#scan-quantity').value = '';
     $('#scan-quantity').disabled = false;
     $('#scan-add-btn').disabled = false;
@@ -612,18 +613,17 @@
     renderOpenPos(openPos);
   }
 
-  // 출고 화면: 기존처럼 재고 현황을 보여준다 (구매발주 매칭은 입고 전용이라 표시하지 않음).
-  function renderScanResultOut(item) {
+  // 출고 화면: 자재코드/품명/규격 + 현재 로그인한 사이트의 재고만 보여준다
+  // (구매발주 매칭은 입고 전용이라 표시하지 않음. 다른 사이트 재고는 조회하지 않는다).
+  function renderScanResultOut(item, quantity) {
     $('#scan-result-card').classList.remove('hidden');
-    $('#scan-item-title').classList.remove('hidden');
-    $('#scan-item-info-in').classList.add('hidden');
-    $('#scan-item-name').textContent = item.ItemName;
-    $('#scan-item-id').textContent = ` ${item.ItemID}${item.Spec ? ' · ' + item.Spec : ''}`;
-
-    $('#scan-item-stock').classList.remove('hidden');
-    $('#scan-item-stock').innerHTML = item.stockBySite.map((s) => `
-      <div class="sb-row"><span>${escapeHtml(s.Site)}</span><strong>${s.Quantity.toLocaleString()} ${escapeHtml(item.Unit)}</strong></div>
-    `).join('') + `<div class="sb-row"><span>합계</span><strong>${item.totalQuantity.toLocaleString()} ${escapeHtml(item.Unit)}</strong></div>`;
+    $('#scan-item-title').classList.add('hidden');
+    $('#scan-item-info-in').classList.remove('hidden');
+    $('#in-item-code').textContent = item.ItemID;
+    $('#in-item-name').textContent = item.ItemName;
+    $('#in-item-spec').textContent = item.Spec || '-';
+    $('#in-item-stock-row').classList.remove('hidden');
+    $('#in-item-stock').textContent = `${Number(quantity).toLocaleString()}${item.Unit ? ' ' + item.Unit : ''}`;
 
     $('#scan-quantity').value = '';
     $('#scan-quantity').disabled = false;

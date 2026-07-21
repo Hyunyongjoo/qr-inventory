@@ -53,19 +53,19 @@
       navigator.serviceWorker.register('sw.js').catch((e) => console.warn('SW 등록 실패', e));
     }
 
-    bindLogin();
-    bindSite();
-    bindNav();
-    bindActions();
-    bindLine();
-    bindHome();
-    bindScan();
-    bindPurchase();
-    bindItems();
-    bindInboundCheck();
-    bindHistory();
-    bindLogout();
-    bindHardRefresh();
+    // 화면(index.html)과 스크립트(app.js) 버전이 잠깐 어긋난 상태(예: 캐시 갱신 중 일부만
+    // 새로 받아온 경우)에서 특정 화면의 요소를 찾지 못해 bindXxx() 하나가 실패하더라도,
+    // 그 뒤에 이어지는 다른 화면 바인딩과 로그인 화면 진입까지는 막히지 않게 각각 감싸서 실행한다.
+    [bindLogin, bindSite, bindNav, bindActions, bindLine, bindHome, bindScan,
+      bindPurchase, bindItems, bindInboundCheck, bindHistory, bindLogout, bindHardRefresh
+    ].forEach((bindFn) => {
+      try {
+        bindFn();
+      } catch (err) {
+        console.error(bindFn.name + ' 초기화 실패', err);
+        try { toast(bindFn.name + ' 초기화 실패: ' + (err.message || err) + ' (캐시 초기화 후 다시 시도해 주세요)', 'error'); } catch (_) {}
+      }
+    });
 
     window.addEventListener('online', () => flushQueue(true));
 

@@ -913,7 +913,7 @@
         <div class="item-row" data-idx="${i}">
           <div class="row-main">
             <span class="primary">${escapeHtml(m.itemName)}</span>
-            <span class="secondary">${escapeHtml(m.itemId)}${m.bqms ? ' · ' + escapeHtml(m.bqms) : ''}${m.spec ? ' · ' + escapeHtml(m.spec) : ''}</span>
+            <span class="secondary">${escapeHtml(m.itemId)}${m.bqms ? ' · ' + escapeHtml(m.bqms) : ''}${m.spec ? ' · ' + escapeHtml(m.spec) : ''}${m.equipment ? ' · ' + escapeHtml(m.equipment) : ''}</span>
           </div>
         </div>
       `).join('');

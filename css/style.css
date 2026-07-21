@@ -406,6 +406,39 @@ html, body {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* ---------- 입고확인 ---------- */
+.inbound-search { display: flex; gap: 8px; align-items: flex-start; }
+.inbound-search .input { margin-bottom: 12px; }
+.inbound-search .btn { height: 47px; white-space: nowrap; }
+
+.inbound-summary {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.inbound-summary-item {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 4px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+.inbound-summary-item .label { font-size: 11px; color: var(--text-muted); }
+.inbound-summary-item .value { font-size: 16px; font-weight: 700; }
+.inbound-summary-item.summary-done .value { color: var(--success); }
+.inbound-summary-item.summary-partial .value { color: var(--warn); }
+.inbound-summary-item.summary-none .value { color: var(--danger); }
+
+.inbound-card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin-bottom: 10px; }
+.inbound-card-qty { display: flex; justify-content: space-between; gap: 8px; padding-top: 10px; border-top: 1px solid var(--border); }
+.iq-item { display: flex; flex-direction: column; align-items: center; gap: 2px; flex: 1; }
+.iq-label { font-size: 11px; color: var(--text-muted); }
+.iq-value { font-size: 15px; font-weight: 700; }
+
 /* ---------- 하단 내비게이션 ---------- */
 #bottom-nav {
   position: fixed;

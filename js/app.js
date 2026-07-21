@@ -59,6 +59,7 @@
     bindHome();
     bindScan();
     bindItems();
+    bindInboundCheck();
     bindHistory();
     bindLogout();
     bindHardRefresh();
@@ -967,6 +968,64 @@
       `);
       w.document.close();
     });
+  }
+
+  // ------------------------- 입고확인 -------------------------
+
+  function bindInboundCheck() {
+    $('#inbound-search-btn').addEventListener('click', loadInboundCheck);
+    $('#inbound-search-input').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') loadInboundCheck();
+    });
+  }
+
+  async function loadInboundCheck() {
+    if (!state.site) return;
+    const name = $('#inbound-search-input').value.trim();
+    const listEl = $('#inbound-list');
+    const summaryEl = $('#inbound-summary');
+    if (!name) {
+      toast('신청자 이름을 입력하세요.', 'error');
+      return;
+    }
+    listEl.innerHTML = `<div class="empty-state">불러오는 중...</div>`;
+    summaryEl.classList.add('hidden');
+    try {
+      const rows = await Api.get('checkInbound', { site: state.site, name });
+      if (!rows.length) {
+        listEl.innerHTML = `<div class="empty-state">검색 결과가 없습니다.</div>`;
+        return;
+      }
+
+      const counts = { '입고완료': 0, '부분입고': 0, '미입고': 0 };
+      rows.forEach((r) => { if (counts[r.status] !== undefined) counts[r.status]++; });
+      summaryEl.innerHTML = `
+        <div class="inbound-summary-item"><span class="label">총 신청</span><span class="value">${rows.length}건</span></div>
+        <div class="inbound-summary-item summary-done"><span class="label">입고완료</span><span class="value">${counts['입고완료']}건</span></div>
+        <div class="inbound-summary-item summary-partial"><span class="label">부분입고</span><span class="value">${counts['부분입고']}건</span></div>
+        <div class="inbound-summary-item summary-none"><span class="label">미입고</span><span class="value">${counts['미입고']}건</span></div>
+      `;
+      summaryEl.classList.remove('hidden');
+
+      listEl.innerHTML = rows.map((r) => `
+        <div class="card inbound-card">
+          <div class="inbound-card-top">
+            <div class="row-main">
+              <span class="primary">${escapeHtml(r.itemName)}</span>
+              <span class="secondary">${escapeHtml(r.itemId)}${r.spec ? ' · ' + escapeHtml(r.spec) : ''}</span>
+            </div>
+            <span class="po-status-tag ${poStatusClass(r.status)}">${escapeHtml(r.status)}</span>
+          </div>
+          <div class="inbound-card-qty">
+            <div class="iq-item"><span class="iq-label">요청수량</span><span class="iq-value">${Number(r.requestedQty).toLocaleString()}</span></div>
+            <div class="iq-item"><span class="iq-label">누적입고수량</span><span class="iq-value">${Number(r.cumulativeQty).toLocaleString()}</span></div>
+            <div class="iq-item"><span class="iq-label">잔여수량</span><span class="iq-value">${Number(r.remainingQty).toLocaleString()}</span></div>
+          </div>
+        </div>
+      `).join('');
+    } catch (err) {
+      listEl.innerHTML = `<div class="empty-state">오류: ${escapeHtml(err.message)}</div>`;
+    }
   }
 
   // ------------------------- 이력 -------------------------

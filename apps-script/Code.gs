@@ -49,6 +49,9 @@ function doGet(e) {
       case 'scanLookup':
         result = scanLookupForStockIn_(e.parameter.site || '', e.parameter.code || '');
         break;
+      case 'checkInbound':
+        result = checkInbound_(e.parameter.site || '', e.parameter.name || '');
+        break;
       case 'sites':
         result = SITES;
         break;
@@ -414,6 +417,35 @@ function scanLookupForStockIn_(site, code) {
 
   const openPos = findOpenPurchaseOrders_(site, item.ItemID).map(poRowToView_);
   return { item: stripRow_(item), openPos };
+}
+
+// 입고확인 화면 전용: 신청자 이름 부분 일치로 그 사이트의 모든 발주(모든 자재)를 찾는다.
+// listOpenPurchaseOrders_와 달리 자재별이 아니라 신청자 기준 조회이고, 입고완료 건도 포함한다.
+function checkInbound_(site, name) {
+  assertSite_(site);
+  const q = (name || '').toString().trim();
+  if (!q) throw new Error('신청자 이름을 입력하세요.');
+  const rows = readAll_(sheet_(poInSheetName_(site)))
+    .filter(r => String(r['신청자'] || '').includes(q))
+    .sort(poSortComparator_);
+  return rows.map(poRowToInboundView_);
+}
+
+function poRowToInboundView_(po) {
+  const requested = Number(po['요청수량']) || 0;
+  const cumulative = Number(po['누적입고수량']) || 0;
+  return {
+    poNumber: po['구매요청번호'] || '',
+    requester: po['신청자'] || '',
+    itemId: po['자재코드'] || '',
+    itemName: po['자재명'] || '',
+    spec: po['규격'] || '',
+    requestedQty: requested,
+    cumulativeQty: cumulative,
+    remainingQty: requested - cumulative,
+    dueDate: po['필요일자'] || '',
+    status: po['입고여부'] || (cumulative <= 0 ? '미입고' : (cumulative < requested ? '부분입고' : '입고완료'))
+  };
 }
 
 // FIFO 입고 처리: 필요일자가 이른 발주부터 순서대로 입고수량을 채워나간다.

@@ -175,6 +175,17 @@
       <div id="items-list" class="list"></div>
     </section>
 
+    <!-- 입고확인 -->
+    <section id="view-inbound" class="view hidden">
+      <div class="view-header"><h2>입고확인</h2></div>
+      <div class="inbound-search">
+        <input type="text" id="inbound-search-input" class="input" placeholder="신청자 이름으로 검색 (예: 홍)" />
+        <button id="inbound-search-btn" class="btn btn-secondary">검색</button>
+      </div>
+      <div id="inbound-summary" class="inbound-summary hidden"></div>
+      <div id="inbound-list" class="list"></div>
+    </section>
+
     <!-- 이력 -->
     <section id="view-history" class="view hidden">
       <div class="view-header"><h2>입출고 이력</h2></div>
@@ -194,6 +205,7 @@
     <button class="nav-btn active" data-view="actions"><span class="nav-icon">🔄</span>입출고</button>
     <button class="nav-btn" data-view="home"><span class="nav-icon">🏠</span>재고</button>
     <button class="nav-btn" data-view="items"><span class="nav-icon">📦</span>자재</button>
+    <button class="nav-btn" data-view="inbound"><span class="nav-icon">📋</span>입고확인</button>
     <button class="nav-btn" data-view="history"><span class="nav-icon">🕒</span>이력</button>
   </nav>
 

@@ -55,6 +55,9 @@ function doGet(e) {
       case 'checkInbound':
         result = checkInbound_(e.parameter.site || '', e.parameter.name || '', e.parameter.startDate || '', e.parameter.endDate || '');
         break;
+      case 'searchMaterials':
+        result = searchMaterials_(e.parameter.site || '', e.parameter.query || '');
+        break;
       case 'sites':
         result = SITES;
         break;
@@ -95,6 +98,9 @@ function doPost(e) {
         break;
       case 'stockOut':
         result = stockOut_(body);
+        break;
+      case 'submitPurchase':
+        result = submitPurchase_(body);
         break;
       default:
         throw new Error('알 수 없는 action: ' + action);
@@ -156,6 +162,11 @@ function txSheetName_(site) {
 // 구매발주 + 입고 통합 시트 (발주 1건 = 1행, FIFO 입고 시 그 자리에서 갱신)
 function poInSheetName_(site) {
   return site + '_구매발주및입고';
+}
+
+// 사용자재 시트 (자재담당자가 수동으로 채워 넣는 참고용 마스터 - 구매요청 화면의 자재 검색 대상)
+function usedMaterialsSheetName_(site) {
+  return site + '_사용자재';
 }
 
 function headers_(sheet) {
@@ -369,17 +380,24 @@ function assertItemExists_(itemId) {
 
 // 자재코드로, 아직 완료되지 않은 발주만 필요일자 오름차순(오래된 것 먼저)으로 정렬해 반환한다.
 // 입고여부가 비어있는 행(수동 입력 직후 등)도 미입고로 간주해 포함시킨다.
+// 필요일자가 같으면 시트에 적힌 순서(_row)로 안정 정렬한다.
 function poSortComparator_(a, b) {
   const da = a['필요일자'] ? new Date(a['필요일자']).getTime() : Infinity;
   const db = b['필요일자'] ? new Date(b['필요일자']).getTime() : Infinity;
   if (da !== db) return da - db;
-  return String(a['구매요청번호']).localeCompare(String(b['구매요청번호']));
+  return (a._row || 0) - (b._row || 0);
+}
+
+// 재고사용이 'O'로 표시된 행(자재담당자가 기존 재고로 충당하기로 확정한 요청)은
+// 실제 입고를 받을 일이 없으므로 FIFO 매칭/입고 화면 표시 대상에서 제외한다.
+function isStockCoveredRow_(r) {
+  return String(r['재고사용'] || '').trim().toUpperCase() === 'O';
 }
 
 function findOpenPurchaseOrders_(site, itemId) {
   const rows = readAll_(sheet_(poInSheetName_(site)));
   return rows
-    .filter(r => String(r['자재코드']) === String(itemId) && r['입고여부'] !== '입고완료')
+    .filter(r => String(r['자재코드']) === String(itemId) && r['입고여부'] !== '입고완료' && !isStockCoveredRow_(r))
     .sort(poSortComparator_);
 }
 
@@ -387,7 +405,6 @@ function poRowToView_(po) {
   const requested = Number(po['요청수량']) || 0;
   const cumulative = Number(po['누적입고수량']) || 0;
   return {
-    poNumber: po['구매요청번호'],
     requester: po['신청자'] || '',
     requestedQty: requested,
     cumulativeQty: cumulative,
@@ -484,9 +501,9 @@ function poRowToInboundView_(po) {
   const requested = Number(po['요청수량']) || 0;
   const cumulative = Number(po['누적입고수량']) || 0;
   return {
-    poNumber: po['구매요청번호'] || '',
     requestDate: po['요청일자'] || '',
     requester: po['신청자'] || '',
+    zone: po['라인'] || '',
     itemId: po['자재코드'] || '',
     itemName: po['자재명'] || '',
     spec: po['규격'] || '',
@@ -527,7 +544,6 @@ function applyFifoReceipt_(site, candidates, qty) {
     });
 
     allocations.push({
-      poNumber: po['구매요청번호'],
       dueDate: po['필요일자'] || '',
       appliedQty: applied,
       cumulativeQty: cumulative,
@@ -543,23 +559,102 @@ function applyFifoReceipt_(site, candidates, qty) {
 }
 
 // 발주와 매칭되지 않은(또는 모든 발주를 채우고 남은) 입고수량은 별도 행으로 기록한다.
-function appendAdhocReceiptRow_(site, item, qty, note) {
+function appendAdhocReceiptRow_(site, item, qty) {
   appendRow_(sheet_(poInSheetName_(site)), {
-    '구매요청번호': '',
+    '요청일자': '',
     '신청자': '',
+    '라인': '',
     '자재코드': item.ItemID,
+    'BQMS': '',
     '자재명': item.ItemName,
     '규격': item.Spec || '',
-    '조달구분': '',
-    '단위': item.Unit || '',
     '필요일자': '',
     '요청수량': qty,
+    '현재고수량': '',
+    '재고사용': '',
     '누적입고수량': qty,
     '잔여수량': 0,
     '입고여부': '입고완료',
-    '최종입고일': Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd'),
-    '비고': note || '발주 없음 - 직접입고'
+    '최종입고일': Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd')
   });
+}
+
+// ------------------------- 구매요청(Purchase) -------------------------
+
+// 구매요청 화면의 자재 검색. 자재코드/BQMS/품명 중 하나라도 부분 일치하면 반환한다.
+// 검색어가 비어있으면(리스트 진입 직후 등) 사용자재 시트 전체를 반환한다.
+function searchMaterials_(site, query) {
+  assertSite_(site);
+  const q = (query || '').toString().trim().toLowerCase();
+  const rows = readAll_(sheet_(usedMaterialsSheetName_(site)));
+  const filtered = q
+    ? rows.filter(r =>
+        String(r['자재코드'] || '').toLowerCase().includes(q) ||
+        String(r['BQMS'] || '').toLowerCase().includes(q) ||
+        String(r['품명'] || '').toLowerCase().includes(q))
+    : rows;
+  return filtered.map(r => ({
+    itemId: r['자재코드'] || '',
+    bqms: r['BQMS'] || '',
+    itemName: r['품명'] || '',
+    spec: r['규격'] || '',
+    equipment: r['사용설비'] || '',
+    note: r['비고'] || ''
+  }));
+}
+
+// 구매요청 완료: 장바구니에 담긴 자재마다 "_구매발주및입고" 시트에 새 행을 하나씩 등록한다.
+// 요청일자는 오늘 날짜, 신청자는 로그인한 사용자, 현재고수량은 그 시점 재고 시트 스냅샷으로
+// 자동 채워지고, 재고사용/누적입고수량은 비워둔 채(입고여부는 '미입고') 등록해
+// 자재담당자가 이후 재고사용 여부를 확인하고 실제 입고를 FIFO로 매칭하게 한다.
+function submitPurchase_(body) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const site = assertSite_(body.site);
+    const zone = assertZone_(site, body.zone);
+    const worker = handleLogin_(body.pin);
+    const items = Array.isArray(body.items) ? body.items : [];
+    if (!items.length) throw new Error('담긴 자재가 없습니다.');
+
+    const requiredDate = body.requiredDate || '';
+    const today = Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd');
+
+    const stockRows = readAll_(sheet_(stockSheetName_(site)));
+    const stockMap = {};
+    stockRows.forEach(s => { stockMap[String(s['자재코드'])] = Number(s['현재고']) || 0; });
+
+    const sheet = sheet_(poInSheetName_(site));
+    let count = 0;
+    items.forEach(it => {
+      const itemId = String(it.itemId || '').trim();
+      const qty = Number(it.quantity);
+      if (!itemId || !qty || qty <= 0) return;
+      appendRow_(sheet, {
+        '요청일자': today,
+        '신청자': worker.name,
+        '라인': zone,
+        '자재코드': itemId,
+        'BQMS': it.bqms || '',
+        '자재명': it.itemName || '',
+        '규격': it.spec || '',
+        '필요일자': requiredDate,
+        '요청수량': qty,
+        '현재고수량': stockMap[itemId] !== undefined ? stockMap[itemId] : 0,
+        '재고사용': '',
+        '누적입고수량': '',
+        '잔여수량': qty,
+        '입고여부': '미입고',
+        '최종입고일': ''
+      });
+      count++;
+    });
+
+    if (!count) throw new Error('등록할 수 있는 자재가 없습니다 (자재코드/수량을 확인하세요).');
+    return { count };
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 // ------------------------- 입고 / 출고 -------------------------
@@ -569,11 +664,11 @@ function stockIn_(body) {
   lock.waitLock(30000);
   try {
     const site = assertSite_(body.site);
-    const { itemId, quantity, pin, note } = body;
+    const { itemId, quantity, pin } = body;
     const qty = Number(quantity);
     if (!qty || qty <= 0) throw new Error('입고 수량은 0보다 커야 합니다.');
     const item = assertItemExists_(itemId);
-    const worker = handleLogin_(pin);
+    handleLogin_(pin);
 
     // 발주 이력이 전혀 없는 자재는 입고를 막는다 (프런트엔드에서도 막지만, 서버에서도 한 번 더 검증).
     const openPos = findOpenPurchaseOrders_(site, itemId);
@@ -585,8 +680,7 @@ function stockIn_(body) {
     // 남는 수량(예: 발주 수량보다 많이 입고)은 별도 행으로 기록한다.
     const fifoResult = applyFifoReceipt_(site, openPos, qty);
     if (fifoResult.unmatchedQty > 0) {
-      const adhocNote = (note ? note + ' · ' : '') + '담당: ' + worker.name;
-      appendAdhocReceiptRow_(site, item, fifoResult.unmatchedQty, adhocNote);
+      appendAdhocReceiptRow_(site, item, fifoResult.unmatchedQty);
     }
 
     // 구매발주및입고/출고 원본 데이터로부터 현재고를 다시 계산해 재고 시트에 반영한다.
@@ -679,16 +773,14 @@ function normalizeInRow_(r) {
     _row: r._row,
     Type: 'IN',
     Timestamp: r['최종입고일'],
-    PoNumber: r['구매요청번호'] || '',
     ItemID: r['자재코드'],
     ItemName: r['자재명'],
     Spec: r['규격'] || '',
-    Unit: r['단위'] || '',
     Quantity: r['누적입고수량'],
     Requester: r['신청자'] || '',
     Worker: '',
-    Note: r['비고'] || '',
-    Zone: '',
+    Note: '',
+    Zone: r['라인'] || '',
     Status: r['입고여부'] || ''
   };
 }

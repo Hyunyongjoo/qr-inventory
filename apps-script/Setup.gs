@@ -30,8 +30,9 @@ function setupSpreadsheet() {
   SITES.forEach(site => {
     // 예전 "_구매발주"/"_입고" 시트가 남아있다면 새 통합 시트 이름으로 정리한다 (한 번만 실행되면 충분, 안전하게 반복 실행 가능).
     migrateToIntegratedPoSheet_(ss, site);
-    // 구매요청번호 다음에 요청일자 컬럼이 없는 예전 구조라면, 데이터 보존하며 빈 열을 삽입한다.
-    migratePoSheetAddRequestDate_(ss, site);
+    // 예전 스키마(구매요청번호/조달구분/단위/비고 포함)를 새 구매요청 스키마(라인/BQMS/현재고수량/재고사용 포함)로
+    // 데이터를 보존하며 재구성한다. 헤더 이름 기반으로 읽으므로 그 사이의 어떤 과거 구조에서도 안전하게 변환된다.
+    migratePoSheetToPurchaseSchema_(ss, site);
     // 예전 영문 컬럼 구조의 출고/재고 시트를 새 한글 컬럼 순서로 데이터 보존하며 변환한다 (한 번만 실행되면 충분).
     migrateOutSheetColumns_(ss, site, itemMap);
     migrateStockSheetColumns_(ss, site);
@@ -42,16 +43,20 @@ function setupSpreadsheet() {
     // 구매발주 + 입고이력 통합 시트: 한 행이 발주 1건을 나타내며,
     // FIFO 입고 처리 시 누적입고수량/잔여수량/입고여부/최종입고일이 그 자리에서 갱신된다.
     // (발주와 매칭되지 않는 입고는 새 행으로 별도 추가된다 - Code.gs의 appendAdhocReceiptRow_)
-    createSheetIfMissing_(ss, site + '_구매발주및입고', NEW_PO_HEADERS_);
+    createSheetIfMissing_(ss, site + '_구매발주및입고', PURCHASE_PO_HEADERS_);
     createSheetIfMissing_(ss, site + '_출고', [
       '출고일자', '라인', '자재코드', '자재명', '규격', '단위', '출고수량', '담당자', '거래코드', '시간'
+    ]);
+    // 사용자재 시트: 자재담당자가 수동으로 채워 넣는 참고용 시트 (구매요청 화면의 자재 검색 대상).
+    createSheetIfMissing_(ss, site + '_사용자재', [
+      '자재코드', 'BQMS', '품명', '규격', '사용설비', '비고'
     ]);
 
     formatStockSheetNumberColumns_(ss.getSheetByName(site + '_재고'));
 
     // 날짜 컬럼 서식을 'yyyy-MM-dd'(날짜만, 시간 제외)로 통일한다.
     formatDateColumns_(ss.getSheetByName(site + '_재고'), [6]); // 최종업데이트
-    formatDateColumns_(ss.getSheetByName(site + '_구매발주및입고'), [2, 9, 14]); // 요청일자, 필요일자, 최종입고일
+    formatDateColumns_(ss.getSheetByName(site + '_구매발주및입고'), [1, 8, 15]); // 요청일자, 필요일자, 최종입고일
     formatDateColumns_(ss.getSheetByName(site + '_출고'), [1]); // 출고일자
   });
 
@@ -112,40 +117,59 @@ function migrateToIntegratedPoSheet_(ss, site) {
   }
 }
 
-// 브랜드 뉴 시트를 만들 때 쓰는 최종 헤더 (createSheetIfMissing_ 전용).
-const NEW_PO_HEADERS_ = [
-  '구매요청번호', '요청일자', '신청자', '자재코드', '자재명', '규격', '조달구분', '단위',
-  '필요일자', '요청수량', '누적입고수량', '잔여수량', '입고여부', '최종입고일', '비고'
+// 구매요청 화면(앱)이 직접 발주 행을 등록하는 최종 스키마. 구매요청번호/조달구분/단위/비고는
+// 제거되고, 대신 라인(요청 당시 선택한 라인)/BQMS/현재고수량(요청 시점 스냅샷)/재고사용(자재담당자가
+// 기존 재고로 충당할지 O/X로 표시, FIFO 입고 대상 제외 여부에 쓰임)가 새로 추가된다.
+const PURCHASE_PO_HEADERS_ = [
+  '요청일자', '신청자', '라인', '자재코드', 'BQMS', '자재명', '규격',
+  '필요일자', '요청수량', '현재고수량', '재고사용', '누적입고수량', '잔여수량', '입고여부', '최종입고일'
 ];
 
 /**
- * "_구매발주및입고" 시트에 구매요청번호 다음(2번째) 열로 "요청일자" 컬럼을 추가한다.
- * insertColumnAfter로 빈 열을 끼워 넣는 방식이라 신청자 이후의 기존 데이터는
- * 한 칸씩 밀리며 그대로 보존되고, 새로 추가된 요청일자 값만 비어 있는 채로 시작한다.
- *
- * 실제 운영 중인 시트는 과거 마이그레이션 이력에 따라 "비고" 컬럼이 없는 등 나머지
- * 컬럼 구성이 조금씩 다를 수 있으므로(migrateToIntegratedPoSheet_ 참고), 전체 헤더가
- * 정확히 일치하는지는 보지 않는다. 그 대신 1번째 컬럼이 "구매요청번호"인지(이 시트가 맞는지),
- * 2번째 컬럼이 아직 "요청일자"가 아닌지(아직 추가 안 됐는지)만 확인한다.
+ * "_구매발주및입고" 시트를 새 구매요청 스키마(PURCHASE_PO_HEADERS_)로 데이터를 보존하며 재구성한다.
+ * 그 사이 여러 번 바뀐 과거 스키마(구매요청번호/조달구분/단위/비고 포함 여부 등)를 일일이 나열해
+ * 비교하지 않고, readAll_로 헤더 이름 기반으로 기존 행을 읽어(없는 컬럼은 자동으로 빈 값) 새 컬럼
+ * 순서로 옮겨 쓴다 - 그래서 어떤 과거 구조에서 실행해도 안전하다.
+ * 새로 생기는 라인/BQMS/현재고수량/재고사용 값은 과거 데이터엔 없던 정보라 빈 값으로 채워지며,
+ * 진행 중이던 요청수량/누적입고수량/잔여수량/입고여부/최종입고일은 그대로 보존된다.
  */
-function migratePoSheetAddRequestDate_(ss, site) {
+function migratePoSheetToPurchaseSchema_(ss, site) {
   const name = site + '_구매발주및입고';
   const sheet = ss.getSheetByName(name);
   if (!sheet) return;
 
   const lastCol = sheet.getLastColumn();
-  if (!lastCol) return; // 헤더도 없는 빈 시트
+  const currentHeader = lastCol ? sheet.getRange(1, 1, 1, lastCol).getValues()[0] : [];
+  if (arraysEqual_(currentHeader, PURCHASE_PO_HEADERS_)) return; // 이미 최신 구조
 
-  const currentHeader = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
-  if (currentHeader[1] === '요청일자') return; // 이미 추가됨
-  if (currentHeader[0] !== '구매요청번호') {
-    Logger.log('경고: "' + name + '" 시트의 1번째 컬럼이 "구매요청번호"가 아니라 요청일자 컬럼 자동 추가를 건너뛰었습니다. 수동으로 확인하세요.');
-    return;
-  }
+  const oldRows = readAll_(sheet);
+  const newRows = oldRows.map(r => {
+    const requested = Number(r['요청수량']) || 0;
+    const cumulative = Number(r['누적입고수량']) || 0;
+    const remaining = r['잔여수량'] !== undefined && r['잔여수량'] !== ''
+      ? r['잔여수량']
+      : requested - cumulative;
+    return [
+      r['요청일자'] || '',
+      r['신청자'] || '',
+      r['라인'] || '',
+      r['자재코드'] || '',
+      r['BQMS'] || '',
+      r['자재명'] || '',
+      r['규격'] || '',
+      r['필요일자'] || '',
+      requested,
+      r['현재고수량'] || '',
+      r['재고사용'] || '',
+      cumulative,
+      remaining,
+      r['입고여부'] || (cumulative <= 0 ? '미입고' : (cumulative < requested ? '부분입고' : '입고완료')),
+      r['최종입고일'] || ''
+    ];
+  });
 
-  sheet.insertColumnAfter(1);
-  sheet.getRange(1, 2).setValue('요청일자').setFontWeight('bold').setBackground('#f1f3f4');
-  Logger.log(name + ': 요청일자 컬럼을 2번째 열에 추가했습니다 (기존 데이터 보존, 값은 비어있음).');
+  rewriteSheet_(sheet, PURCHASE_PO_HEADERS_, newRows);
+  Logger.log(name + ': ' + newRows.length + '행을 새 구매요청 스키마로 마이그레이션했습니다 (구매요청번호/조달구분/단위/비고 제거, 라인/BQMS/현재고수량/재고사용은 빈 값으로 추가).');
 }
 
 function arraysEqual_(a, b) {

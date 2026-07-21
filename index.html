@@ -73,6 +73,10 @@
     <section id="view-actions" class="view hidden">
       <div class="view-header"><h2>무엇을 하시겠어요?</h2></div>
       <div class="action-grid">
+        <button class="action-btn action-btn-purchase" id="action-purchase-btn">
+          <span class="action-icon">🛒</span>
+          <span class="action-label">구매</span>
+        </button>
         <button class="action-btn action-btn-in" id="action-in-btn">
           <span class="action-icon">📥</span>
           <span class="action-label">입고</span>
@@ -84,10 +88,10 @@
       </div>
     </section>
 
-    <!-- 출고 라인 선택 -->
+    <!-- 라인 선택 (구매/출고 공용) -->
     <section id="view-line" class="view hidden">
       <div class="view-header">
-        <h2>출고할 라인을 선택하세요</h2>
+        <h2 id="line-view-title">라인을 선택하세요</h2>
         <button class="btn-link" id="line-back-btn">← 뒤로</button>
       </div>
       <div class="site-grid" id="line-grid"></div>
@@ -164,6 +168,46 @@
       </div>
     </section>
 
+    <!-- 구매요청 -->
+    <section id="view-purchase" class="view hidden">
+      <div class="view-header">
+        <h2>구매요청</h2>
+        <button class="btn-link" id="purchase-back-btn">← 뒤로</button>
+      </div>
+      <div class="scan-context muted" id="purchase-context-label"></div>
+
+      <input type="text" id="purchase-search-input" class="input" placeholder="자재코드 / BQMS / 품명으로 검색" />
+      <div id="purchase-search-results" class="list"></div>
+
+      <div id="purchase-result-card" class="card hidden">
+        <div class="item-info-in">
+          <div class="info-row"><span class="info-label">자재코드</span><span id="purchase-item-code"></span></div>
+          <div class="info-row"><span class="info-label">BQMS</span><span id="purchase-item-bqms"></span></div>
+          <div class="info-row"><span class="info-label">품명</span><span id="purchase-item-name"></span></div>
+          <div class="info-row"><span class="info-label">규격</span><span id="purchase-item-spec"></span></div>
+          <div class="info-row"><span class="info-label">사용설비</span><span id="purchase-item-equipment"></span></div>
+        </div>
+
+        <label class="field-label">수량</label>
+        <input type="number" id="purchase-quantity" class="input" min="1" step="1" placeholder="수량 입력" inputmode="numeric" />
+
+        <div class="scan-actions">
+          <button id="purchase-cancel-btn" class="btn btn-secondary">취소</button>
+          <button id="purchase-add-btn" class="btn btn-primary">추가</button>
+        </div>
+      </div>
+
+      <div id="purchase-cart-section" class="cart-section hidden">
+        <div class="cart-header">
+          <h3>담은 목록 (<span id="purchase-cart-count">0</span>)</h3>
+          <button class="btn-link" id="purchase-cart-clear-btn">전체 삭제</button>
+        </div>
+        <div id="purchase-cart-list" class="list"></div>
+        <label class="field-label">필요일자</label>
+        <input type="date" id="purchase-required-date" class="input" />
+      </div>
+    </section>
+
     <!-- 자재 -->
     <section id="view-items" class="view hidden">
       <div class="view-header">
@@ -217,6 +261,12 @@
   <div id="cart-footer" class="cart-footer hidden">
     <button id="cart-submit-btn" class="btn btn-primary btn-block">
       <span id="cart-submit-label">입고 완료</span> (<span id="cart-submit-count">0</span>건)
+    </button>
+  </div>
+
+  <div id="purchase-cart-footer" class="cart-footer hidden">
+    <button id="purchase-submit-btn" class="btn btn-primary btn-block">
+      구매요청 완료 (<span id="purchase-submit-count">0</span>건)
     </button>
   </div>
 

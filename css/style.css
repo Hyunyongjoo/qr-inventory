@@ -223,11 +223,11 @@ html, body {
 }
 .site-btn:active { background: var(--surface-2); border-color: var(--accent); color: var(--accent); }
 
-/* ---------- 입고/출고 선택 ---------- */
+/* ---------- 구매/입고/출고 선택 ---------- */
 .action-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 14px;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 12px;
   margin-top: 24px;
 }
 .action-btn {
@@ -240,11 +240,12 @@ html, body {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 10px;
+  gap: 8px;
 }
 .action-btn:active { background: var(--surface-2); }
-.action-icon { font-size: 40px; }
-.action-label { font-size: 18px; font-weight: 700; }
+.action-icon { font-size: 32px; }
+.action-label { font-size: 15px; font-weight: 700; }
+.action-btn-purchase { border-color: var(--accent); color: var(--accent); }
 .action-btn-in { border-color: var(--success); color: var(--success); }
 .action-btn-out { border-color: var(--danger); color: var(--danger); }
 

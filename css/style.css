@@ -407,6 +407,12 @@ html, body {
 .inbound-search .input { margin-bottom: 12px; }
 .inbound-search .btn { height: 47px; white-space: nowrap; }
 
+.inbound-date-range { display: flex; align-items: center; gap: 8px; }
+.inbound-date-range .input { flex: 1; margin-bottom: 14px; }
+.inbound-date-sep { color: var(--text-muted); margin-bottom: 14px; }
+
+.inbound-card-meta { display: flex; flex-wrap: wrap; gap: 6px; font-size: 12px; color: var(--text-muted); margin-bottom: 8px; }
+
 .inbound-summary {
   display: grid;
   grid-template-columns: repeat(4, 1fr);

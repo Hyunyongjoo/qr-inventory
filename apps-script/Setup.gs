@@ -30,6 +30,8 @@ function setupSpreadsheet() {
   SITES.forEach(site => {
     // 예전 "_구매발주"/"_입고" 시트가 남아있다면 새 통합 시트 이름으로 정리한다 (한 번만 실행되면 충분, 안전하게 반복 실행 가능).
     migrateToIntegratedPoSheet_(ss, site);
+    // 구매요청번호 다음에 요청일자 컬럼이 없는 예전 구조라면, 데이터 보존하며 빈 열을 삽입한다.
+    migratePoSheetAddRequestDate_(ss, site);
     // 예전 영문 컬럼 구조의 출고/재고 시트를 새 한글 컬럼 순서로 데이터 보존하며 변환한다 (한 번만 실행되면 충분).
     migrateOutSheetColumns_(ss, site, itemMap);
     migrateStockSheetColumns_(ss, site);
@@ -40,10 +42,7 @@ function setupSpreadsheet() {
     // 구매발주 + 입고이력 통합 시트: 한 행이 발주 1건을 나타내며,
     // FIFO 입고 처리 시 누적입고수량/잔여수량/입고여부/최종입고일이 그 자리에서 갱신된다.
     // (발주와 매칭되지 않는 입고는 새 행으로 별도 추가된다 - Code.gs의 appendAdhocReceiptRow_)
-    createSheetIfMissing_(ss, site + '_구매발주및입고', [
-      '구매요청번호', '신청자', '자재코드', '자재명', '규격', '조달구분', '단위',
-      '필요일자', '요청수량', '누적입고수량', '잔여수량', '입고여부', '최종입고일', '비고'
-    ]);
+    createSheetIfMissing_(ss, site + '_구매발주및입고', NEW_PO_HEADERS_);
     createSheetIfMissing_(ss, site + '_출고', [
       '출고일자', '라인', '자재코드', '자재명', '규격', '단위', '출고수량', '담당자', '거래코드', '시간'
     ]);
@@ -52,7 +51,7 @@ function setupSpreadsheet() {
 
     // 날짜 컬럼 서식을 'yyyy-MM-dd'(날짜만, 시간 제외)로 통일한다.
     formatDateColumns_(ss.getSheetByName(site + '_재고'), [6]); // 최종업데이트
-    formatDateColumns_(ss.getSheetByName(site + '_구매발주및입고'), [8, 13]); // 필요일자, 최종입고일
+    formatDateColumns_(ss.getSheetByName(site + '_구매발주및입고'), [2, 9, 14]); // 요청일자, 필요일자, 최종입고일
     formatDateColumns_(ss.getSheetByName(site + '_출고'), [1]); // 출고일자
   });
 
@@ -111,6 +110,41 @@ function migrateToIntegratedPoSheet_(ss, site) {
       Logger.log('경고: "' + site + '_입고" 시트에 데이터가 남아 있어 자동 삭제하지 않았습니다. 확인 후 수동으로 정리하세요.');
     }
   }
+}
+
+// 요청일자 컬럼을 추가하기 전/후의 "_구매발주및입고" 시트 헤더.
+const OLD_PO_HEADERS_NO_REQDATE_ = [
+  '구매요청번호', '신청자', '자재코드', '자재명', '규격', '조달구분', '단위',
+  '필요일자', '요청수량', '누적입고수량', '잔여수량', '입고여부', '최종입고일', '비고'
+];
+const NEW_PO_HEADERS_ = [
+  '구매요청번호', '요청일자', '신청자', '자재코드', '자재명', '규격', '조달구분', '단위',
+  '필요일자', '요청수량', '누적입고수량', '잔여수량', '입고여부', '최종입고일', '비고'
+];
+
+/**
+ * "_구매발주및입고" 시트에 구매요청번호 다음(2번째) 열로 "요청일자" 컬럼을 추가한다.
+ * insertColumnAfter로 빈 열을 끼워 넣는 방식이라 신청자~비고까지의 기존 데이터는
+ * 한 칸씩 밀리며 그대로 보존되고, 새로 추가된 요청일자 값만 비어 있는 채로 시작한다.
+ * 이미 최신 구조면 아무 것도 하지 않고, 예상과 다른 헤더면 자동 변경을 건너뛴다.
+ */
+function migratePoSheetAddRequestDate_(ss, site) {
+  const name = site + '_구매발주및입고';
+  const sheet = ss.getSheetByName(name);
+  if (!sheet) return;
+
+  const lastCol = sheet.getLastColumn();
+  const currentHeader = lastCol ? sheet.getRange(1, 1, 1, lastCol).getValues()[0] : [];
+
+  if (arraysEqual_(currentHeader, NEW_PO_HEADERS_)) return; // 이미 최신 구조
+  if (!arraysEqual_(currentHeader, OLD_PO_HEADERS_NO_REQDATE_)) {
+    Logger.log('경고: "' + name + '" 시트 헤더가 예상과 달라 요청일자 컬럼 자동 추가를 건너뛰었습니다. 수동으로 확인하세요.');
+    return;
+  }
+
+  sheet.insertColumnAfter(1);
+  sheet.getRange(1, 2).setValue('요청일자').setFontWeight('bold').setBackground('#f1f3f4');
+  Logger.log(name + ': 요청일자 컬럼을 2번째 열에 추가했습니다 (기존 데이터 보존, 값은 비어있음).');
 }
 
 function arraysEqual_(a, b) {

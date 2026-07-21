@@ -974,24 +974,28 @@
 
   function bindInboundCheck() {
     $('#inbound-search-btn').addEventListener('click', loadInboundCheck);
-    $('#inbound-search-input').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') loadInboundCheck();
+    ['#inbound-search-input', '#inbound-date-start', '#inbound-date-end'].forEach((sel) => {
+      $(sel).addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') loadInboundCheck();
+      });
     });
   }
 
   async function loadInboundCheck() {
     if (!state.site) return;
     const name = $('#inbound-search-input').value.trim();
+    const startDate = $('#inbound-date-start').value;
+    const endDate = $('#inbound-date-end').value;
     const listEl = $('#inbound-list');
     const summaryEl = $('#inbound-summary');
-    if (!name) {
-      toast('신청자 이름을 입력하세요.', 'error');
+    if (!name && !startDate && !endDate) {
+      toast('신청자 이름 또는 요청일자를 입력하세요.', 'error');
       return;
     }
     listEl.innerHTML = `<div class="empty-state">불러오는 중...</div>`;
     summaryEl.classList.add('hidden');
     try {
-      const rows = await Api.get('checkInbound', { site: state.site, name });
+      const rows = await Api.get('checkInbound', { site: state.site, name, startDate, endDate });
       if (!rows.length) {
         listEl.innerHTML = `<div class="empty-state">검색 결과가 없습니다.</div>`;
         return;
@@ -1009,6 +1013,10 @@
 
       listEl.innerHTML = rows.map((r) => `
         <div class="card inbound-card">
+          <div class="inbound-card-meta">
+            ${r.requestDate ? `<span>요청일자 ${formatPoDate(r.requestDate)}</span>` : ''}
+            ${r.requester ? `<span>· ${escapeHtml(r.requester)}</span>` : ''}
+          </div>
           <div class="inbound-card-top">
             <div class="row-main">
               <span class="primary">${escapeHtml(r.itemName)}</span>

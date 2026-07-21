@@ -53,7 +53,7 @@ function doGet(e) {
         result = scanLookupForStockOut_(e.parameter.site || '', e.parameter.code || '');
         break;
       case 'checkInbound':
-        result = checkInbound_(e.parameter.site || '', e.parameter.name || '');
+        result = checkInbound_(e.parameter.site || '', e.parameter.name || '', e.parameter.startDate || '', e.parameter.endDate || '');
         break;
       case 'sites':
         result = SITES;
@@ -443,16 +443,41 @@ function scanLookupForStockOut_(site, code) {
   return { item: stripRow_(item), quantity };
 }
 
-// 입고확인 화면 전용: 신청자 이름 부분 일치로 그 사이트의 모든 발주(모든 자재)를 찾는다.
-// listOpenPurchaseOrders_와 달리 자재별이 아니라 신청자 기준 조회이고, 입고완료 건도 포함한다.
-function checkInbound_(site, name) {
+// 날짜만 비교할 수 있게 시/분/초를 제거한 Date를 반환한다. 값이 비어있거나 날짜로
+// 해석할 수 없으면 null (요청일자가 비어있는 행, 혹은 검색창에 날짜를 입력하지 않은 경우).
+function toDateOnly_(value) {
+  if (!value) return null;
+  const d = value instanceof Date ? value : new Date(value);
+  if (isNaN(d.getTime())) return null;
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+// 입고확인 화면 전용: 신청자 이름(부분 일치) + 요청일자 범위로 그 사이트의 모든 발주(모든 자재)를 찾는다.
+// listOpenPurchaseOrders_와 달리 자재별이 아니라 신청자/날짜 기준 조회이고, 입고완료 건도 포함한다.
+// 이름/시작일/종료일은 모두 선택사항이지만 최소 하나는 있어야 한다:
+//  - 이름만: 이름으로만 필터
+//  - 이름 + 날짜: 이름 AND 요청일자 범위
+//  - 날짜만: 요청일자 범위로만 필터 (요청일자가 비어있는 행은 제외)
+function checkInbound_(site, name, startDate, endDate) {
   assertSite_(site);
   const q = (name || '').toString().trim();
-  if (!q) throw new Error('신청자 이름을 입력하세요.');
-  const rows = readAll_(sheet_(poInSheetName_(site)))
-    .filter(r => String(r['신청자'] || '').includes(q))
-    .sort(poSortComparator_);
-  return rows.map(poRowToInboundView_);
+  const start = toDateOnly_(startDate);
+  const end = toDateOnly_(endDate);
+  if (!q && !start && !end) throw new Error('신청자 이름 또는 요청일자를 입력하세요.');
+
+  let rows = readAll_(sheet_(poInSheetName_(site)));
+  if (q) rows = rows.filter(r => String(r['신청자'] || '').includes(q));
+  if (start || end) {
+    rows = rows.filter(r => {
+      const d = toDateOnly_(r['요청일자']);
+      if (!d) return false;
+      if (start && d < start) return false;
+      if (end && d > end) return false;
+      return true;
+    });
+  }
+
+  return rows.sort(poSortComparator_).map(poRowToInboundView_);
 }
 
 function poRowToInboundView_(po) {
@@ -460,6 +485,7 @@ function poRowToInboundView_(po) {
   const cumulative = Number(po['누적입고수량']) || 0;
   return {
     poNumber: po['구매요청번호'] || '',
+    requestDate: po['요청일자'] || '',
     requester: po['신청자'] || '',
     itemId: po['자재코드'] || '',
     itemName: po['자재명'] || '',

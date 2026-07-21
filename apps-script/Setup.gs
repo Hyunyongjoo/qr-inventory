@@ -112,11 +112,7 @@ function migrateToIntegratedPoSheet_(ss, site) {
   }
 }
 
-// 요청일자 컬럼을 추가하기 전/후의 "_구매발주및입고" 시트 헤더.
-const OLD_PO_HEADERS_NO_REQDATE_ = [
-  '구매요청번호', '신청자', '자재코드', '자재명', '규격', '조달구분', '단위',
-  '필요일자', '요청수량', '누적입고수량', '잔여수량', '입고여부', '최종입고일', '비고'
-];
+// 브랜드 뉴 시트를 만들 때 쓰는 최종 헤더 (createSheetIfMissing_ 전용).
 const NEW_PO_HEADERS_ = [
   '구매요청번호', '요청일자', '신청자', '자재코드', '자재명', '규격', '조달구분', '단위',
   '필요일자', '요청수량', '누적입고수량', '잔여수량', '입고여부', '최종입고일', '비고'
@@ -124,9 +120,13 @@ const NEW_PO_HEADERS_ = [
 
 /**
  * "_구매발주및입고" 시트에 구매요청번호 다음(2번째) 열로 "요청일자" 컬럼을 추가한다.
- * insertColumnAfter로 빈 열을 끼워 넣는 방식이라 신청자~비고까지의 기존 데이터는
+ * insertColumnAfter로 빈 열을 끼워 넣는 방식이라 신청자 이후의 기존 데이터는
  * 한 칸씩 밀리며 그대로 보존되고, 새로 추가된 요청일자 값만 비어 있는 채로 시작한다.
- * 이미 최신 구조면 아무 것도 하지 않고, 예상과 다른 헤더면 자동 변경을 건너뛴다.
+ *
+ * 실제 운영 중인 시트는 과거 마이그레이션 이력에 따라 "비고" 컬럼이 없는 등 나머지
+ * 컬럼 구성이 조금씩 다를 수 있으므로(migrateToIntegratedPoSheet_ 참고), 전체 헤더가
+ * 정확히 일치하는지는 보지 않는다. 그 대신 1번째 컬럼이 "구매요청번호"인지(이 시트가 맞는지),
+ * 2번째 컬럼이 아직 "요청일자"가 아닌지(아직 추가 안 됐는지)만 확인한다.
  */
 function migratePoSheetAddRequestDate_(ss, site) {
   const name = site + '_구매발주및입고';
@@ -134,11 +134,12 @@ function migratePoSheetAddRequestDate_(ss, site) {
   if (!sheet) return;
 
   const lastCol = sheet.getLastColumn();
-  const currentHeader = lastCol ? sheet.getRange(1, 1, 1, lastCol).getValues()[0] : [];
+  if (!lastCol) return; // 헤더도 없는 빈 시트
 
-  if (arraysEqual_(currentHeader, NEW_PO_HEADERS_)) return; // 이미 최신 구조
-  if (!arraysEqual_(currentHeader, OLD_PO_HEADERS_NO_REQDATE_)) {
-    Logger.log('경고: "' + name + '" 시트 헤더가 예상과 달라 요청일자 컬럼 자동 추가를 건너뛰었습니다. 수동으로 확인하세요.');
+  const currentHeader = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  if (currentHeader[1] === '요청일자') return; // 이미 추가됨
+  if (currentHeader[0] !== '구매요청번호') {
+    Logger.log('경고: "' + name + '" 시트의 1번째 컬럼이 "구매요청번호"가 아니라 요청일자 컬럼 자동 추가를 건너뛰었습니다. 수동으로 확인하세요.');
     return;
   }
 

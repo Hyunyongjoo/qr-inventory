@@ -85,6 +85,10 @@
           <span class="action-icon">📤</span>
           <span class="action-label">출고</span>
         </button>
+        <button class="action-btn action-btn-return" id="action-return-btn">
+          <span class="action-icon">↩️</span>
+          <span class="action-label">반납</span>
+        </button>
       </div>
     </section>
 
@@ -217,6 +221,42 @@
       </div>
     </section>
 
+    <!-- 반납 -->
+    <section id="view-return" class="view hidden">
+      <div class="view-header">
+        <h2>반납</h2>
+        <button class="btn-link" id="return-back-btn">← 뒤로</button>
+      </div>
+      <div class="scan-context muted" id="return-context-label"></div>
+
+      <input type="text" id="return-search-input" class="input" placeholder="자재코드 또는 자재명으로 검색" />
+      <div id="return-search-results" class="list"></div>
+
+      <div id="return-result-card" class="card hidden">
+        <div class="item-info-in">
+          <div class="info-row"><span class="info-label">자재코드</span><span id="return-item-code"></span></div>
+          <div class="info-row"><span class="info-label">품명</span><span id="return-item-name"></span></div>
+          <div class="info-row"><span class="info-label">규격</span><span id="return-item-spec"></span></div>
+        </div>
+
+        <label class="field-label">반납수량</label>
+        <input type="number" id="return-quantity" class="input" min="1" step="1" placeholder="수량 입력" inputmode="numeric" />
+
+        <div class="scan-actions">
+          <button id="return-cancel-btn" class="btn btn-secondary">취소</button>
+          <button id="return-add-btn" class="btn btn-primary">추가</button>
+        </div>
+      </div>
+
+      <div id="return-cart-section" class="cart-section hidden">
+        <div class="cart-header">
+          <h3>담은 목록 (<span id="return-cart-count">0</span>)</h3>
+          <button class="btn-link" id="return-cart-clear-btn">전체 삭제</button>
+        </div>
+        <div id="return-cart-list" class="list"></div>
+      </div>
+    </section>
+
     <!-- 자재 -->
     <section id="view-items" class="view hidden">
       <div class="view-header">
@@ -276,6 +316,12 @@
   <div id="purchase-cart-footer" class="cart-footer hidden">
     <button id="purchase-submit-btn" class="btn btn-primary btn-block">
       구매요청 완료 (<span id="purchase-submit-count">0</span>건)
+    </button>
+  </div>
+
+  <div id="return-cart-footer" class="cart-footer hidden">
+    <button id="return-submit-btn" class="btn btn-primary btn-block">
+      반납 완료 (<span id="return-submit-count">0</span>건)
     </button>
   </div>
 

@@ -28,7 +28,9 @@
     currentPurchaseItem: null,
     purchaseCart: [],
     purchaseSearchRows: [],
-    purchaseSelectedIdx: new Set()
+    purchaseSelectedIdx: new Set(),
+    currentReturnItem: null,
+    returnCart: []
   };
 
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -59,7 +61,7 @@
     // 새로 받아온 경우)에서 특정 화면의 요소를 찾지 못해 bindXxx() 하나가 실패하더라도,
     // 그 뒤에 이어지는 다른 화면 바인딩과 로그인 화면 진입까지는 막히지 않게 각각 감싸서 실행한다.
     [bindLogin, bindSite, bindNav, bindActions, bindLine, bindHome, bindScan,
-      bindPurchase, bindItems, bindInboundCheck, bindHistory, bindLogout, bindHardRefresh
+      bindPurchase, bindReturn, bindItems, bindInboundCheck, bindHistory, bindLogout, bindHardRefresh
     ].forEach((bindFn) => {
       try {
         bindFn();
@@ -240,6 +242,7 @@
     $('#action-purchase-btn').addEventListener('click', () => startTransactionFlow('PURCHASE'));
     $('#action-in-btn').addEventListener('click', () => startTransactionFlow('IN'));
     $('#action-out-btn').addEventListener('click', () => startTransactionFlow('OUT'));
+    $('#action-return-btn').addEventListener('click', () => startTransactionFlow('RETURN'));
   }
 
   function startTransactionFlow(type) {
@@ -248,6 +251,8 @@
       state.scanZone = null;
       switchView('line');
       renderLineButtons();
+    } else if (type === 'RETURN') {
+      goToReturn();
     } else {
       goToScan();
     }
@@ -324,6 +329,12 @@
       if (!confirm(`담아둔 ${state.purchaseCart.length}건이 사라집니다. 이동하시겠습니까?`)) return;
       state.purchaseCart = [];
       renderPurchaseCart();
+    }
+
+    if (state.currentView === 'return' && name !== 'return' && state.returnCart.length > 0) {
+      if (!confirm(`담아둔 ${state.returnCart.length}건이 사라집니다. 이동하시겠습니까?`)) return;
+      state.returnCart = [];
+      renderReturnCart();
     }
 
     $$('.view').forEach((v) => v.classList.add('hidden'));
@@ -762,7 +773,7 @@
 
     $('#scan-cart-section').classList.toggle('hidden', cart.length === 0);
     $('#cart-footer').classList.toggle('hidden', cart.length === 0);
-    $('#view-container').classList.toggle('has-cart-footer', cart.length > 0 || state.purchaseCart.length > 0);
+    $('#view-container').classList.toggle('has-cart-footer', cart.length > 0 || state.purchaseCart.length > 0 || state.returnCart.length > 0);
 
     const listEl = $('#cart-list');
     listEl.innerHTML = cart.map((c) => `
@@ -1095,7 +1106,7 @@
 
     $('#purchase-cart-section').classList.toggle('hidden', cart.length === 0);
     $('#purchase-cart-footer').classList.toggle('hidden', cart.length === 0);
-    $('#view-container').classList.toggle('has-cart-footer', cart.length > 0 || state.cart.length > 0);
+    $('#view-container').classList.toggle('has-cart-footer', cart.length > 0 || state.cart.length > 0 || state.returnCart.length > 0);
 
     const listEl = $('#purchase-cart-list');
     listEl.innerHTML = cart.map((c) => `
@@ -1148,6 +1159,168 @@
       updateOfflineBadge();
     } catch (err) {
       toast(err.message || '구매요청 처리 중 오류가 발생했습니다.', 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // ------------------------- 반납(Return) -------------------------
+
+  function bindReturn() {
+    $('#return-back-btn').addEventListener('click', () => switchView('actions'));
+    $('#return-search-input').addEventListener('input', debounce(searchReturnMaterials, 300));
+    $('#return-add-btn').addEventListener('click', addToReturnCart);
+    $('#return-cancel-btn').addEventListener('click', cancelReturnSelection);
+    $('#return-cart-clear-btn').addEventListener('click', () => {
+      if (!state.returnCart.length) return;
+      if (!confirm('담아둔 목록을 모두 삭제할까요?')) return;
+      state.returnCart = [];
+      renderReturnCart();
+    });
+    $('#return-submit-btn').addEventListener('click', submitReturnCart);
+  }
+
+  function goToReturn() {
+    state.currentReturnItem = null;
+    state.returnCart = [];
+    $('#return-result-card').classList.add('hidden');
+    $('#return-search-input').value = '';
+    $('#return-search-results').innerHTML = '';
+    switchView('return');
+    $('#return-context-label').textContent = `${state.site} · 반납`;
+    renderReturnCart();
+  }
+
+  async function searchReturnMaterials() {
+    const q = $('#return-search-input').value.trim();
+    const resultsEl = $('#return-search-results');
+    if (!q) {
+      resultsEl.innerHTML = '';
+      return;
+    }
+    resultsEl.innerHTML = `<div class="empty-state">검색 중...</div>`;
+    try {
+      const rows = await Api.get('items', { q });
+      if (!rows.length) {
+        resultsEl.innerHTML = `<div class="empty-state">검색 결과가 없습니다.</div>`;
+        return;
+      }
+      resultsEl.innerHTML = rows.map((it, i) => `
+        <div class="item-row" data-idx="${i}">
+          <div class="row-main">
+            <span class="primary">${escapeHtml(it.ItemName)}</span>
+            <span class="secondary">${escapeHtml(it.ItemID)}${it.Spec ? ' · ' + escapeHtml(it.Spec) : ''}</span>
+          </div>
+        </div>
+      `).join('');
+      $$('.item-row', resultsEl).forEach((row, i) => {
+        row.addEventListener('click', () => selectReturnMaterial(rows[i]));
+      });
+    } catch (err) {
+      resultsEl.innerHTML = `<div class="empty-state">오류: ${escapeHtml(err.message)}</div>`;
+    }
+  }
+
+  function selectReturnMaterial(item) {
+    state.currentReturnItem = item;
+    $('#return-result-card').classList.remove('hidden');
+    $('#return-item-code').textContent = item.ItemID;
+    $('#return-item-name').textContent = item.ItemName;
+    $('#return-item-spec').textContent = item.Spec || '-';
+    $('#return-quantity').value = '';
+    $('#return-search-results').innerHTML = '';
+  }
+
+  function cancelReturnSelection() {
+    state.currentReturnItem = null;
+    $('#return-result-card').classList.add('hidden');
+    $('#return-quantity').value = '';
+  }
+
+  function addToReturnCart() {
+    if (!state.currentReturnItem) return;
+    const quantity = Number($('#return-quantity').value);
+    if (!quantity || quantity <= 0) {
+      toast('올바른 수량을 입력하세요.', 'error');
+      return;
+    }
+
+    const it = state.currentReturnItem;
+    state.returnCart.push({
+      uid: 'r' + Date.now() + Math.floor(Math.random() * 1000),
+      itemId: it.ItemID,
+      itemName: it.ItemName,
+      spec: it.Spec,
+      quantity
+    });
+    renderReturnCart();
+    toast(`${it.ItemName} 담았습니다.`, 'success');
+
+    // 다음 자재를 바로 검색할 수 있도록 검색창/선택 카드를 초기화한다.
+    state.currentReturnItem = null;
+    $('#return-result-card').classList.add('hidden');
+    $('#return-search-input').value = '';
+    $('#return-search-results').innerHTML = '';
+    $('#return-search-input').focus();
+  }
+
+  function renderReturnCart() {
+    const cart = state.returnCart;
+    $('#return-cart-count').textContent = cart.length;
+    $('#return-submit-count').textContent = cart.length;
+
+    $('#return-cart-section').classList.toggle('hidden', cart.length === 0);
+    $('#return-cart-footer').classList.toggle('hidden', cart.length === 0);
+    $('#view-container').classList.toggle('has-cart-footer', cart.length > 0 || state.cart.length > 0 || state.purchaseCart.length > 0);
+
+    const listEl = $('#return-cart-list');
+    listEl.innerHTML = cart.map((c) => `
+      <div class="cart-row" data-uid="${c.uid}">
+        <div class="row-main">
+          <span class="primary">${escapeHtml(c.itemName)}${c.spec ? ' / ' + escapeHtml(c.spec) : ''}</span>
+          <span class="secondary">${escapeHtml(c.itemId)} · 수량 ${Number(c.quantity).toLocaleString()}</span>
+        </div>
+        <button class="cart-delete-btn" data-uid="${c.uid}" aria-label="삭제">🗑️</button>
+      </div>
+    `).join('');
+    $$('.cart-delete-btn', listEl).forEach((btn) => {
+      btn.addEventListener('click', () => removeFromReturnCart(btn.dataset.uid));
+    });
+  }
+
+  function removeFromReturnCart(uid) {
+    state.returnCart = state.returnCart.filter((c) => c.uid !== uid);
+    renderReturnCart();
+  }
+
+  async function submitReturnCart() {
+    if (!state.returnCart.length) return;
+    if (!state.site) {
+      toast('사이트를 확인하세요.', 'error');
+      return;
+    }
+
+    const btn = $('#return-submit-btn');
+    btn.disabled = true;
+    try {
+      const payload = {
+        site: state.site,
+        pin: state.user.pin,
+        items: state.returnCart.map((c) => ({
+          itemId: c.itemId, itemName: c.itemName, spec: c.spec, quantity: c.quantity
+        }))
+      };
+      const result = await Api.postWithQueue('stockReturn', payload);
+      if (result.queued) {
+        toast('오프라인 상태입니다. 온라인 복귀 시 자동으로 등록됩니다.', '');
+      } else {
+        toast(`반납 ${state.returnCart.length}건이 처리되었습니다.`, 'success');
+      }
+      state.returnCart = [];
+      renderReturnCart();
+      updateOfflineBadge();
+    } catch (err) {
+      toast(err.message || '반납 처리 중 오류가 발생했습니다.', 'error');
     } finally {
       btn.disabled = false;
     }

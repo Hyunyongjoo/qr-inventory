@@ -254,7 +254,7 @@ html, body {
 /* ---------- 구매/입고/출고 선택 ---------- */
 .action-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: 1fr 1fr;
   gap: 12px;
   margin-top: 24px;
 }
@@ -276,6 +276,7 @@ html, body {
 .action-btn-purchase { border-color: var(--accent); color: var(--accent); }
 .action-btn-in { border-color: var(--success); color: var(--success); }
 .action-btn-out { border-color: var(--danger); color: var(--danger); }
+.action-btn-return { border-color: var(--warn); color: var(--warn); }
 
 /* ---------- 스캔 ---------- */
 .scan-context { margin-top: -8px; margin-bottom: 12px; font-weight: 600; }

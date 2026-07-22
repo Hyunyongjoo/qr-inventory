@@ -102,6 +102,9 @@ function doPost(e) {
       case 'submitPurchase':
         result = submitPurchase_(body);
         break;
+      case 'stockReturn':
+        result = stockReturn_(body);
+        break;
       default:
         throw new Error('알 수 없는 action: ' + action);
     }
@@ -167,6 +170,11 @@ function poInSheetName_(site) {
 // 사용자재 시트 (자재담당자가 수동으로 채워 넣는 참고용 마스터 - 구매요청 화면의 자재 검색 대상)
 function usedMaterialsSheetName_(site) {
   return site + '_사용자재';
+}
+
+// 반납 시트 (출고되었던 자재를 재고로 되돌릴 때 한 줄씩 기록)
+function returnSheetName_(site) {
+  return site + '_반납';
 }
 
 function headers_(sheet) {
@@ -345,7 +353,8 @@ function setStockQuantity_(site, itemId, newQuantity, item) {
 
 // 현재고 = 월초재고 + 누적입고수량(구매발주및입고 시트에서 그 자재의 모든 행 합계)
 //         - 누적출고수량(출고 시트에서 그 자재의 모든 행 합계)
-// 재고를 독립적으로 증감시키지 않고, 매번 발주/출고 원본 데이터로부터 다시 계산한다.
+//         + 누적반납수량(반납 시트에서 그 자재의 모든 행 합계)
+// 재고를 독립적으로 증감시키지 않고, 매번 발주/출고/반납 원본 데이터로부터 다시 계산한다.
 function calculateCurrentStock_(site, itemId) {
   const stockRows = readAll_(sheet_(stockSheetName_(site)));
   const stockRow = stockRows.find(s => String(s['자재코드']) === String(itemId));
@@ -361,7 +370,12 @@ function calculateCurrentStock_(site, itemId) {
     .filter(r => String(r['자재코드']) === String(itemId))
     .reduce((sum, r) => sum + (Number(r['출고수량']) || 0), 0);
 
-  return monthStart + totalIn - totalOut;
+  const returnRows = readAll_(sheet_(returnSheetName_(site)));
+  const totalReturn = returnRows
+    .filter(r => String(r['자재코드']) === String(itemId))
+    .reduce((sum, r) => sum + (Number(r['반납수량']) || 0), 0);
+
+  return monthStart + totalIn - totalOut + totalReturn;
 }
 
 function recalculateStock_(site, itemId, item) {
@@ -720,6 +734,50 @@ function stockOut_(body) {
     const newQty = recalculateStock_(site, itemId, item);
 
     return { newQuantity: newQty };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// ------------------------- 반납 -------------------------
+
+// 이미 출고되었던 자재를 재고로 되돌린다. 발주/라인 개념이 없어 장바구니에 담긴 자재마다
+// 반납 시트에 한 줄씩 기록하고, 입고/출고와 동일하게 원본 데이터로부터 현재고를 다시 계산해 반영한다.
+function stockReturn_(body) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const site = assertSite_(body.site);
+    const worker = handleLogin_(body.pin);
+    const items = Array.isArray(body.items) ? body.items : [];
+    if (!items.length) throw new Error('반납할 자재가 없습니다.');
+
+    const sheet = sheet_(returnSheetName_(site));
+    const today = Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd');
+    let count = 0;
+
+    items.forEach(it => {
+      const itemId = String(it.itemId || '').trim();
+      const qty = Number(it.quantity);
+      if (!itemId || !qty || qty <= 0) return;
+      const item = assertItemExists_(itemId);
+
+      appendRow_(sheet, {
+        '반납일자': today,
+        '자재코드': itemId,
+        '자재명': item.ItemName,
+        '규격': item.Spec || '',
+        '반납수량': qty,
+        '담당자': worker.name,
+        '비고': it.note || ''
+      });
+
+      recalculateStock_(site, itemId, item);
+      count++;
+    });
+
+    if (!count) throw new Error('올바른 반납 항목이 없습니다.');
+    return { count };
   } finally {
     lock.releaseLock();
   }

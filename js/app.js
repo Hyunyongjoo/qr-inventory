@@ -1200,16 +1200,16 @@
     }
     resultsEl.innerHTML = `<div class="empty-state">검색 중...</div>`;
     try {
-      const rows = await Api.get('items', { q });
+      const rows = await Api.get('searchMaterials', { site: state.site, query: q });
       if (!rows.length) {
         resultsEl.innerHTML = `<div class="empty-state">검색 결과가 없습니다.</div>`;
         return;
       }
-      resultsEl.innerHTML = rows.map((it, i) => `
+      resultsEl.innerHTML = rows.map((m, i) => `
         <div class="item-row" data-idx="${i}">
           <div class="row-main">
-            <span class="primary">${escapeHtml(it.ItemName)}</span>
-            <span class="secondary">${escapeHtml(it.ItemID)}${it.Spec ? ' · ' + escapeHtml(it.Spec) : ''}</span>
+            <span class="primary">${escapeHtml(m.itemName)}</span>
+            <span class="secondary">${escapeHtml(m.itemId)}${m.bqms ? ' · ' + escapeHtml(m.bqms) : ''}${m.spec ? ' · ' + escapeHtml(m.spec) : ''}${m.equipment ? ' · ' + escapeHtml(m.equipment) : ''}</span>
           </div>
         </div>
       `).join('');
@@ -1221,12 +1221,14 @@
     }
   }
 
-  function selectReturnMaterial(item) {
-    state.currentReturnItem = item;
+  function selectReturnMaterial(material) {
+    state.currentReturnItem = material;
     $('#return-result-card').classList.remove('hidden');
-    $('#return-item-code').textContent = item.ItemID;
-    $('#return-item-name').textContent = item.ItemName;
-    $('#return-item-spec').textContent = item.Spec || '-';
+    $('#return-item-code').textContent = material.itemId;
+    $('#return-item-bqms').textContent = material.bqms || '-';
+    $('#return-item-name').textContent = material.itemName;
+    $('#return-item-spec').textContent = material.spec || '-';
+    $('#return-item-equipment').textContent = material.equipment || '-';
     $('#return-quantity').value = '';
     $('#return-search-results').innerHTML = '';
   }
@@ -1245,16 +1247,17 @@
       return;
     }
 
-    const it = state.currentReturnItem;
+    const m = state.currentReturnItem;
     state.returnCart.push({
       uid: 'r' + Date.now() + Math.floor(Math.random() * 1000),
-      itemId: it.ItemID,
-      itemName: it.ItemName,
-      spec: it.Spec,
+      itemId: m.itemId,
+      bqms: m.bqms,
+      itemName: m.itemName,
+      spec: m.spec,
       quantity
     });
     renderReturnCart();
-    toast(`${it.ItemName} 담았습니다.`, 'success');
+    toast(`${m.itemName} 담았습니다.`, 'success');
 
     // 다음 자재를 바로 검색할 수 있도록 검색창/선택 카드를 초기화한다.
     state.currentReturnItem = null;
@@ -1278,7 +1281,7 @@
       <div class="cart-row" data-uid="${c.uid}">
         <div class="row-main">
           <span class="primary">${escapeHtml(c.itemName)}${c.spec ? ' / ' + escapeHtml(c.spec) : ''}</span>
-          <span class="secondary">${escapeHtml(c.itemId)} · 수량 ${Number(c.quantity).toLocaleString()}</span>
+          <span class="secondary">${escapeHtml(c.itemId)}${c.bqms ? ' · ' + escapeHtml(c.bqms) : ''} · 수량 ${Number(c.quantity).toLocaleString()}</span>
         </div>
         <button class="cart-delete-btn" data-uid="${c.uid}" aria-label="삭제">🗑️</button>
       </div>

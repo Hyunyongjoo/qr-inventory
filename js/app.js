@@ -1305,20 +1305,16 @@
     $('#return-scan-toggle-btn').textContent = '카메라 스캔 시작';
   }
 
-  // QR/수동 입력으로 들어온 코드를 구매 화면과 같은 searchMaterials(사용자재 시트)에서
-  // 정확히 일치하는 자재코드로 찾아 선택 처리한다.
+  // QR/수동 입력으로 들어온 코드를 Items 시트에서 정확히 일치하는 자재코드로 조회한다.
+  // 발주(구매발주및입고) 이력은 전혀 확인하지 않는다 - 반납은 발주 유무와 무관하게 처리된다.
   async function handleReturnScannedCode(rawCode) {
     const code = parseQrPayload(rawCode);
     if (!code) return;
     clearReturnLookupError();
     state.returnScanBusy = true;
     try {
-      const rows = await Api.get('searchMaterials', { site: state.site, query: code });
-      const match = rows.find((m) => String(m.itemId).trim().toUpperCase() === code.toUpperCase());
-      if (!match) {
-        throw new Error(`코드 불일치: "${code}"와 일치하는 자재를 찾을 수 없습니다.`);
-      }
-      selectReturnMaterial(match);
+      const item = await Api.get('itemByCode', { code });
+      selectReturnMaterial(item);
       $('#return-manual-code-input').value = '';
     } catch (err) {
       showReturnLookupError(err.message);
@@ -1328,6 +1324,7 @@
     }
   }
 
+  // 자재명/자재코드 검색도 Items 시트(전체 자재 마스터)를 대상으로 한다 (발주 이력과 무관).
   async function searchReturnMaterials() {
     const q = $('#return-search-input').value.trim();
     const resultsEl = $('#return-search-results');
@@ -1337,16 +1334,16 @@
     }
     resultsEl.innerHTML = `<div class="empty-state">검색 중...</div>`;
     try {
-      const rows = await Api.get('searchMaterials', { site: state.site, query: q });
+      const rows = await Api.get('items', { q });
       if (!rows.length) {
         resultsEl.innerHTML = `<div class="empty-state">검색 결과가 없습니다.</div>`;
         return;
       }
-      resultsEl.innerHTML = rows.map((m, i) => `
+      resultsEl.innerHTML = rows.map((it, i) => `
         <div class="item-row" data-idx="${i}">
           <div class="row-main">
-            <span class="primary">${escapeHtml(m.itemName)}</span>
-            <span class="secondary">${escapeHtml(m.itemId)}${m.bqms ? ' · ' + escapeHtml(m.bqms) : ''}${m.spec ? ' · ' + escapeHtml(m.spec) : ''}${m.equipment ? ' · ' + escapeHtml(m.equipment) : ''}</span>
+            <span class="primary">${escapeHtml(it.ItemName)}</span>
+            <span class="secondary">${escapeHtml(it.ItemID)}${it.Spec ? ' · ' + escapeHtml(it.Spec) : ''}</span>
           </div>
         </div>
       `).join('');
@@ -1358,14 +1355,12 @@
     }
   }
 
-  function selectReturnMaterial(material) {
-    state.currentReturnItem = material;
+  function selectReturnMaterial(item) {
+    state.currentReturnItem = item;
     $('#return-result-card').classList.remove('hidden');
-    $('#return-item-code').textContent = material.itemId;
-    $('#return-item-bqms').textContent = material.bqms || '-';
-    $('#return-item-name').textContent = material.itemName;
-    $('#return-item-spec').textContent = material.spec || '-';
-    $('#return-item-equipment').textContent = material.equipment || '-';
+    $('#return-item-code').textContent = item.ItemID;
+    $('#return-item-name').textContent = item.ItemName;
+    $('#return-item-spec').textContent = item.Spec || '-';
     $('#return-quantity').value = '';
     $('#return-search-results').innerHTML = '';
   }
@@ -1385,17 +1380,16 @@
       return;
     }
 
-    const m = state.currentReturnItem;
+    const item = state.currentReturnItem;
     state.returnCart.push({
       uid: 'r' + Date.now() + Math.floor(Math.random() * 1000),
-      itemId: m.itemId,
-      bqms: m.bqms,
-      itemName: m.itemName,
-      spec: m.spec,
+      itemId: item.ItemID,
+      itemName: item.ItemName,
+      spec: item.Spec,
       quantity
     });
     renderReturnCart();
-    toast(`${m.itemName} 담았습니다.`, 'success');
+    toast(`${item.ItemName} 담았습니다.`, 'success');
 
     // 다음 자재를 바로 검색할 수 있도록 검색창/선택 카드를 초기화한다.
     state.currentReturnItem = null;
@@ -1420,7 +1414,7 @@
       <div class="cart-row" data-uid="${c.uid}">
         <div class="row-main">
           <span class="primary">${escapeHtml(c.itemName)}${c.spec ? ' / ' + escapeHtml(c.spec) : ''}</span>
-          <span class="secondary">${escapeHtml(c.itemId)}${c.bqms ? ' · ' + escapeHtml(c.bqms) : ''} · 수량 ${Number(c.quantity).toLocaleString()}</span>
+          <span class="secondary">${escapeHtml(c.itemId)} · 수량 ${Number(c.quantity).toLocaleString()}</span>
         </div>
         <button class="cart-delete-btn" data-uid="${c.uid}" aria-label="삭제">🗑️</button>
       </div>

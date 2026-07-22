@@ -644,6 +644,9 @@ function submitPurchase_(body) {
       const itemId = String(it.itemId || '').trim();
       const qty = Number(it.quantity);
       if (!itemId || !qty || qty <= 0) return;
+
+      registerNewItemIfMissing_(itemId, it.itemName || '', it.spec || '');
+
       appendRow_(sheet, {
         '요청일자': today,
         '신청자': worker.name,
@@ -669,6 +672,24 @@ function submitPurchase_(body) {
   } finally {
     lock.releaseLock();
   }
+}
+
+// 구매요청에 담긴 자재코드가 Items 시트(전체 자재 마스터)에 없으면 자동으로 등록하고
+// 신규여부에 '★신규' 표시를 남긴다. 이미 등록된 자재는 그대로 둔다(신규여부도 건드리지 않음).
+function registerNewItemIfMissing_(itemId, itemName, spec) {
+  const sheet = sheet_('Items');
+  const existing = readAll_(sheet).find(it => String(it.ItemID) === String(itemId));
+  if (existing) return;
+
+  appendRow_(sheet, {
+    ItemID: itemId,
+    ItemName: itemName,
+    Spec: spec,
+    Unit: '',
+    Category: '',
+    CreatedAt: new Date(),
+    '신규여부': '★신규'
+  });
 }
 
 // ------------------------- 입고 / 출고 -------------------------

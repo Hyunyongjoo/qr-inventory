@@ -17,7 +17,7 @@ function setupSpreadsheet() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
 
   createSheetIfMissing_(ss, 'Items', [
-    'ItemID', 'ItemName', 'Spec', 'Unit', 'Category', 'CreatedAt'
+    'ItemID', 'ItemName', 'Spec', 'Unit', 'Category', 'CreatedAt', '신규여부'
   ], [6]); // CreatedAt
 
   createSheetIfMissing_(ss, 'Users', [

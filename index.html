@@ -229,6 +229,19 @@
       </div>
       <div class="scan-context muted" id="return-context-label"></div>
 
+      <div id="return-reader-wrap">
+        <div id="return-qr-reader" class="hidden"></div>
+        <div id="return-scan-error-text" class="scan-error-text hidden"></div>
+        <button id="return-scan-toggle-btn" class="btn btn-primary btn-block">카메라 스캔 시작</button>
+      </div>
+
+      <div class="manual-entry">
+        <input type="text" id="return-manual-code-input" class="input" placeholder="또는 자재코드 직접 입력 (예: IT-000001)" />
+        <button id="return-manual-lookup-btn" class="btn btn-secondary">조회</button>
+      </div>
+
+      <div id="return-lookup-error" class="scan-error-text hidden"></div>
+
       <input type="text" id="return-search-input" class="input" placeholder="자재코드 / BQMS / 품명으로 검색" />
       <div id="return-search-results" class="list"></div>
 

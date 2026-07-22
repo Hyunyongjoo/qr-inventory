@@ -297,8 +297,8 @@ html, body {
   word-break: break-all;
 }
 .scan-debug-row:empty { display: none; }
-#scan-reader-wrap { margin-bottom: 14px; }
-#qr-reader {
+#scan-reader-wrap, #return-reader-wrap { margin-bottom: 14px; }
+#qr-reader, #return-qr-reader {
   width: 100%;
   min-height: 300px;
   border-radius: var(--radius);
@@ -306,7 +306,7 @@ html, body {
   margin-bottom: 10px;
   background: #000;
 }
-#qr-reader video {
+#qr-reader video, #return-qr-reader video {
   width: 100% !important;
   height: 100% !important;
   object-fit: cover;

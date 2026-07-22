@@ -30,7 +30,10 @@
     purchaseSearchRows: [],
     purchaseSelectedIdx: new Set(),
     currentReturnItem: null,
-    returnCart: []
+    returnCart: [],
+    returnHtml5QrCode: null,
+    returnScanning: false,
+    returnScanBusy: false
   };
 
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -342,6 +345,7 @@
     $$('.nav-btn').forEach((b) => b.classList.toggle('active', b.dataset.view === name));
 
     if (name !== 'scan') stopScanning();
+    if (name !== 'return') stopReturnScanning();
 
     if (name === 'home') loadStock();
     if (name === 'items') loadItems();
@@ -1168,6 +1172,11 @@
 
   function bindReturn() {
     $('#return-back-btn').addEventListener('click', () => switchView('actions'));
+    $('#return-scan-toggle-btn').addEventListener('click', toggleReturnScanning);
+    $('#return-manual-lookup-btn').addEventListener('click', () => {
+      const code = $('#return-manual-code-input').value.trim();
+      if (code) handleReturnScannedCode(code);
+    });
     $('#return-search-input').addEventListener('input', debounce(searchReturnMaterials, 300));
     $('#return-add-btn').addEventListener('click', addToReturnCart);
     $('#return-cancel-btn').addEventListener('click', cancelReturnSelection);
@@ -1186,9 +1195,137 @@
     $('#return-result-card').classList.add('hidden');
     $('#return-search-input').value = '';
     $('#return-search-results').innerHTML = '';
+    $('#return-manual-code-input').value = '';
+    clearReturnScanError();
+    clearReturnLookupError();
     switchView('return');
     $('#return-context-label').textContent = `${state.site} · 반납`;
     renderReturnCart();
+  }
+
+  function toggleReturnScanning() {
+    if (state.returnScanning) {
+      stopReturnScanning();
+    } else {
+      startReturnScanning();
+    }
+  }
+
+  function showReturnScanError(message) {
+    const el = $('#return-scan-error-text');
+    el.textContent = message;
+    el.classList.remove('hidden');
+  }
+
+  function clearReturnScanError() {
+    const el = $('#return-scan-error-text');
+    el.textContent = '';
+    el.classList.add('hidden');
+  }
+
+  function showReturnLookupError(message) {
+    const el = $('#return-lookup-error');
+    el.textContent = message;
+    el.classList.remove('hidden');
+  }
+
+  function clearReturnLookupError() {
+    const el = $('#return-lookup-error');
+    el.textContent = '';
+    el.classList.add('hidden');
+  }
+
+  // 입고 화면의 QR 스캔(startScanning)과 동일한 방식: html5-qrcode로 카메라를 켜고,
+  // 인식되면 콜백으로 원본 텍스트를 넘긴다. 카메라는 계속 켜둔 채 연속으로 스캔하되,
+  // 이미 조회 중이거나 결과 카드가 떠 있는 동안에는 새 스캔을 무시한다.
+  function startReturnScanning() {
+    clearReturnScanError();
+
+    if (typeof Html5Qrcode === 'undefined') {
+      showReturnScanError('QR 스캐너 라이브러리를 불러오지 못했습니다. 앱을 새로고침해 주세요.');
+      toast('QR 스캐너 라이브러리를 불러오지 못했습니다.', 'error');
+      return;
+    }
+
+    const isSecureContext = window.isSecureContext || ['localhost', '127.0.0.1'].includes(location.hostname);
+    if (!isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      showReturnScanError('카메라를 사용하려면 HTTPS 주소로 접속해야 합니다. 자재코드를 직접 입력해 주세요.');
+      toast('보안 연결(HTTPS)이 아니어서 카메라를 사용할 수 없습니다.', 'error');
+      return;
+    }
+
+    $('#return-qr-reader').classList.remove('hidden');
+
+    state.returnHtml5QrCode = new Html5Qrcode('return-qr-reader');
+    state.returnHtml5QrCode
+      .start(
+        { facingMode: 'environment' },
+        {
+          fps: 10,
+          qrbox: (viewfinderWidth, viewfinderHeight) => {
+            const edge = Math.floor(Math.min(viewfinderWidth, viewfinderHeight) * 0.7);
+            const size = Math.max(150, Math.min(edge, 300));
+            return { width: size, height: size };
+          }
+        },
+        (decodedText) => {
+          if (state.returnScanBusy || state.currentReturnItem) return;
+          handleReturnScannedCode(decodedText);
+        },
+        () => {} // 프레임마다 실패하는 것은 정상 (인식 전까지)
+      )
+      .then(() => {
+        state.returnScanning = true;
+        $('#return-scan-toggle-btn').textContent = '스캔 중지';
+      })
+      .catch((err) => {
+        $('#return-qr-reader').classList.add('hidden');
+        state.returnScanning = false;
+        $('#return-scan-toggle-btn').textContent = '카메라 스캔 시작';
+        const message = String((err && err.message) || err || '');
+        let friendly = '카메라를 시작할 수 없습니다.';
+        if (/NotAllowedError|Permission/i.test(message)) {
+          friendly = '카메라 권한이 거부되었습니다. 브라우저 설정에서 카메라 접근을 허용해 주세요.';
+        } else if (/NotFoundError|no camera/i.test(message)) {
+          friendly = '사용 가능한 카메라를 찾을 수 없습니다.';
+        } else if (/NotReadableError/i.test(message)) {
+          friendly = '카메라가 다른 앱에서 사용 중입니다. 다른 앱을 종료한 후 다시 시도해 주세요.';
+        }
+        showReturnScanError(friendly + ' 자재코드를 직접 입력해도 됩니다.');
+        toast(friendly, 'error');
+      });
+  }
+
+  function stopReturnScanning() {
+    if (state.returnHtml5QrCode && state.returnScanning) {
+      state.returnHtml5QrCode.stop().then(() => state.returnHtml5QrCode.clear()).catch(() => {});
+    }
+    state.returnScanning = false;
+    $('#return-qr-reader').classList.add('hidden');
+    $('#return-scan-toggle-btn').textContent = '카메라 스캔 시작';
+  }
+
+  // QR/수동 입력으로 들어온 코드를 구매 화면과 같은 searchMaterials(사용자재 시트)에서
+  // 정확히 일치하는 자재코드로 찾아 선택 처리한다.
+  async function handleReturnScannedCode(rawCode) {
+    const code = parseQrPayload(rawCode);
+    if (!code) return;
+    clearReturnLookupError();
+    state.returnScanBusy = true;
+    try {
+      const rows = await Api.get('searchMaterials', { site: state.site, query: code });
+      const match = rows.find((m) => String(m.itemId).trim().toUpperCase() === code.toUpperCase());
+      if (!match) {
+        throw new Error(`코드 불일치: "${code}"와 일치하는 자재를 찾을 수 없습니다.`);
+      }
+      selectReturnMaterial(match);
+      $('#return-manual-code-input').value = '';
+    } catch (err) {
+      showReturnLookupError(err.message);
+      toast(err.message, 'error');
+    } finally {
+      state.returnScanBusy = false;
+    }
   }
 
   async function searchReturnMaterials() {
@@ -1237,6 +1374,7 @@
     state.currentReturnItem = null;
     $('#return-result-card').classList.add('hidden');
     $('#return-quantity').value = '';
+    $('#return-manual-code-input').value = '';
   }
 
   function addToReturnCart() {
@@ -1264,6 +1402,7 @@
     $('#return-result-card').classList.add('hidden');
     $('#return-search-input').value = '';
     $('#return-search-results').innerHTML = '';
+    $('#return-manual-code-input').value = '';
     $('#return-search-input').focus();
   }
 

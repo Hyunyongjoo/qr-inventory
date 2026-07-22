@@ -1,4 +1,4 @@
-const CACHE_NAME = 'qr-inventory-shell-v24';
+const CACHE_NAME = 'qr-inventory-shell-v25';
 const SHELL_FILES = [
   './index.html',
   './manifest.json',
@@ -7,8 +7,8 @@ const SHELL_FILES = [
   './js/app.js',
   './lib/html5-qrcode.min.js',
   './lib/qrcode.min.js',
-  './icons/icon-192.png',
-  './icons/icon-512.png'
+  './icons/icon-192.png?v=2',
+  './icons/icon-512.png?v=2'
 ];
 
 self.addEventListener('install', (event) => {

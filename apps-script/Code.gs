@@ -105,6 +105,9 @@ function doPost(e) {
       case 'stockReturn':
         result = stockReturn_(body);
         break;
+      case 'cancelPurchase':
+        result = cancelPurchase_(body);
+        break;
       default:
         throw new Error('알 수 없는 action: ' + action);
     }
@@ -404,14 +407,19 @@ function poSortComparator_(a, b) {
 
 // 재고사용(O,X)이 'O'로 표시된 행(자재담당자가 기존 재고로 충당하기로 확정한 요청)은
 // 실제 입고를 받을 일이 없으므로 FIFO 매칭/입고 화면 표시 대상에서 제외한다.
+// '취소'로 표시된 행(구매 취소 처리된 요청) 역시 같은 이유로 제외한다.
 function isStockCoveredRow_(r) {
   return String(r['재고사용(O,X)'] || '').trim().toUpperCase() === 'O';
+}
+
+function isCancelledRow_(r) {
+  return String(r['재고사용(O,X)'] || '').trim() === '취소';
 }
 
 function findOpenPurchaseOrders_(site, itemId) {
   const rows = readAll_(sheet_(poInSheetName_(site)));
   return rows
-    .filter(r => String(r['자재코드']) === String(itemId) && r['입고여부'] !== '입고완료' && !isStockCoveredRow_(r))
+    .filter(r => String(r['자재코드']) === String(itemId) && r['입고여부'] !== '입고완료' && !isStockCoveredRow_(r) && !isCancelledRow_(r))
     .sort(poSortComparator_);
 }
 
@@ -515,6 +523,7 @@ function poRowToInboundView_(po) {
   const requested = Number(po['요청수량']) || 0;
   const cumulative = Number(po['누적입고수량']) || 0;
   return {
+    rowIndex: po._row,
     requestDate: po['요청일자'] || '',
     requester: po['신청자'] || '',
     zone: po['라인'] || '',
@@ -525,7 +534,8 @@ function poRowToInboundView_(po) {
     cumulativeQty: cumulative,
     remainingQty: requested - cumulative,
     dueDate: po['필요일자'] || '',
-    status: po['입고여부'] || (cumulative <= 0 ? '미입고' : (cumulative < requested ? '부분입고' : '입고완료'))
+    status: po['입고여부'] || (cumulative <= 0 ? '미입고' : (cumulative < requested ? '부분입고' : '입고완료')),
+    stockUse: po['재고사용(O,X)'] || ''
   };
 }
 
@@ -690,6 +700,37 @@ function registerNewItemIfMissing_(itemId, itemName, spec) {
     CreatedAt: new Date(),
     '신규여부': '★신규'
   });
+}
+
+// 입고확인 화면에서 아직 처리되지 않은(재고사용(O,X)이 공란인) 구매 요청을 취소한다.
+// 자재담당자가 이미 재고사용 여부를 확정한 건(O/X)은 이미 구매가 진행된 것으로 보고 취소를 막는다.
+function cancelPurchase_(body) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const site = assertSite_(body.site);
+    const rowIndex = Number(body.rowIndex);
+    if (!rowIndex || rowIndex < 2) throw new Error('취소할 구매 요청을 찾을 수 없습니다.');
+
+    const sheet = sheet_(poInSheetName_(site));
+    if (rowIndex > sheet.getLastRow()) throw new Error('취소할 구매 요청을 찾을 수 없습니다.');
+
+    const row = readAll_(sheet).find(r => r._row === rowIndex);
+    if (!row) throw new Error('취소할 구매 요청을 찾을 수 없습니다.');
+
+    const stockUse = String(row['재고사용(O,X)'] || '').trim().toUpperCase();
+    if (stockUse === 'O' || stockUse === 'X') {
+      throw new Error('이미 처리된 건은 취소 불가');
+    }
+    if (stockUse === '취소') {
+      throw new Error('이미 취소된 요청입니다.');
+    }
+
+    updateRow_(sheet, rowIndex, { '재고사용(O,X)': '취소' });
+    return { rowIndex, stockUse: '취소' };
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 // ------------------------- 입고 / 출고 -------------------------

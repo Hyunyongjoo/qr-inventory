@@ -1626,28 +1626,74 @@
       `;
       summaryEl.classList.remove('hidden');
 
-      listEl.innerHTML = rows.map((r) => `
-        <div class="card inbound-card">
-          <div class="inbound-card-meta">
-            ${r.requestDate ? `<span>요청일자 ${formatPoDate(r.requestDate)}</span>` : ''}
-            ${r.requester ? `<span>· ${escapeHtml(r.requester)}</span>` : ''}
-          </div>
-          <div class="inbound-card-top">
-            <div class="row-main">
-              <span class="primary">${escapeHtml(r.itemName)}</span>
-              <span class="secondary">${escapeHtml(r.itemId)}${r.spec ? ' · ' + escapeHtml(r.spec) : ''}</span>
-            </div>
-            <span class="po-status-tag ${poStatusClass(r.status)}">${escapeHtml(r.status)}</span>
-          </div>
-          <div class="inbound-card-qty">
-            <div class="iq-item"><span class="iq-label">요청수량</span><span class="iq-value">${Number(r.requestedQty).toLocaleString()}</span></div>
-            <div class="iq-item"><span class="iq-label">누적입고수량</span><span class="iq-value">${Number(r.cumulativeQty).toLocaleString()}</span></div>
-            <div class="iq-item"><span class="iq-label">잔여수량</span><span class="iq-value">${Number(r.remainingQty).toLocaleString()}</span></div>
-          </div>
-        </div>
-      `).join('');
+      listEl.innerHTML = rows.map((r) => renderInboundCard(r)).join('');
+      listEl.querySelectorAll('.inbound-cancel-btn').forEach((btn) => {
+        btn.addEventListener('click', onInboundCancelClick);
+      });
     } catch (err) {
       listEl.innerHTML = `<div class="empty-state">오류: ${escapeHtml(err.message)}</div>`;
+    }
+  }
+
+  function inboundCancelState(stockUse) {
+    const v = String(stockUse || '').trim().toUpperCase();
+    if (v === '취소') return { disabled: true, label: '취소됨' };
+    if (v === 'O' || v === 'X') return { disabled: true, label: '취소' };
+    return { disabled: false, label: '취소' };
+  }
+
+  function renderInboundCard(r) {
+    const cancelState = inboundCancelState(r.stockUse);
+    return `
+      <div class="card inbound-card">
+        <div class="inbound-card-meta">
+          ${r.requestDate ? `<span>요청일자 ${formatPoDate(r.requestDate)}</span>` : ''}
+          ${r.requester ? `<span>· ${escapeHtml(r.requester)}</span>` : ''}
+        </div>
+        <div class="inbound-card-top">
+          <div class="row-main">
+            <span class="primary">${escapeHtml(r.itemName)}</span>
+            <span class="secondary">${escapeHtml(r.itemId)}${r.spec ? ' · ' + escapeHtml(r.spec) : ''}</span>
+          </div>
+          <span class="po-status-tag ${poStatusClass(r.status)}">${escapeHtml(r.status)}</span>
+        </div>
+        <div class="inbound-card-qty">
+          <div class="iq-item"><span class="iq-label">요청수량</span><span class="iq-value">${Number(r.requestedQty).toLocaleString()}</span></div>
+          <div class="iq-item"><span class="iq-label">누적입고수량</span><span class="iq-value">${Number(r.cumulativeQty).toLocaleString()}</span></div>
+          <div class="iq-item"><span class="iq-label">잔여수량</span><span class="iq-value">${Number(r.remainingQty).toLocaleString()}</span></div>
+        </div>
+        <div class="inbound-card-actions">
+          <button type="button" class="btn btn-small btn-danger inbound-cancel-btn"
+            data-row-index="${r.rowIndex}" data-stock-use="${escapeHtml(r.stockUse || '')}"
+            ${cancelState.disabled ? 'disabled' : ''}>${escapeHtml(cancelState.label)}</button>
+        </div>
+      </div>
+    `;
+  }
+
+  async function onInboundCancelClick(e) {
+    const btn = e.currentTarget;
+    const rowIndex = Number(btn.dataset.rowIndex);
+    const stockUse = String(btn.dataset.stockUse || '').trim().toUpperCase();
+
+    if (stockUse === 'O' || stockUse === 'X') {
+      toast('이미 구매가 진행되어 취소가 불가능합니다', 'error');
+      btn.disabled = true;
+      btn.textContent = '취소';
+      return;
+    }
+
+    if (!confirm('구매 요청을 취소하시겠습니까?')) return;
+
+    btn.disabled = true;
+    try {
+      await Api.post('cancelPurchase', { site: state.site, rowIndex });
+      btn.dataset.stockUse = '취소';
+      btn.textContent = '취소됨';
+      toast('구매 요청이 취소되었습니다.', 'success');
+    } catch (err) {
+      btn.disabled = false;
+      toast(err.message || '취소 처리 중 오류가 발생했습니다.', 'error');
     }
   }
 

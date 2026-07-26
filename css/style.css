@@ -468,6 +468,8 @@ html, body {
 .inbound-card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin-bottom: 10px; }
 .inbound-card-qty { display: flex; justify-content: space-between; gap: 8px; padding-top: 10px; border-top: 1px solid var(--border); }
 .iq-item { display: flex; flex-direction: column; align-items: center; gap: 2px; flex: 1; }
+
+.inbound-card-actions { display: flex; justify-content: flex-end; margin-top: 10px; }
 .iq-label { font-size: 11px; color: var(--text-muted); }
 .iq-value { font-size: 15px; font-weight: 700; }
 

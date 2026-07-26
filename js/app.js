@@ -1635,15 +1635,26 @@
     }
   }
 
+  // 재고사용(O,X)이 'O'인 행은 입고를 받을 일이 없는 요청이라 상태 표시를 "재고사용"(파란색)으로 바꿔 보여준다.
+  function inboundStatusInfo(r) {
+    const stockUse = String(r.stockUse || '').trim().toUpperCase();
+    if (stockUse === 'O') {
+      return { label: '재고사용', className: 'po-status-stock' };
+    }
+    return { label: r.status, className: poStatusClass(r.status) };
+  }
+
   function inboundCancelState(stockUse) {
     const v = String(stockUse || '').trim().toUpperCase();
-    if (v === '취소') return { disabled: true, label: '취소됨' };
-    if (v === 'O' || v === 'X') return { disabled: true, label: '취소' };
-    return { disabled: false, label: '취소' };
+    if (v === '취소') return { disabled: true, blocked: false, label: '취소됨' };
+    if (v === 'O' || v === 'X') return { disabled: false, blocked: true, label: '취소불가' };
+    return { disabled: false, blocked: false, label: '취소' };
   }
 
   function renderInboundCard(r) {
+    const statusInfo = inboundStatusInfo(r);
     const cancelState = inboundCancelState(r.stockUse);
+    const cancelBtnClass = cancelState.blocked ? 'inbound-cancel-btn is-blocked' : 'inbound-cancel-btn btn-danger';
     return `
       <div class="card inbound-card">
         <div class="inbound-card-meta">
@@ -1655,7 +1666,7 @@
             <span class="primary">${escapeHtml(r.itemName)}</span>
             <span class="secondary">${escapeHtml(r.itemId)}${r.spec ? ' · ' + escapeHtml(r.spec) : ''}</span>
           </div>
-          <span class="po-status-tag ${poStatusClass(r.status)}">${escapeHtml(r.status)}</span>
+          <span class="po-status-tag ${statusInfo.className}">${escapeHtml(statusInfo.label)}</span>
         </div>
         <div class="inbound-card-qty">
           <div class="iq-item"><span class="iq-label">요청수량</span><span class="iq-value">${Number(r.requestedQty).toLocaleString()}</span></div>
@@ -1663,7 +1674,7 @@
           <div class="iq-item"><span class="iq-label">잔여수량</span><span class="iq-value">${Number(r.remainingQty).toLocaleString()}</span></div>
         </div>
         <div class="inbound-card-actions">
-          <button type="button" class="btn btn-small btn-danger inbound-cancel-btn"
+          <button type="button" class="btn btn-small ${cancelBtnClass}"
             data-row-index="${r.rowIndex}" data-stock-use="${escapeHtml(r.stockUse || '')}"
             ${cancelState.disabled ? 'disabled' : ''}>${escapeHtml(cancelState.label)}</button>
         </div>
@@ -1677,9 +1688,7 @@
     const stockUse = String(btn.dataset.stockUse || '').trim().toUpperCase();
 
     if (stockUse === 'O' || stockUse === 'X') {
-      toast('이미 구매가 진행되어 취소가 불가능합니다', 'error');
-      btn.disabled = true;
-      btn.textContent = '취소';
+      toast('이미 처리된 건은 취소가 불가능합니다', 'error');
       return;
     }
 

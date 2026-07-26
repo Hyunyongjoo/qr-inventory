@@ -1,4 +1,4 @@
-const CACHE_NAME = 'qr-inventory-shell-v26';
+const CACHE_NAME = 'qr-inventory-shell-v27';
 const SHELL_FILES = [
   './index.html',
   './manifest.json',

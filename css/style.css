@@ -354,6 +354,7 @@ html, body {
 .po-status-none { background: rgba(239,68,68,.15); color: var(--danger); }
 .po-status-partial { background: rgba(245,158,11,.15); color: var(--warn); }
 .po-status-done { background: rgba(34,197,94,.15); color: var(--success); }
+.po-status-stock { background: rgba(59,130,246,.15); color: var(--accent); }
 .po-info-none {
   font-size: 13px;
   color: var(--text-muted);
@@ -470,6 +471,7 @@ html, body {
 .iq-item { display: flex; flex-direction: column; align-items: center; gap: 2px; flex: 1; }
 
 .inbound-card-actions { display: flex; justify-content: flex-end; margin-top: 10px; }
+.inbound-cancel-btn.is-blocked { background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); }
 .iq-label { font-size: 11px; color: var(--text-muted); }
 .iq-value { font-size: 15px; font-weight: 700; }
 

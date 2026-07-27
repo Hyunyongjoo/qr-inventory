@@ -15,6 +15,7 @@
  */
 
 const SITES = ['기흥', '화성', '평택'];
+const MATERIAL_PHOTO_FOLDER_ID = '1bZBjpGMHNvBNgls0AaS0zdigURqXfZI0';
 const ZONES = {
   '기흥': ['K2', 'S3', 'S4', 'Display'],
   '화성': ['H1', 'H2', 'H3', 'H4', 'NRD'],
@@ -57,6 +58,9 @@ function doGet(e) {
         break;
       case 'searchMaterials':
         result = searchMaterials_(e.parameter.site || '', e.parameter.query || '');
+        break;
+      case 'getPhotoUrl':
+        result = getPhotoUrl_(e.parameter.itemId || '');
         break;
       case 'sites':
         result = SITES;
@@ -625,6 +629,28 @@ function searchMaterials_(site, query) {
     equipment: r['사용설비'] || '',
     note: r['비고'] || ''
   }));
+}
+
+// 구매 화면 사진보기용: 지정된 Drive 폴더에서 파일명(확장자 제외)이 자재코드와 일치하는
+// 파일을 찾아 브라우저에서 바로 열람 가능한 URL을 반환한다. 없으면 null.
+// 폴더의 파일이 "링크가 있는 모든 사용자"로 공유되어 있어야 앱(익명 접속)에서 이미지가 보인다.
+function getPhotoUrl_(itemId) {
+  if (!itemId) throw new Error('자재코드가 필요합니다.');
+  const normalized = String(itemId).trim();
+  const folder = DriveApp.getFolderById(MATERIAL_PHOTO_FOLDER_ID);
+  const files = folder.getFiles();
+  while (files.hasNext()) {
+    const file = files.next();
+    if (fileBaseNameMatches_(file.getName(), normalized)) {
+      return 'https://drive.google.com/uc?export=view&id=' + file.getId();
+    }
+  }
+  return null;
+}
+
+function fileBaseNameMatches_(fileName, itemId) {
+  const base = String(fileName).replace(/\.[^./\\]+$/, '').trim();
+  return base.toUpperCase() === itemId.toUpperCase();
 }
 
 // 구매요청 완료: 장바구니에 담긴 자재마다 "_구매발주및입고" 시트에 새 행을 하나씩 등록한다.

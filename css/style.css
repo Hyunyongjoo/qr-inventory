@@ -194,7 +194,31 @@ html, body {
 .item-checkbox-wrap { display: flex; align-items: center; flex-shrink: 0; }
 .item-checkbox-wrap input { width: 20px; height: 20px; }
 #purchase-search-results .item-row { justify-content: flex-start; }
-#purchase-search-results .row-main { flex: 1; }
+#purchase-search-results .row-main { flex: 1; cursor: pointer; }
+
+.item-photo-btn {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.item-photo-btn:active { background: var(--border); }
+
+.photo-modal-body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 160px;
+  margin: 14px 0;
+}
+.photo-modal-img { max-width: 100%; max-height: 60vh; border-radius: var(--radius); }
 
 .select-all-row {
   display: flex;

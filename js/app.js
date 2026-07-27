@@ -942,14 +942,15 @@
           <label class="item-checkbox-wrap">
             <input type="checkbox" class="purchase-item-checkbox" data-idx="${i}" />
           </label>
-          <div class="row-main">
+          <div class="row-main purchase-item-main" data-idx="${i}">
             <span class="primary">${escapeHtml(m.itemName)}</span>
             <span class="secondary">${escapeHtml(m.itemId)}${m.bqms ? ' · ' + escapeHtml(m.bqms) : ''}${m.spec ? ' · ' + escapeHtml(m.spec) : ''}${m.equipment ? ' · ' + escapeHtml(m.equipment) : ''}</span>
           </div>
+          <button type="button" class="item-photo-btn" data-idx="${i}" title="사진 보기" aria-label="사진 보기">📷</button>
         </div>
       `).join('');
-      $$('.item-row', resultsEl).forEach((row, i) => {
-        row.addEventListener('click', () => selectPurchaseMaterial(rows[i]));
+      $$('.purchase-item-main', resultsEl).forEach((el, i) => {
+        el.addEventListener('click', () => selectPurchaseMaterial(rows[i]));
       });
       $$('.purchase-item-checkbox', resultsEl).forEach((cb, i) => {
         cb.addEventListener('click', (e) => e.stopPropagation());
@@ -957,6 +958,12 @@
           if (e.target.checked) state.purchaseSelectedIdx.add(i);
           else state.purchaseSelectedIdx.delete(i);
           renderPurchaseBulkUI();
+        });
+      });
+      $$('.item-photo-btn', resultsEl).forEach((btn, i) => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          openMaterialPhoto(rows[i]);
         });
       });
       renderPurchaseBulkUI();
@@ -1052,6 +1059,36 @@
       renderPurchaseBulkUI();
       $('#purchase-search-input').focus();
     });
+  }
+
+  // 사진 아이콘 클릭: 로딩 → getPhotoUrl 조회 → 사진 또는 "등록된 사진이 없습니다" 표시.
+  async function openMaterialPhoto(material) {
+    const html = `
+      <div class="modal-sheet photo-modal">
+        <h3>${escapeHtml(material.itemName)}</h3>
+        <p class="muted">${escapeHtml(material.itemId)}${material.bqms ? ' · ' + escapeHtml(material.bqms) : ''}</p>
+        <div id="photo-modal-body" class="photo-modal-body">
+          <div class="empty-state">불러오는 중...</div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-secondary btn-block" id="photo-modal-close">닫기</button>
+        </div>
+      </div>
+    `;
+    openModal(html);
+    $('#photo-modal-close').addEventListener('click', closeModal);
+
+    try {
+      const url = await Api.get('getPhotoUrl', { itemId: material.itemId });
+      const bodyEl = $('#photo-modal-body');
+      if (!bodyEl) return; // 응답 오기 전에 팝업이 닫힌 경우
+      bodyEl.innerHTML = url
+        ? `<img src="${escapeHtml(url)}" alt="${escapeHtml(material.itemName)}" class="photo-modal-img" />`
+        : `<div class="empty-state">등록된 사진이 없습니다.</div>`;
+    } catch (err) {
+      const bodyEl = $('#photo-modal-body');
+      if (bodyEl) bodyEl.innerHTML = `<div class="empty-state">오류: ${escapeHtml(err.message)}</div>`;
+    }
   }
 
   function selectPurchaseMaterial(material) {

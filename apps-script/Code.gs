@@ -631,26 +631,36 @@ function searchMaterials_(site, query) {
   }));
 }
 
-// 구매 화면 사진보기용: 지정된 Drive 폴더에서 파일명(확장자 제외)이 자재코드와 일치하는
-// 파일을 찾아 브라우저에서 바로 열람 가능한 URL을 반환한다. 없으면 null.
-// 폴더의 파일이 "링크가 있는 모든 사용자"로 공유되어 있어야 앱(익명 접속)에서 이미지가 보인다.
+// 구매 화면 사진보기용: 지정된 Drive 폴더에서 "자재코드.jpg" → "자재코드.jpeg" → "자재코드.png"
+// 순서로 파일을 찾아, 썸네일 URL(thumbnail?id=...&sz=w400)을 반환한다. 파일이 없으면 null(오류 아님).
+// DriveApp.getFolderById()/getFilesByName() 호출 자체가 실패하면(권한 문제, 잘못된 폴더 ID 등)
+// 원인을 구분할 수 있는 메시지로 다시 던진다.
 function getPhotoUrl_(itemId) {
   if (!itemId) throw new Error('자재코드가 필요합니다.');
   const normalized = String(itemId).trim();
-  const folder = DriveApp.getFolderById(MATERIAL_PHOTO_FOLDER_ID);
-  const files = folder.getFiles();
-  while (files.hasNext()) {
-    const file = files.next();
-    if (fileBaseNameMatches_(file.getName(), normalized)) {
-      return 'https://drive.google.com/uc?export=view&id=' + file.getId();
+
+  let folder;
+  try {
+    folder = DriveApp.getFolderById(MATERIAL_PHOTO_FOLDER_ID);
+  } catch (err) {
+    throw new Error('사진 폴더에 접근할 수 없습니다 (권한 오류). Drive 폴더 공유 설정을 확인하세요: ' + String(err.message || err));
+  }
+
+  const extensions = ['jpg', 'jpeg', 'png'];
+  for (let i = 0; i < extensions.length; i++) {
+    const fileName = normalized + '.' + extensions[i];
+    let files;
+    try {
+      files = folder.getFilesByName(fileName);
+    } catch (err) {
+      throw new Error('사진 파일 조회 중 오류가 발생했습니다: ' + String(err.message || err));
+    }
+    if (files.hasNext()) {
+      const file = files.next();
+      return 'https://drive.google.com/thumbnail?id=' + file.getId() + '&sz=w400';
     }
   }
-  return null;
-}
-
-function fileBaseNameMatches_(fileName, itemId) {
-  const base = String(fileName).replace(/\.[^./\\]+$/, '').trim();
-  return base.toUpperCase() === itemId.toUpperCase();
+  return null; // jpg/jpeg/png 모두 없음 = 등록된 사진 없음 (오류 아님)
 }
 
 // 구매요청 완료: 장바구니에 담긴 자재마다 "_구매발주및입고" 시트에 새 행을 하나씩 등록한다.

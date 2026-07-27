@@ -508,17 +508,6 @@
     $('#scan-toggle-btn').textContent = '카메라 스캔 시작';
   }
 
-  // QR 라벨은 "CODE:0137-100-030|NAME:TRANSMITTER|SPEC:P-77..." 같은
-  // 파이프(|) 구분 형식이거나, 자체 발급한 QR처럼 자재코드 그대로일 수 있음.
-  // CODE: 항목이 있으면 그 값만 추출하고, 없으면 전체 문자열을 코드로 취급한다.
-  function parseQrPayload(text) {
-    const raw = String(text || '').trim();
-    const upperRaw = raw.toUpperCase();
-    const idx = upperRaw.indexOf('CODE:');
-    if (idx === -1) return raw;
-    return raw.slice(idx + 'CODE:'.length).split('|')[0].trim();
-  }
-
   function showLookupError(message) {
     const el = $('#scan-lookup-error');
     el.textContent = message;
@@ -568,7 +557,7 @@
 
   async function handleScannedCode(rawCode) {
     clearLookupError();
-    const code = parseQrPayload(rawCode);
+    const code = String(rawCode || '').trim();
     debugSetRaw(rawCode, code || '(빈 값)');
     if (DEBUG_QR) toast(`스캔된 코드: ${code || '(빈 값)'}`, '');
 
@@ -1345,7 +1334,7 @@
   // QR/수동 입력으로 들어온 코드를 Items 시트에서 정확히 일치하는 자재코드로 조회한다.
   // 발주(구매발주및입고) 이력은 전혀 확인하지 않는다 - 반납은 발주 유무와 무관하게 처리된다.
   async function handleReturnScannedCode(rawCode) {
-    const code = parseQrPayload(rawCode);
+    const code = String(rawCode || '').trim();
     if (!code) return;
     clearReturnLookupError();
     state.returnScanBusy = true;

@@ -219,7 +219,11 @@
   // ------------------------- 사이트 선택 -------------------------
 
   function bindSite() {
-    $$('.site-btn').forEach((btn) => {
+    // '.site-btn' 클래스는 라인별/건별 출고 선택 버튼 등 다른 화면에서도 스타일 목적으로
+    // 재사용되므로, 사이트 선택 화면(#view-site) 안의 버튼으로만 범위를 한정해야 한다.
+    // 문서 전체를 대상으로 하면 다른 화면의 버튼 클릭에도 selectSite(undefined)가 함께
+    // 실행되어 state.site가 초기화되고 엉뚱한 화면으로 튕기는 문제가 있었다.
+    $$('.site-btn', $('#view-site')).forEach((btn) => {
       btn.addEventListener('click', () => selectSite(btn.dataset.site));
     });
     $('#site-badge').addEventListener('click', () => switchView('site'));

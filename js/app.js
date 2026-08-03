@@ -8,8 +8,8 @@
   const DEBUG_QR = true;
   const SITES = ['기흥', '화성', '평택'];
   const ZONES = {
-    '기흥': ['K2', 'S3', 'S4', 'Display'],
-    '화성': ['11L', '15L', '16L', '17L', 'NRD'],
+    '기흥': ['S1', '6LINE', 'S3', 'S4', 'Display'],
+    '화성': ['11LINE', '15LINE', '16LINE', '17LINE', 'NRDLINE'],
     '평택': ['P1', 'P2', 'P3', 'P4', 'S5']
   };
 
@@ -33,7 +33,11 @@
     returnCart: [],
     returnHtml5QrCode: null,
     returnScanning: false,
-    returnScanBusy: false
+    returnScanBusy: false,
+    orderOutNo: '',
+    orderOutItems: [],
+    orderOutHtml5QrCode: null,
+    orderOutScanning: false
   };
 
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -63,7 +67,7 @@
     // 화면(index.html)과 스크립트(app.js) 버전이 잠깐 어긋난 상태(예: 캐시 갱신 중 일부만
     // 새로 받아온 경우)에서 특정 화면의 요소를 찾지 못해 bindXxx() 하나가 실패하더라도,
     // 그 뒤에 이어지는 다른 화면 바인딩과 로그인 화면 진입까지는 막히지 않게 각각 감싸서 실행한다.
-    [bindLogin, bindSite, bindNav, bindActions, bindLine, bindHome, bindScan,
+    [bindLogin, bindSite, bindNav, bindActions, bindLine, bindOutMode, bindOrderOut, bindHome, bindScan,
       bindPurchase, bindReturn, bindItems, bindInboundCheck, bindHistory, bindLogout, bindHardRefresh
     ].forEach((bindFn) => {
       try {
@@ -279,11 +283,29 @@
         state.scanZone = btn.dataset.zone;
         if (state.scanType === 'PURCHASE') {
           goToPurchase();
+        } else if (state.scanType === 'OUT' && state.site === '기흥') {
+          goToOutMode();
         } else {
           goToScan();
         }
       });
     });
+  }
+
+  // ------------------------- 출고 방식 선택 (라인별 / 건별, 기흥 전용) -------------------------
+
+  function bindOutMode() {
+    $('#out-mode-back-btn').addEventListener('click', () => {
+      switchView('line');
+      if (state.currentView === 'line') renderLineButtons();
+    });
+    $('#out-mode-by-line-btn').addEventListener('click', () => goToScan());
+    $('#out-mode-by-order-btn').addEventListener('click', () => goToOrderOut());
+  }
+
+  function goToOutMode() {
+    switchView('out-mode');
+    $('#out-mode-context-label').textContent = `${state.site} · ${state.scanZone} · 출고`;
   }
 
   function goToScan() {
@@ -340,12 +362,20 @@
       renderReturnCart();
     }
 
+    if (state.currentView === 'order-out' && name !== 'order-out' && state.orderOutItems.some((it) => it.checked)) {
+      if (!confirm('확인한 출고 목록이 사라집니다. 이동하시겠습니까?')) return;
+      state.orderOutNo = '';
+      state.orderOutItems = [];
+      renderOrderOutSubmitUI();
+    }
+
     $$('.view').forEach((v) => v.classList.add('hidden'));
     $('#view-' + name).classList.remove('hidden');
     $$('.nav-btn').forEach((b) => b.classList.toggle('active', b.dataset.view === name));
 
     if (name !== 'scan') stopScanning();
     if (name !== 'return') stopReturnScanning();
+    if (name !== 'order-out') stopOrderOutScanning();
 
     if (name === 'home') loadStock();
     if (name === 'items') loadItems();
@@ -409,11 +439,17 @@
     });
     $('#cart-submit-btn').addEventListener('click', submitCart);
     $('#scan-back-btn').addEventListener('click', () => {
-      const target = state.scanType === 'OUT' ? 'line' : 'actions';
+      let target = 'actions';
+      if (state.scanType === 'OUT') {
+        target = state.site === '기흥' ? 'out-mode' : 'line';
+      }
       switchView(target);
       // switchView는 사용자가 확인 취소 시 뷰를 바꾸지 않으므로, 실제로 이동했을 때만 Line 버튼을 다시 그림
       if (target === 'line' && state.currentView === 'line') {
         renderLineButtons();
+      }
+      if (target === 'out-mode' && state.currentView === 'out-mode') {
+        goToOutMode();
       }
     });
   }
@@ -1484,6 +1520,237 @@
       updateOfflineBadge();
     } catch (err) {
       toast(err.message || '반납 처리 중 오류가 발생했습니다.', 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // ------------------------- 건별 출고 (기흥 전용) -------------------------
+
+  function bindOrderOut() {
+    $('#order-out-back-btn').addEventListener('click', () => switchView('out-mode'));
+    $('#order-out-lookup-btn').addEventListener('click', lookupOrderOutItems);
+    $('#order-out-no-input').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') lookupOrderOutItems();
+    });
+    $('#order-out-scan-toggle-btn').addEventListener('click', toggleOrderOutScanning);
+    $('#order-out-submit-btn').addEventListener('click', submitOrderOut);
+  }
+
+  function goToOrderOut() {
+    state.orderOutNo = '';
+    state.orderOutItems = [];
+    $('#order-out-no-input').value = '';
+    $('#order-out-list-section').classList.add('hidden');
+    clearOrderOutLookupError();
+    clearOrderOutScanError();
+    switchView('order-out');
+    $('#order-out-context-label').textContent = `${state.site} · ${state.scanZone} · 건별 출고`;
+    renderOrderOutSubmitUI();
+  }
+
+  function showOrderOutLookupError(message) {
+    const el = $('#order-out-lookup-error');
+    el.textContent = message;
+    el.classList.remove('hidden');
+  }
+
+  function clearOrderOutLookupError() {
+    const el = $('#order-out-lookup-error');
+    el.textContent = '';
+    el.classList.add('hidden');
+  }
+
+  async function lookupOrderOutItems() {
+    const orderNo = $('#order-out-no-input').value.trim();
+    if (!orderNo) return;
+    clearOrderOutLookupError();
+    $('#order-out-list-section').classList.add('hidden');
+    try {
+      const rows = await Api.get('getByLineOrderNo', { site: state.site, orderNo });
+      state.orderOutNo = orderNo;
+      state.orderOutItems = rows.map((r) => ({
+        itemId: r.itemId,
+        itemName: r.itemName,
+        spec: r.spec,
+        bqms: r.bqms,
+        requestedQty: r.requestedQty,
+        quantity: r.requestedQty,
+        checked: false
+      }));
+      $('#order-out-list-title').textContent = `${orderNo} · 자재 ${rows.length}건`;
+      $('#order-out-list-section').classList.remove('hidden');
+      renderOrderOutItems();
+    } catch (err) {
+      showOrderOutLookupError(err.message);
+      toast(err.message, 'error');
+    }
+  }
+
+  function renderOrderOutItems() {
+    const items = state.orderOutItems;
+    const listEl = $('#order-out-items');
+    listEl.innerHTML = items.map((it, i) => `
+      <div class="item-row" data-idx="${i}">
+        <label class="item-checkbox-wrap">
+          <input type="checkbox" class="order-out-item-checkbox" data-idx="${i}" ${it.checked ? 'checked' : ''} />
+        </label>
+        <div class="row-main">
+          <span class="primary">${escapeHtml(it.itemName)}${it.spec ? ' / ' + escapeHtml(it.spec) : ''}</span>
+          <span class="secondary">${escapeHtml(it.itemId)}${it.bqms ? ' · ' + escapeHtml(it.bqms) : ''} · 요청수량 ${Number(it.requestedQty).toLocaleString()}</span>
+        </div>
+        <input type="number" class="input order-out-item-qty" data-idx="${i}" min="1" step="1" inputmode="numeric" value="${it.quantity}" />
+      </div>
+    `).join('');
+
+    $$('.order-out-item-checkbox', listEl).forEach((cb, i) => {
+      cb.addEventListener('change', (e) => {
+        state.orderOutItems[i].checked = e.target.checked;
+        renderOrderOutSubmitUI();
+      });
+    });
+    $$('.order-out-item-qty', listEl).forEach((input, i) => {
+      input.addEventListener('input', (e) => {
+        state.orderOutItems[i].quantity = Number(e.target.value) || 0;
+      });
+    });
+
+    renderOrderOutSubmitUI();
+  }
+
+  function renderOrderOutSubmitUI() {
+    const checkedCount = state.orderOutItems.filter((it) => it.checked).length;
+    $('#order-out-submit-count').textContent = checkedCount;
+    $('#order-out-cart-footer').classList.toggle('hidden', checkedCount === 0);
+    $('#view-container').classList.toggle('has-cart-footer',
+      checkedCount > 0 || state.cart.length > 0 || state.purchaseCart.length > 0 || state.returnCart.length > 0);
+  }
+
+  function showOrderOutScanError(message) {
+    const el = $('#order-out-scan-error-text');
+    el.textContent = message;
+    el.classList.remove('hidden');
+  }
+
+  function clearOrderOutScanError() {
+    const el = $('#order-out-scan-error-text');
+    el.textContent = '';
+    el.classList.add('hidden');
+  }
+
+  function toggleOrderOutScanning() {
+    if (state.orderOutScanning) {
+      stopOrderOutScanning();
+    } else {
+      startOrderOutScanning();
+    }
+  }
+
+  // QR로 스캔된 자재코드를 이미 조회된 목록(state.orderOutItems)에서 찾아 체크만 한다.
+  // 반납/입고/출고 스캔과 달리 서버 조회가 필요 없어 동기적으로 즉시 처리한다.
+  function startOrderOutScanning() {
+    clearOrderOutScanError();
+
+    if (typeof Html5Qrcode === 'undefined') {
+      showOrderOutScanError('QR 스캐너 라이브러리를 불러오지 못했습니다. 앱을 새로고침해 주세요.');
+      toast('QR 스캐너 라이브러리를 불러오지 못했습니다.', 'error');
+      return;
+    }
+
+    const isSecureContext = window.isSecureContext || ['localhost', '127.0.0.1'].includes(location.hostname);
+    if (!isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      showOrderOutScanError('카메라를 사용하려면 HTTPS 주소로 접속해야 합니다. 체크박스로 직접 확인해 주세요.');
+      toast('보안 연결(HTTPS)이 아니어서 카메라를 사용할 수 없습니다.', 'error');
+      return;
+    }
+
+    $('#order-out-qr-reader').classList.remove('hidden');
+
+    state.orderOutHtml5QrCode = new Html5Qrcode('order-out-qr-reader');
+    state.orderOutHtml5QrCode
+      .start(
+        { facingMode: 'environment' },
+        {
+          fps: 10,
+          qrbox: (viewfinderWidth, viewfinderHeight) => {
+            const edge = Math.floor(Math.min(viewfinderWidth, viewfinderHeight) * 0.7);
+            const size = Math.max(150, Math.min(edge, 300));
+            return { width: size, height: size };
+          }
+        },
+        (decodedText) => handleOrderOutScannedCode(decodedText),
+        () => {} // 프레임마다 실패하는 것은 정상 (인식 전까지)
+      )
+      .then(() => {
+        state.orderOutScanning = true;
+        $('#order-out-scan-toggle-btn').textContent = '스캔 중지';
+      })
+      .catch((err) => {
+        $('#order-out-qr-reader').classList.add('hidden');
+        state.orderOutScanning = false;
+        $('#order-out-scan-toggle-btn').textContent = 'QR 스캔으로 확인';
+        const message = String((err && err.message) || err || '');
+        let friendly = '카메라를 시작할 수 없습니다.';
+        if (/NotAllowedError|Permission/i.test(message)) {
+          friendly = '카메라 권한이 거부되었습니다. 브라우저 설정에서 카메라 접근을 허용해 주세요.';
+        } else if (/NotFoundError|no camera/i.test(message)) {
+          friendly = '사용 가능한 카메라를 찾을 수 없습니다.';
+        } else if (/NotReadableError/i.test(message)) {
+          friendly = '카메라가 다른 앱에서 사용 중입니다. 다른 앱을 종료한 후 다시 시도해 주세요.';
+        }
+        showOrderOutScanError(friendly + ' 체크박스로 직접 확인해 주세요.');
+        toast(friendly, 'error');
+      });
+  }
+
+  function stopOrderOutScanning() {
+    if (state.orderOutHtml5QrCode && state.orderOutScanning) {
+      state.orderOutHtml5QrCode.stop().then(() => state.orderOutHtml5QrCode.clear()).catch(() => {});
+    }
+    state.orderOutScanning = false;
+    $('#order-out-qr-reader').classList.add('hidden');
+    $('#order-out-scan-toggle-btn').textContent = 'QR 스캔으로 확인';
+  }
+
+  function handleOrderOutScannedCode(rawCode) {
+    const code = String(rawCode || '').trim();
+    if (!code) return;
+    const idx = state.orderOutItems.findIndex((it) => it.itemId === code);
+    if (idx === -1) {
+      toast(`목록에 없는 자재코드입니다: ${code}`, 'error');
+      return;
+    }
+    if (state.orderOutItems[idx].checked) return; // 이미 체크된 자재는 조용히 무시
+    state.orderOutItems[idx].checked = true;
+    renderOrderOutItems();
+    toast(`${state.orderOutItems[idx].itemName} 확인됨`, 'success');
+  }
+
+  async function submitOrderOut() {
+    const items = state.orderOutItems.filter((it) => it.checked && it.quantity > 0);
+    if (!items.length) return;
+    if (!confirm(`선택한 ${items.length}건을 출고 처리할까요?`)) return;
+
+    stopOrderOutScanning();
+
+    const btn = $('#order-out-submit-btn');
+    btn.disabled = true;
+    try {
+      const result = await Api.post('stockOutByOrder', {
+        site: state.site,
+        zone: state.scanZone,
+        pin: state.user.pin,
+        orderNo: state.orderOutNo,
+        items: items.map((it) => ({ itemId: it.itemId, quantity: it.quantity }))
+      });
+      toast(`${result.count}건 출고 완료`, 'success');
+      state.orderOutNo = '';
+      state.orderOutItems = [];
+      $('#order-out-no-input').value = '';
+      $('#order-out-list-section').classList.add('hidden');
+      renderOrderOutSubmitUI();
+    } catch (err) {
+      toast(err.message || '출고 처리 중 오류가 발생했습니다.', 'error');
     } finally {
       btn.disabled = false;
     }

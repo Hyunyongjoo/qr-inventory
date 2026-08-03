@@ -101,6 +101,46 @@
       <div class="site-grid" id="line-grid"></div>
     </section>
 
+    <!-- 출고 방식 선택 (라인별 / 건별, 기흥 전용) -->
+    <section id="view-out-mode" class="view hidden">
+      <div class="view-header">
+        <h2>출고 방식을 선택하세요</h2>
+        <button class="btn-link" id="out-mode-back-btn">← 뒤로</button>
+      </div>
+      <div class="scan-context muted" id="out-mode-context-label"></div>
+      <div class="site-grid">
+        <button class="site-btn" id="out-mode-by-line-btn">라인별 출고</button>
+        <button class="site-btn" id="out-mode-by-order-btn">건별 출고</button>
+      </div>
+    </section>
+
+    <!-- 건별 출고 (기흥 전용) -->
+    <section id="view-order-out" class="view hidden">
+      <div class="view-header">
+        <h2>건별 출고</h2>
+        <button class="btn-link" id="order-out-back-btn">← 뒤로</button>
+      </div>
+      <div class="scan-context muted" id="order-out-context-label"></div>
+
+      <div class="manual-entry">
+        <input type="text" id="order-out-no-input" class="input" placeholder="라인구매번호 입력 (예: GH26-0728-0001)" />
+        <button id="order-out-lookup-btn" class="btn btn-secondary">조회</button>
+      </div>
+      <div id="order-out-lookup-error" class="scan-error-text hidden"></div>
+
+      <div id="order-out-list-section" class="hidden">
+        <h3 id="order-out-list-title"></h3>
+
+        <div id="order-out-reader-wrap">
+          <div id="order-out-qr-reader" class="hidden"></div>
+          <div id="order-out-scan-error-text" class="scan-error-text hidden"></div>
+          <button id="order-out-scan-toggle-btn" class="btn btn-secondary btn-block">QR 스캔으로 확인</button>
+        </div>
+
+        <div id="order-out-items" class="list"></div>
+      </div>
+    </section>
+
     <!-- 홈 / 재고 현황 -->
     <section id="view-home" class="view hidden">
       <div class="view-header">
@@ -335,6 +375,12 @@
   <div id="return-cart-footer" class="cart-footer hidden">
     <button id="return-submit-btn" class="btn btn-primary btn-block">
       반납 완료 (<span id="return-submit-count">0</span>건)
+    </button>
+  </div>
+
+  <div id="order-out-cart-footer" class="cart-footer hidden">
+    <button id="order-out-submit-btn" class="btn btn-primary btn-block">
+      일괄 출고 (<span id="order-out-submit-count">0</span>건)
     </button>
   </div>
 

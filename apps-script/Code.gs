@@ -17,10 +17,12 @@
 const SITES = ['기흥', '화성', '평택'];
 const MATERIAL_PHOTO_FOLDER_ID = '1bZBjpGMHNvBNgls0AaS0zdigURqXfZI0';
 const ZONES = {
-  '기흥': ['K2', 'S3', 'S4', 'Display'],
-  '화성': ['11L', '15L', '16L', '17L', 'NRD'],
+  '기흥': ['S1', '6LINE', 'S3', 'S4', 'Display'],
+  '화성': ['11LINE', '15LINE', '16LINE', '17LINE', 'NRDLINE'],
   '평택': ['P1', 'P2', 'P3', 'P4', 'S5']
 };
+// 라인구매번호(예: GH26-0728-0001) 접두사로 쓰는 사이트 코드.
+const SITE_CODES = { '기흥': 'GH', '화성': 'HS', '평택': 'PT' };
 
 // ------------------------- 라우터 -------------------------
 
@@ -76,6 +78,9 @@ function doGet(e) {
           limit: Number(e.parameter.limit || 50)
         });
         break;
+      case 'getByLineOrderNo':
+        result = getPurchaseByLineOrderNo_(e.parameter.site || '', e.parameter.orderNo || '');
+        break;
       default:
         throw new Error('알 수 없는 action: ' + action);
     }
@@ -111,6 +116,9 @@ function doPost(e) {
         break;
       case 'cancelPurchase':
         result = cancelPurchase_(body);
+        break;
+      case 'stockOutByOrder':
+        result = stockOutByOrder_(body);
         break;
       default:
         throw new Error('알 수 없는 action: ' + action);
@@ -227,6 +235,29 @@ function nextSequentialId_(sheet, idColumn, prefix) {
   });
   const next = max + 1;
   return prefix + '-' + ('000000' + next).slice(-6);
+}
+
+// 구매 요청 1건(=제출 1회)마다 부여하는 라인구매번호를 생성한다.
+// 형식: {사이트코드}{연도 끝 두자리}-{월일 4자리}-{당일 순번 4자리} (예: GH26-0728-0001)
+// 순번은 같은 사이트의 구매발주및입고 시트에서 오늘 날짜 접두사를 가진 값 중 최댓값 + 1이다.
+function generateLineOrderNo_(site) {
+  const siteCode = SITE_CODES[site];
+  if (!siteCode) throw new Error('올바르지 않은 사이트입니다: ' + site);
+  const now = new Date();
+  const prefix = siteCode + Utilities.formatDate(now, 'Asia/Seoul', 'yy') +
+    '-' + Utilities.formatDate(now, 'Asia/Seoul', 'MMdd') + '-';
+
+  const rows = readAll_(sheet_(poInSheetName_(site)));
+  let max = 0;
+  rows.forEach(r => {
+    const val = String(r['라인구매번호'] || '');
+    if (val.indexOf(prefix) === 0) {
+      const seq = parseInt(val.slice(prefix.length), 10);
+      if (!isNaN(seq)) max = Math.max(max, seq);
+    }
+  });
+  const next = max + 1;
+  return prefix + ('0000' + next).slice(-4);
 }
 
 // ------------------------- 사용자 / 로그인 -------------------------
@@ -685,6 +716,7 @@ function submitPurchase_(body) {
     stockRows.forEach(s => { stockMap[String(s['자재코드'])] = Number(s['현재고']) || 0; });
 
     const sheet = sheet_(poInSheetName_(site));
+    const lineOrderNo = generateLineOrderNo_(site);
     let count = 0;
     items.forEach(it => {
       const itemId = String(it.itemId || '').trim();
@@ -708,16 +740,40 @@ function submitPurchase_(body) {
         '누적입고수량': '',
         '잔여수량': qty,
         '입고여부': '미입고',
-        '최종입고일': ''
+        '최종입고일': '',
+        '라인구매번호': lineOrderNo
       });
       count++;
     });
 
     if (!count) throw new Error('등록할 수 있는 자재가 없습니다 (자재코드/수량을 확인하세요).');
-    return { count };
+    return { count, lineOrderNo };
   } finally {
     lock.releaseLock();
   }
+}
+
+// 건별 출고 화면: 라인구매번호로 구매발주및입고 시트에서 해당 건에 속한 자재 목록을 조회한다.
+function getPurchaseByLineOrderNo_(site, orderNo) {
+  assertSite_(site);
+  const no = String(orderNo || '').trim();
+  if (!no) throw new Error('라인구매번호를 입력하세요.');
+
+  const rows = readAll_(sheet_(poInSheetName_(site)));
+  const matched = rows.filter(r => String(r['라인구매번호'] || '').trim() === no);
+  if (!matched.length) throw new Error('해당 라인구매번호의 구매 내역을 찾을 수 없습니다: ' + no);
+
+  return matched.map(r => ({
+    itemId: r['자재코드'] || '',
+    bqms: r['BQMS'] || '',
+    itemName: r['자재명'] || '',
+    spec: r['규격'] || '',
+    zone: r['라인'] || '',
+    requestedQty: Number(r['요청수량']) || 0,
+    receivedQty: Number(r['누적입고수량']) || 0,
+    remainingQty: Number(r['잔여수량']) || 0,
+    inboundStatus: r['입고여부'] || ''
+  }));
 }
 
 // 구매요청에 담긴 자재코드가 Items 시트(전체 자재 마스터)에 없으면 자동으로 등록하고
@@ -837,6 +893,46 @@ function stockOut_(body) {
   }
 }
 
+// 건별 출고: 라인구매번호로 조회한 여러 자재를 한 번에 출고 처리한다 (건 하나당 락 1회).
+function stockOutByOrder_(body) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const site = assertSite_(body.site);
+    const zone = assertZone_(site, body.zone);
+    const worker = handleLogin_(body.pin);
+    const orderNo = String(body.orderNo || '').trim();
+    if (!orderNo) throw new Error('라인구매번호가 없습니다.');
+    const items = Array.isArray(body.items) ? body.items : [];
+    if (!items.length) throw new Error('출고할 자재가 없습니다.');
+
+    let count = 0;
+    items.forEach(it => {
+      const itemId = String(it.itemId || '').trim();
+      const qty = Number(it.quantity);
+      if (!itemId || !qty || qty <= 0) return;
+      const item = assertItemExists_(itemId);
+
+      const current = calculateCurrentStock_(site, itemId);
+      if (current < qty) {
+        throw new Error(`재고 부족: ${item.ItemName}(${itemId}) 현재 ${current}${item.Unit || ''}, 출고 요청 ${qty}${item.Unit || ''}`);
+      }
+
+      logTransaction_(site, {
+        itemId, itemName: item.ItemName, spec: item.Spec, unit: item.Unit, zone,
+        quantity: qty, worker: worker.name
+      });
+      recalculateStock_(site, itemId, item);
+      count++;
+    });
+
+    if (!count) throw new Error('올바른 출고 항목이 없습니다.');
+    return { count, orderNo };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 // ------------------------- 반납 -------------------------
 
 // 이미 출고되었던 자재를 재고로 되돌린다. 발주/라인 개념이 없어 장바구니에 담긴 자재마다
@@ -904,6 +1000,7 @@ function logTransaction_(site, t) {
     '담당자': t.worker,
     '거래코드': txId,
     '시간': Utilities.formatDate(now, 'Asia/Seoul', 'HH:mm:ss'),
+    'S/N관리여부': '',
     'BQMS': lookupBqmsForItem_(site, t.itemId),
     'S/N': '',
     '수량': t.quantity,

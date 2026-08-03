@@ -1337,6 +1337,7 @@
     const code = String(rawCode || '').trim();
     if (!code) return;
     clearReturnLookupError();
+    if (DEBUG_QR) toast(`스캔된 코드: ${code}`, '');
     state.returnScanBusy = true;
     try {
       const item = await Api.get('itemByCode', { code });

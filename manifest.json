@@ -1,8 +1,8 @@
 {
-  "name": "QR 자재 입출고 관리",
-  "short_name": "자재관리",
+  "name": "UNISEM CS 자재관리",
+  "short_name": "CS 자재관리",
   "description": "QR 스캔으로 자재 입고/출고/이동을 처리하는 재고 관리 앱",
-  "start_url": "./index.html",
+  "start_url": "./index.html?v=3",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait-primary",

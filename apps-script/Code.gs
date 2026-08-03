@@ -18,7 +18,7 @@ const SITES = ['기흥', '화성', '평택'];
 const MATERIAL_PHOTO_FOLDER_ID = '1bZBjpGMHNvBNgls0AaS0zdigURqXfZI0';
 const ZONES = {
   '기흥': ['K2', 'S3', 'S4', 'Display'],
-  '화성': ['H1', 'H2', 'H3', 'H4', 'NRD'],
+  '화성': ['11L', '15L', '16L', '17L', 'NRD'],
   '평택': ['P1', 'P2', 'P3', 'P4', 'S5']
 };
 
@@ -881,6 +881,13 @@ function stockReturn_(body) {
   }
 }
 
+// 자재코드로 해당 사이트 사용자재 시트에서 BQMS 값을 조회한다. 못 찾으면 빈 문자열.
+function lookupBqmsForItem_(site, itemId) {
+  const rows = readAll_(sheet_(usedMaterialsSheetName_(site)));
+  const row = rows.find(r => String(r['자재코드']) === String(itemId));
+  return row ? (row['BQMS'] || '') : '';
+}
+
 // 출고 이력 한 줄을 기록한다 (Setup.gs 헤더와 반드시 일치해야 함).
 function logTransaction_(site, t) {
   const sheet = sheet_(txSheetName_(site));
@@ -896,7 +903,11 @@ function logTransaction_(site, t) {
     '출고수량': t.quantity,
     '담당자': t.worker,
     '거래코드': txId,
-    '시간': Utilities.formatDate(now, 'Asia/Seoul', 'HH:mm:ss')
+    '시간': Utilities.formatDate(now, 'Asia/Seoul', 'HH:mm:ss'),
+    'BQMS': lookupBqmsForItem_(site, t.itemId),
+    'S/N': '',
+    '수량': t.quantity,
+    '층': '1층'
   });
 }
 

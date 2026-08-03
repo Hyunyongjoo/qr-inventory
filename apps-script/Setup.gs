@@ -33,7 +33,7 @@ function setupSpreadsheet() {
 
     createSheetIfMissing_(ss, site + '_출고', [
       '출고일자', '라인', '자재코드', '자재명', '규격', '단위',
-      '출고수량', '담당자', '거래코드', '시간'
+      '출고수량', '담당자', '거래코드', '시간', 'BQMS', 'S/N', '수량', '라인', '층'
     ], [1]); // 출고일자
 
     const stockSheet = createSheetIfMissing_(ss, site + '_재고', [

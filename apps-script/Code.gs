@@ -60,7 +60,7 @@ function doGet(e) {
         result = scanLookupForStockOut_(e.parameter.site || '', e.parameter.code || '');
         break;
       case 'checkInbound':
-        result = checkInbound_(e.parameter.site || '', e.parameter.name || '', e.parameter.startDate || '', e.parameter.endDate || '');
+        result = checkInbound_(e.parameter.site || '', e.parameter.name || '', e.parameter.startDate || '', e.parameter.endDate || '', e.parameter.zone || '');
         break;
       case 'searchMaterials':
         result = searchMaterials_(e.parameter.site || '', e.parameter.query || '');
@@ -170,7 +170,7 @@ function sheet_(name) {
   // 기존 스프레드시트에 이미 데이터가 있어 Setup.gs가 헤더를 새로 쓰지 못하는 경우를 위해,
   // 입고확인 화면 개편(재고사용/입고/출고완료 버튼)에 필요한 컬럼이 없으면 여기서 안전하게 추가한다.
   if (name.slice(-8) === '_구매발주및입고') {
-    ensureColumnsOnce_(sheet, name, ['출고완료', '출고완료일시']);
+    ensureColumnsOnce_(sheet, name, ['누적출고수량', '출고여부', '최종출고일']);
   } else if (name.slice(-3) === '_출고') {
     ensureColumnsOnce_(sheet, name, ['라인구매번호']);
   }
@@ -501,9 +501,19 @@ function isCancelledRow_(r) {
   return String(r['재고사용(O,X)'] || '').trim() === '취소';
 }
 
-// 입고확인 화면에서 출고완료 버튼으로 이미 마감된 행은 더 이상 입고 대상이 아니므로 제외한다.
+// 누적출고수량이 요청수량 이상이면(=출고여부가 "출고완료"가 되는 조건) 이미 마감된 행으로 보고
+// 더 이상 입고/재출고 대상이 아니므로 제외한다. 별도 플래그 없이 수량 비교만으로 판단한다.
 function isOutboundDoneRow_(r) {
-  return String(r['출고완료'] || '').trim().toUpperCase() === 'O';
+  const requested = Number(r['요청수량']) || 0;
+  const shipped = Number(r['누적출고수량']) || 0;
+  return requested > 0 && shipped >= requested;
+}
+
+// 누적출고수량이 0보다 크고 요청수량보다 적으면 부분출고 상태다.
+function isOutboundPartialRow_(r) {
+  const requested = Number(r['요청수량']) || 0;
+  const shipped = Number(r['누적출고수량']) || 0;
+  return shipped > 0 && shipped < requested;
 }
 
 function findOpenPurchaseOrders_(site, itemId) {
@@ -581,21 +591,23 @@ function toDateOnly_(value) {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate());
 }
 
-// 입고확인 화면 전용: 신청자 이름(부분 일치) + 요청일자 범위로 그 사이트의 모든 발주(모든 자재)를 찾는다.
-// listOpenPurchaseOrders_와 달리 자재별이 아니라 신청자/날짜 기준 조회이고, 입고완료 건도 포함한다.
-// 이름/시작일/종료일은 모두 선택사항이지만 최소 하나는 있어야 한다:
+// 입고확인 화면 전용: 신청자 이름(부분 일치) + 요청일자 범위 + 라인으로 그 사이트의 모든 발주(모든 자재)를 찾는다.
+// listOpenPurchaseOrders_와 달리 자재별이 아니라 신청자/날짜/라인 기준 조회이고, 입고완료 건도 포함한다.
+// 이름/시작일/종료일/라인은 모두 선택사항이지만 최소 하나는 있어야 한다:
 //  - 이름만: 이름으로만 필터
-//  - 이름 + 날짜: 이름 AND 요청일자 범위
-//  - 날짜만: 요청일자 범위로만 필터 (요청일자가 비어있는 행은 제외)
-function checkInbound_(site, name, startDate, endDate) {
+//  - 이름 + 날짜 + 라인: 모두 AND 조건으로 필터
+//  - 라인만: 라인(정확히 일치)으로만 필터
+function checkInbound_(site, name, startDate, endDate, zone) {
   assertSite_(site);
   const q = (name || '').toString().trim();
   const start = toDateOnly_(startDate);
   const end = toDateOnly_(endDate);
-  if (!q && !start && !end) throw new Error('신청자 이름 또는 요청일자를 입력하세요.');
+  const zoneQ = (zone || '').toString().trim();
+  if (!q && !start && !end && !zoneQ) throw new Error('신청자 이름, 요청일자 또는 라인을 입력하세요.');
 
   let rows = readAll_(sheet_(poInSheetName_(site)));
   if (q) rows = rows.filter(r => String(r['신청자'] || '').includes(q));
+  if (zoneQ) rows = rows.filter(r => String(r['라인'] || '').trim() === zoneQ);
   if (start || end) {
     rows = rows.filter(r => {
       const d = toDateOnly_(r['요청일자']);
@@ -611,22 +623,23 @@ function checkInbound_(site, name, startDate, endDate) {
 }
 
 // 입고확인 화면 전용 상태 계산. 우선순위(위에서부터 먼저 매칭되는 것이 최종 상태):
-//   1) 출고완료(O)             → 출고완료
-//   2) 재고사용(O,X) = 취소    → 취소 (기존 구매요청 취소 기능, 8개 상태 집계에는 포함하지 않음)
-//   3) 재고사용(O,X) = O       → 재고사용
-//   4) 구매요청번호 등록됨     → 미입고/부분입고/입고완료 (누적입고수량 vs 요청수량으로 판단)
-//   5) 재고사용(O,X) = X       → 신청대기 (자재담당자가 "구매필요"를 눌렀지만 아직 구매요청번호 미등록)
-//   6) 그 외(공란)             → 재고확인중
+//   1) 누적출고수량 >= 요청수량  → 출고완료 (한 번이라도 출고가 시작되면 재고사용/입고 상태보다 우선)
+//   2) 0 < 누적출고수량 < 요청수량 → 부분출고
+//   3) 재고사용(O,X) = 취소    → 취소 (기존 구매요청 취소 기능, 건수 집계에는 포함하지 않음)
+//   4) 재고사용(O,X) = O       → 재고사용
+//   5) 구매요청번호 등록됨     → 미입고/부분입고/입고완료 (누적입고수량 vs 요청수량으로 판단)
+//   6) 재고사용(O,X) = X       → 신청대기 (자재담당자가 "구매필요"를 눌렀지만 아직 구매요청번호 미등록)
+//   7) 그 외(공란)             → 재고확인중
 // category는 상단 건수 필터가 사용하는 그룹 키로, status와 별개다
 // (미입고/부분입고/입고완료 세 상태 모두 category는 '신청완료'로 묶인다).
 function computeInboundStatus_(po) {
   const stockUse = String(po['재고사용(O,X)'] || '').trim().toUpperCase();
-  const outboundDone = isOutboundDoneRow_(po);
   const purchaseReqNo = String(po['구매요청번호'] || '').trim();
   const requested = Number(po['요청수량']) || 0;
   const cumulative = Number(po['누적입고수량']) || 0;
 
-  if (outboundDone) return { status: '출고완료', category: '출고완료' };
+  if (isOutboundDoneRow_(po)) return { status: '출고완료', category: '출고완료' };
+  if (isOutboundPartialRow_(po)) return { status: '부분출고', category: '부분출고' };
   if (stockUse === '취소') return { status: '취소', category: '취소' };
   if (stockUse === 'O') return { status: '재고사용', category: '재고사용' };
   if (purchaseReqNo) {
@@ -642,6 +655,7 @@ function computeInboundStatus_(po) {
 function poRowToInboundView_(site, po, stockMap) {
   const requested = Number(po['요청수량']) || 0;
   const cumulative = Number(po['누적입고수량']) || 0;
+  const shipped = Number(po['누적출고수량']) || 0;
   const info = computeInboundStatus_(po);
   const itemId = po['자재코드'] || '';
   const stockQty = stockMap ? (stockMap[String(itemId)] || 0) : getStockQty_(site, itemId);
@@ -657,6 +671,8 @@ function poRowToInboundView_(site, po, stockMap) {
     stockQty: stockQty,
     cumulativeQty: cumulative,
     remainingQty: requested - cumulative,
+    shippedQty: shipped,
+    remainingShipQty: requested - shipped,
     dueDate: po['필요일자'] || '',
     status: info.status,
     category: info.category,
@@ -1000,8 +1016,9 @@ function inboundByManager_(body) {
 }
 
 // 입고확인 화면의 "출고완료" 버튼: 재고사용(O) 또는 입고완료 상태인 요청을 그 라인으로 출고 처리한다.
-// 출고 시트에 요청수량만큼 한 줄을 기록(라인구매번호 포함, 추후 QR 출고 연동용)하고,
-// 구매발주및입고 시트에는 출고완료 표시를 남겨 더 이상 입고/취소 대상이 되지 않게 한다.
+// 입력받은 수량만큼만 그 행의 누적출고수량에 더하고(선입선출로 다른 행을 건드리지 않음),
+// 누적출고수량과 요청수량을 비교해 출고여부를 부분출고/출고완료로 자동 판정한다.
+// 출고 시트에도 이번에 출고한 수량만큼 한 줄을 기록한다(라인구매번호 포함, 추후 QR 출고 연동용).
 function outboundComplete_(body) {
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
@@ -1014,14 +1031,14 @@ function outboundComplete_(body) {
 
     const stockUse = String(row['재고사용(O,X)'] || '').trim().toUpperCase();
     const requested = Number(row['요청수량']) || 0;
-    const cumulative = Number(row['누적입고수량']) || 0;
-    const isInboundDone = requested > 0 && cumulative >= requested;
+    const cumulativeIn = Number(row['누적입고수량']) || 0;
+    const isInboundDone = requested > 0 && cumulativeIn >= requested;
     if (stockUse !== 'O' && !isInboundDone) {
       throw new Error('재고사용 또는 입고완료 상태에서만 출고완료 처리할 수 있습니다.');
     }
 
-    const qty = requested;
-    if (!qty || qty <= 0) throw new Error('요청수량이 없어 출고완료 처리할 수 없습니다.');
+    const qty = Number(body.quantity);
+    if (!qty || qty <= 0) throw new Error('출고 수량은 0보다 커야 합니다.');
 
     const itemId = row['자재코드'];
     let item;
@@ -1045,9 +1062,14 @@ function outboundComplete_(body) {
 
     recalculateStock_(site, itemId, item);
 
+    const shippedBefore = Number(row['누적출고수량']) || 0;
+    const shippedCumulative = shippedBefore + qty;
+    const outboundStatus = shippedCumulative <= 0 ? '' : (shippedCumulative < requested ? '부분출고' : '출고완료');
+
     updateRow_(sheet_(poInSheetName_(site)), row._row, {
-      '출고완료': 'O',
-      '출고완료일시': Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd HH:mm:ss')
+      '누적출고수량': shippedCumulative,
+      '출고여부': outboundStatus,
+      '최종출고일': Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd')
     });
 
     return poRowToInboundView_(site, findPoRowByIndex_(site, body.rowIndex));
@@ -1095,6 +1117,49 @@ function stockIn_(body) {
   }
 }
 
+// QR 스캔 출고 전용 선입선출 장부 처리. 실제 재고 차감은 이미 stockOut_이 기록한 출고 1건으로
+// 끝났으므로(중복 차감 방지), 여기서는 구매발주및입고 시트의 누적출고수량/출고여부만 갱신한다.
+// 같은 자재코드 + 같은 라인(zone)의 행만 대상으로 하며(다른 라인 구매 건은 건드리지 않음),
+// 재고사용(O)/취소 건과 아직 한 번도 입고되지 않은(최종입고일이 없는) 건은 제외하고,
+// 최종입고일 오름차순(오래된 건부터)으로 스캔 수량이 남는 동안 순서대로 채운다.
+function applyLineFifoOutboundBookkeeping_(site, itemId, zone, qty) {
+  const sheet = sheet_(poInSheetName_(site));
+  const rows = readAll_(sheet).filter(r =>
+    String(r['자재코드']) === String(itemId) &&
+    String(r['라인'] || '').trim() === String(zone).trim() &&
+    !isStockCoveredRow_(r) &&
+    !isCancelledRow_(r) &&
+    !!r['최종입고일']
+  );
+  rows.sort((a, b) => {
+    const da = a['최종입고일'] ? new Date(a['최종입고일']).getTime() : Infinity;
+    const db = b['최종입고일'] ? new Date(b['최종입고일']).getTime() : Infinity;
+    if (da !== db) return da - db;
+    return (a._row || 0) - (b._row || 0);
+  });
+
+  let remaining = qty;
+  for (let i = 0; i < rows.length && remaining > 0; i++) {
+    const po = rows[i];
+    const requested = Number(po['요청수량']) || 0;
+    const before = Number(po['누적출고수량']) || 0;
+    const openQty = requested - before;
+    if (openQty <= 0) continue;
+
+    const applied = Math.min(openQty, remaining);
+    const cumulative = before + applied;
+    const status = cumulative < requested ? '부분출고' : '출고완료';
+
+    updateRow_(sheet, po._row, {
+      '누적출고수량': cumulative,
+      '출고여부': status,
+      '최종출고일': Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd')
+    });
+
+    remaining -= applied;
+  }
+}
+
 function stockOut_(body) {
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
@@ -1114,6 +1179,10 @@ function stockOut_(body) {
       itemId, itemName: item.ItemName, spec: item.Spec, unit: item.Unit, zone,
       quantity: qty, worker: worker.name
     });
+
+    // 스캔한 수량만큼, 같은 자재+라인의 구매요청 건들을 선입선출로 "출고됨" 처리한다 (장부만 갱신,
+    // 재고는 위 출고 1건으로 이미 차감했으므로 중복 차감하지 않는다).
+    applyLineFifoOutboundBookkeeping_(site, itemId, zone, qty);
 
     // 방금 기록한 출고를 포함해 현재고를 다시 계산해 재고 시트에 반영한다.
     const newQty = recalculateStock_(site, itemId, item);

@@ -12,6 +12,7 @@
   --warn: #f59e0b;
   --orange: #fb923c;
   --purple: #a855f7;
+  --teal: #14b8a6;
   --radius: 12px;
 }
 
@@ -389,6 +390,7 @@ html, body {
 .po-status-waiting { background: rgba(251,146,60,.15); color: var(--orange); }
 .po-status-applied { background: rgba(59,130,246,.15); color: var(--accent); }
 .po-status-shipped { background: rgba(168,85,247,.15); color: var(--purple); }
+.po-status-partial-out { background: rgba(20,184,166,.15); color: var(--teal); }
 .po-status-cancelled { background: rgba(137,150,176,.15); color: var(--text-muted); }
 .po-info-none {
   font-size: 13px;
@@ -507,6 +509,7 @@ html, body {
 .inbound-summary-item.summary-partial .value { color: var(--warn); }
 .inbound-summary-item.summary-none .value { color: var(--danger); }
 .inbound-summary-item.summary-stock .value { color: var(--accent); }
+.inbound-summary-item.summary-partial-out .value { color: var(--teal); }
 .inbound-summary-item.summary-shipped .value { color: var(--purple); }
 
 .inbound-card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin-bottom: 10px; }

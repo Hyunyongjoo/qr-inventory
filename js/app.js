@@ -394,6 +394,7 @@
     if (name === 'home') loadStock();
     if (name === 'items') loadItems();
     if (name === 'history') loadHistory();
+    if (name === 'inbound') populateInboundZoneOptions();
 
     state.currentView = name;
 
@@ -1944,7 +1945,7 @@
   // ------------------------- 입고확인 -------------------------
 
   // 상단 건수 표시 순서 + 각 상태의 배지/타일 색상 접미사(css의 po-status-*, summary-* 클래스와 대응).
-  const INBOUND_STATUS_KEYS = ['재고확인중', '신청대기', '신청완료', '미입고', '부분입고', '입고완료', '재고사용', '출고완료'];
+  const INBOUND_STATUS_KEYS = ['재고확인중', '신청대기', '신청완료', '미입고', '부분입고', '입고완료', '재고사용', '부분출고', '출고완료'];
   const INBOUND_STATUS_SUFFIX = {
     '재고확인중': 'checking',
     '신청대기': 'waiting',
@@ -1953,6 +1954,7 @@
     '부분입고': 'partial',
     '입고완료': 'done',
     '재고사용': 'stock',
+    '부분출고': 'partial-out',
     '출고완료': 'shipped',
     '취소': 'cancelled'
   };
@@ -1970,6 +1972,18 @@
     });
   }
 
+  // 라인 드롭다운은 사이트마다 목록이 달라서, 입고확인 화면에 들어갈 때마다(사이트가 바뀌었을
+  // 수 있으므로) 현재 사이트 기준으로 다시 채운다.
+  function populateInboundZoneOptions() {
+    const sel = $('#inbound-zone-select');
+    if (!sel) return;
+    const zones = ZONES[state.site] || [];
+    const current = sel.value;
+    sel.innerHTML = `<option value="">전체 라인</option>` +
+      zones.map((z) => `<option value="${escapeHtml(z)}">${escapeHtml(z)}</option>`).join('');
+    sel.value = zones.includes(current) ? current : '';
+  }
+
   // 검색 버튼/Enter로 호출: 새 검색이므로 상태 필터를 초기화한다.
   async function loadInboundCheck() {
     if (!state.site) return;
@@ -1984,15 +1998,16 @@
     const name = $('#inbound-search-input').value.trim();
     const startDate = $('#inbound-date-start').value;
     const endDate = $('#inbound-date-end').value;
-    if (!name && !startDate && !endDate) {
-      toast('신청자 이름 또는 요청일자를 입력하세요.', 'error');
+    const zone = $('#inbound-zone-select').value;
+    if (!name && !startDate && !endDate && !zone) {
+      toast('신청자 이름, 요청일자 또는 라인을 입력하세요.', 'error');
       return;
     }
     const listEl = $('#inbound-list');
     listEl.innerHTML = `<div class="empty-state">불러오는 중...</div>`;
     $('#inbound-summary').classList.add('hidden');
     try {
-      state.inboundRows = await Api.get('checkInbound', { site: state.site, name, startDate, endDate });
+      state.inboundRows = await Api.get('checkInbound', { site: state.site, name, startDate, endDate, zone });
       renderInboundSummary();
       renderInboundList();
     } catch (err) {
@@ -2068,7 +2083,10 @@
   function renderInboundCard(r) {
     const stockUseUpper = String(r.stockUse || '').trim().toUpperCase();
     const canReceive = !r.outboundDone && stockUseUpper !== 'O' && stockUseUpper !== '취소';
-    const canShipOut = !r.outboundDone && (stockUseUpper === 'O' || r.status === '입고완료');
+    // 출고 진행 상태(부분출고/출고완료)가 status 표시를 덮어쓸 수 있으므로, 출고완료 버튼 활성화
+    // 여부는 status 문자열이 아니라 원본 입고 완료 여부(누적입고수량 >= 요청수량)로 판단한다.
+    const isInboundDone = r.requestedQty > 0 && r.cumulativeQty >= r.requestedQty;
+    const canShipOut = !r.outboundDone && (stockUseUpper === 'O' || isInboundDone);
 
     const managerActionsHtml = canManageInbound() ? `
       <button type="button" class="btn btn-small btn-secondary inbound-stock-btn" data-row-index="${r.rowIndex}" data-value="O" ${r.outboundDone ? 'disabled' : ''}>재고사용</button>
@@ -2172,23 +2190,46 @@
     });
   }
 
-  // "출고완료" 버튼: 출고 시트에 기록하고, 이 요청 건을 출고완료 상태로 마감한다.
-  async function onInboundOutboundClick(e) {
-    const btn = e.currentTarget;
-    const rowIndex = Number(btn.dataset.rowIndex);
+  function onInboundOutboundClick(e) {
+    const rowIndex = Number(e.currentTarget.dataset.rowIndex);
     const row = state.inboundRows.find((r) => r.rowIndex === rowIndex);
-    if (!row) return;
-    if (!confirm(`${row.itemName} 출고완료 처리하시겠습니까? (요청수량 ${Number(row.requestedQty).toLocaleString()} 출고)`)) return;
+    if (row) openInboundShipModal(row);
+  }
 
-    btn.disabled = true;
-    try {
-      await Api.post('outboundComplete', { site: state.site, rowIndex, pin: state.user.pin });
-      toast('출고완료 처리되었습니다.', 'success');
-      await fetchInboundRows();
-    } catch (err) {
-      btn.disabled = false;
-      toast(err.message || '출고완료 처리 중 오류가 발생했습니다.', 'error');
-    }
+  // "출고완료" 버튼: 수량 입력 팝업을 띄우고, 확인 시 그 요청 건에만(다른 건은 건드리지 않고)
+  // 입력한 수량만큼 누적출고수량을 더한다. 선입선출은 적용하지 않는다(QR 스캔 출고 전용 로직).
+  function openInboundShipModal(row) {
+    const remaining = Number(row.remainingShipQty);
+    const html = `
+      <div class="modal-sheet">
+        <h3>출고완료 처리</h3>
+        <p class="muted">${escapeHtml(row.itemName)} (${escapeHtml(row.itemId)})</p>
+        <p class="muted">요청수량 ${Number(row.requestedQty).toLocaleString()} · 누적출고수량 ${Number(row.shippedQty).toLocaleString()} · 잔여출고수량 ${remaining.toLocaleString()}</p>
+        <label class="field-label">출고 수량</label>
+        <input type="number" id="inbound-ship-qty" class="input" min="1" step="1" inputmode="numeric" placeholder="수량" />
+        <div class="modal-actions">
+          <button class="btn btn-secondary" id="inbound-ship-cancel">취소</button>
+          <button class="btn btn-primary" id="inbound-ship-confirm">확인</button>
+        </div>
+      </div>
+    `;
+    openModal(html);
+    $('#inbound-ship-cancel').addEventListener('click', closeModal);
+    $('#inbound-ship-confirm').addEventListener('click', async () => {
+      const qty = Number($('#inbound-ship-qty').value);
+      if (!qty || qty <= 0) {
+        toast('올바른 수량을 입력하세요.', 'error');
+        return;
+      }
+      try {
+        await Api.post('outboundComplete', { site: state.site, rowIndex: row.rowIndex, quantity: qty, pin: state.user.pin });
+        toast('출고완료 처리되었습니다.', 'success');
+        closeModal();
+        await fetchInboundRows();
+      } catch (err) {
+        toast(err.message || '출고완료 처리 중 오류가 발생했습니다.', 'error');
+      }
+    });
   }
 
   async function onInboundCancelClick(e) {

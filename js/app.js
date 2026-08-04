@@ -75,7 +75,7 @@
     // 그 뒤에 이어지는 다른 화면 바인딩과 로그인 화면 진입까지는 막히지 않게 각각 감싸서 실행한다.
     [bindLogin, bindSite, bindNav, bindActions, bindLine, bindOutMode, bindOrderOut, bindHome, bindScan,
       bindPurchase, bindReturn, bindItems, bindInboundCheck, bindHistory, bindLogout, bindHardRefresh,
-      bindBackNavigation
+      bindBackNavigation, bindPullToRefreshGuard
     ].forEach((bindFn) => {
       try {
         bindFn();
@@ -215,6 +215,10 @@
 
     if (state.site) {
       updateSiteBadge();
+      // 저장된 사이트가 있어 곧장 "입출고" 화면으로 넘어가더라도, 뒤로가기 히스토리의
+      // 맨 아래에는 항상 사이트 선택 화면이 깔려 있어야 한다(둘 다 switchView라 히스토리에
+      // 순서대로 쌓이고, 같은 동기 코드 안에서 바로 다음 줄로 덮어써 화면 깜빡임은 없다).
+      switchView('site');
       switchView('actions');
     } else {
       switchView('site');
@@ -404,11 +408,11 @@
     return true;
   }
 
-  // 사이트를 아직 고르지 않은 최초의 사이트 선택 화면이거나, 로그인 직후 기본 탭인 "입출고"
-  // 화면일 때를 앱의 "메인 화면"으로 본다. 이 화면에서 뒤로가기를 누르면 더 이상 돌아갈
-  // 앱 내부 화면이 없으므로, 그냥 브라우저 뒤로가기(=앱 종료)로 흘려보내지 않고 확인창을 띄운다.
+  // 사이트 선택 화면이 뒤로가기 히스토리의 맨 아래(루트)다 — enterApp()이 항상 이 화면을
+  // 먼저 쌓아두므로, 다른 모든 화면(입출고 탭 포함)에서는 뒤로가기를 누르면 앞서 있던 화면으로
+  // 돌아가고, 이 화면에서 뒤로가기를 눌렀을 때만 더 돌아갈 곳이 없으므로 앱 종료를 확인한다.
   function isMainAppScreen_(name) {
-    return name === 'actions' || (name === 'site' && !state.site);
+    return name === 'site';
   }
 
   function pushViewHistory_(name) {
@@ -445,6 +449,30 @@
 
   function bindBackNavigation() {
     window.addEventListener('popstate', handlePopState_);
+  }
+
+  // 삼성 인터넷 등 overscroll-behavior CSS만으로는 잡아당김 새로고침(pull-to-refresh)이 완전히
+  // 막히지 않는 브라우저를 위한 보강 처리. 실제 스크롤 영역(#view-container)이 이미 맨 위에
+  // 있는 상태에서 더 아래로 당기는 제스처만 막고, 리스트를 정상적으로 스크롤하는 중에는
+  // 관여하지 않는다(그렇지 않으면 리스트 스크롤 자체가 막혀버린다).
+  let ptrGuardStartY = 0;
+
+  function bindPullToRefreshGuard() {
+    document.addEventListener('touchstart', (e) => {
+      if (e.touches.length !== 1) return;
+      ptrGuardStartY = e.touches[0].clientY;
+    }, { passive: true });
+
+    document.addEventListener('touchmove', (e) => {
+      if (e.touches.length !== 1) return;
+      const scrollEl = document.getElementById('view-container');
+      if (!scrollEl) return;
+      const deltaY = e.touches[0].clientY - ptrGuardStartY;
+      if (deltaY <= 0) return; // 아래로 당기는(=위로 스크롤하려는) 제스처가 아니면 무시
+      if (scrollEl.scrollTop <= 0) {
+        e.preventDefault();
+      }
+    }, { passive: false });
   }
 
   function escapeHtml(str) {

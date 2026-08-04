@@ -2036,6 +2036,7 @@
       <div class="card inbound-card">
         <div class="inbound-card-meta">
           ${r.requestDate ? `<span>요청일자 ${formatPoDate(r.requestDate)}</span>` : ''}
+          ${r.zone ? `<span>· ${escapeHtml(r.zone)}</span>` : ''}
           ${r.requester ? `<span>· ${escapeHtml(r.requester)}</span>` : ''}
         </div>
         <div class="inbound-card-top">
@@ -2047,6 +2048,7 @@
         </div>
         <div class="inbound-card-qty">
           <div class="iq-item"><span class="iq-label">요청수량</span><span class="iq-value">${Number(r.requestedQty).toLocaleString()}</span></div>
+          <div class="iq-item"><span class="iq-label">재고수량</span><span class="iq-value">${Number(r.stockQty).toLocaleString()}</span></div>
           <div class="iq-item"><span class="iq-label">누적입고수량</span><span class="iq-value">${Number(r.cumulativeQty).toLocaleString()}</span></div>
           <div class="iq-item"><span class="iq-label">잔여수량</span><span class="iq-value">${Number(r.remainingQty).toLocaleString()}</span></div>
         </div>

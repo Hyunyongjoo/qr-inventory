@@ -606,7 +606,8 @@ function checkInbound_(site, name, startDate, endDate) {
     });
   }
 
-  return rows.sort(poSortComparator_).map(poRowToInboundView_);
+  const stockMap = buildStockMap_(site);
+  return rows.sort(poSortComparator_).map(r => poRowToInboundView_(site, r, stockMap));
 }
 
 // 입고확인 화면 전용 상태 계산. 우선순위(위에서부터 먼저 매칭되는 것이 최종 상태):
@@ -636,19 +637,24 @@ function computeInboundStatus_(po) {
   return { status: '재고확인중', category: '재고확인중' };
 }
 
-function poRowToInboundView_(po) {
+// stockMap을 넘기면(여러 행을 한 번에 변환하는 checkInbound_) 그 맵에서 재고수량을 찾고,
+// 넘기지 않으면(관리 버튼 처리 후 행 하나만 반환하는 경우) 재고 시트를 직접 조회한다.
+function poRowToInboundView_(site, po, stockMap) {
   const requested = Number(po['요청수량']) || 0;
   const cumulative = Number(po['누적입고수량']) || 0;
   const info = computeInboundStatus_(po);
+  const itemId = po['자재코드'] || '';
+  const stockQty = stockMap ? (stockMap[String(itemId)] || 0) : getStockQty_(site, itemId);
   return {
     rowIndex: po._row,
     requestDate: po['요청일자'] || '',
     requester: po['신청자'] || '',
     zone: po['라인'] || '',
-    itemId: po['자재코드'] || '',
+    itemId: itemId,
     itemName: po['자재명'] || '',
     spec: po['규격'] || '',
     requestedQty: requested,
+    stockQty: stockQty,
     cumulativeQty: cumulative,
     remainingQty: requested - cumulative,
     dueDate: po['필요일자'] || '',
@@ -657,6 +663,22 @@ function poRowToInboundView_(po) {
     stockUse: po['재고사용(O,X)'] || '',
     outboundDone: isOutboundDoneRow_(po)
   };
+}
+
+// 사이트 재고 시트에서 자재 하나의 현재고를 조회한다 (입고확인 화면의 "재고수량" 표시용).
+function getStockQty_(site, itemId) {
+  const row = readAll_(sheet_(stockSheetName_(site))).find(s => String(s['자재코드']) === String(itemId));
+  return row ? Number(row['현재고']) || 0 : 0;
+}
+
+// 사이트 재고 시트를 한 번만 읽어 자재코드 → 현재고 맵을 만든다 (checkInbound_처럼 여러 행을
+// 한꺼번에 변환할 때 행마다 재고 시트를 다시 읽지 않도록 하기 위함).
+function buildStockMap_(site) {
+  const map = {};
+  readAll_(sheet_(stockSheetName_(site))).forEach(s => {
+    map[String(s['자재코드'])] = Number(s['현재고']) || 0;
+  });
+  return map;
 }
 
 // FIFO 입고 처리: 필요일자가 이른 발주부터 순서대로 입고수량을 채워나간다.
@@ -902,7 +924,7 @@ function cancelPurchase_(body) {
     }
 
     updateRow_(sheet_(poInSheetName_(site)), row._row, { '재고사용(O,X)': '취소' });
-    return poRowToInboundView_(findPoRowByIndex_(site, body.rowIndex));
+    return poRowToInboundView_(site, findPoRowByIndex_(site, body.rowIndex));
   } finally {
     lock.releaseLock();
   }
@@ -933,7 +955,7 @@ function updateStockUsage_(body) {
     if (isOutboundDoneRow_(row)) throw new Error('이미 출고완료된 요청은 수정할 수 없습니다.');
 
     updateRow_(sheet_(poInSheetName_(site)), row._row, { '재고사용(O,X)': value });
-    return poRowToInboundView_(findPoRowByIndex_(site, body.rowIndex));
+    return poRowToInboundView_(site, findPoRowByIndex_(site, body.rowIndex));
   } finally {
     lock.releaseLock();
   }
@@ -971,7 +993,7 @@ function inboundByManager_(body) {
     const item = assertItemExists_(row['자재코드']);
     recalculateStock_(site, row['자재코드'], item);
 
-    return poRowToInboundView_(findPoRowByIndex_(site, body.rowIndex));
+    return poRowToInboundView_(site, findPoRowByIndex_(site, body.rowIndex));
   } finally {
     lock.releaseLock();
   }
@@ -1028,7 +1050,7 @@ function outboundComplete_(body) {
       '출고완료일시': Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd HH:mm:ss')
     });
 
-    return poRowToInboundView_(findPoRowByIndex_(site, body.rowIndex));
+    return poRowToInboundView_(site, findPoRowByIndex_(site, body.rowIndex));
   } finally {
     lock.releaseLock();
   }

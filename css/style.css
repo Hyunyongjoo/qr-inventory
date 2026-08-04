@@ -10,6 +10,8 @@
   --success: #22c55e;
   --danger: #ef4444;
   --warn: #f59e0b;
+  --orange: #fb923c;
+  --purple: #a855f7;
   --radius: 12px;
 }
 
@@ -379,6 +381,11 @@ html, body {
 .po-status-partial { background: rgba(245,158,11,.15); color: var(--warn); }
 .po-status-done { background: rgba(34,197,94,.15); color: var(--success); }
 .po-status-stock { background: rgba(59,130,246,.15); color: var(--accent); }
+.po-status-checking { background: rgba(137,150,176,.15); color: var(--text-muted); }
+.po-status-waiting { background: rgba(251,146,60,.15); color: var(--orange); }
+.po-status-applied { background: rgba(59,130,246,.15); color: var(--accent); }
+.po-status-shipped { background: rgba(168,85,247,.15); color: var(--purple); }
+.po-status-cancelled { background: rgba(137,150,176,.15); color: var(--text-muted); }
 .po-info-none {
   font-size: 13px;
   color: var(--text-muted);
@@ -483,18 +490,27 @@ html, body {
   flex-direction: column;
   align-items: center;
   gap: 3px;
+  font: inherit;
+  cursor: pointer;
 }
 .inbound-summary-item .label { font-size: 11px; color: var(--text-muted); }
-.inbound-summary-item .value { font-size: 16px; font-weight: 700; }
+.inbound-summary-item .value { font-size: 16px; font-weight: 700; color: var(--text); }
+.inbound-summary-item.is-active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.inbound-summary-item.summary-checking .value { color: var(--text-muted); }
+.inbound-summary-item.summary-waiting .value { color: var(--orange); }
+.inbound-summary-item.summary-applied .value { color: var(--accent); }
 .inbound-summary-item.summary-done .value { color: var(--success); }
 .inbound-summary-item.summary-partial .value { color: var(--warn); }
 .inbound-summary-item.summary-none .value { color: var(--danger); }
+.inbound-summary-item.summary-stock .value { color: var(--accent); }
+.inbound-summary-item.summary-shipped .value { color: var(--purple); }
 
 .inbound-card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin-bottom: 10px; }
 .inbound-card-qty { display: flex; justify-content: space-between; gap: 8px; padding-top: 10px; border-top: 1px solid var(--border); }
 .iq-item { display: flex; flex-direction: column; align-items: center; gap: 2px; flex: 1; }
 
-.inbound-card-actions { display: flex; justify-content: flex-end; margin-top: 10px; }
+.inbound-card-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+.inbound-card-actions .btn { flex: 0 0 auto; }
 .inbound-cancel-btn.is-blocked { background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); }
 .iq-label { font-size: 11px; color: var(--text-muted); }
 .iq-value { font-size: 15px; font-weight: 700; }

@@ -37,7 +37,9 @@
     orderOutNo: '',
     orderOutItems: [],
     orderOutHtml5QrCode: null,
-    orderOutScanning: false
+    orderOutScanning: false,
+    inboundRows: [],
+    inboundFilter: null
   };
 
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -1885,6 +1887,24 @@
 
   // ------------------------- 입고확인 -------------------------
 
+  // 상단 건수 표시 순서 + 각 상태의 배지/타일 색상 접미사(css의 po-status-*, summary-* 클래스와 대응).
+  const INBOUND_STATUS_KEYS = ['재고확인중', '신청대기', '신청완료', '미입고', '부분입고', '입고완료', '재고사용', '출고완료'];
+  const INBOUND_STATUS_SUFFIX = {
+    '재고확인중': 'checking',
+    '신청대기': 'waiting',
+    '신청완료': 'applied',
+    '미입고': 'none',
+    '부분입고': 'partial',
+    '입고완료': 'done',
+    '재고사용': 'stock',
+    '출고완료': 'shipped',
+    '취소': 'cancelled'
+  };
+
+  function canManageInbound() {
+    return !!(state.user && (state.user.role === '자재담당자' || state.user.role === '관리자'));
+  }
+
   function bindInboundCheck() {
     $('#inbound-search-btn').addEventListener('click', loadInboundCheck);
     ['#inbound-search-input', '#inbound-date-start', '#inbound-date-end'].forEach((sel) => {
@@ -1894,55 +1914,95 @@
     });
   }
 
+  // 검색 버튼/Enter로 호출: 새 검색이므로 상태 필터를 초기화한다.
   async function loadInboundCheck() {
+    if (!state.site) return;
+    state.inboundFilter = null;
+    await fetchInboundRows();
+  }
+
+  // 서버에서 다시 불러와 현재 상태 필터를 유지한 채 화면을 갱신한다.
+  // 재고사용/구매필요/입고/출고완료/취소 처리 직후에도 이 함수로 최신 상태를 반영한다.
+  async function fetchInboundRows() {
     if (!state.site) return;
     const name = $('#inbound-search-input').value.trim();
     const startDate = $('#inbound-date-start').value;
     const endDate = $('#inbound-date-end').value;
-    const listEl = $('#inbound-list');
-    const summaryEl = $('#inbound-summary');
     if (!name && !startDate && !endDate) {
       toast('신청자 이름 또는 요청일자를 입력하세요.', 'error');
       return;
     }
+    const listEl = $('#inbound-list');
     listEl.innerHTML = `<div class="empty-state">불러오는 중...</div>`;
-    summaryEl.classList.add('hidden');
+    $('#inbound-summary').classList.add('hidden');
     try {
-      const rows = await Api.get('checkInbound', { site: state.site, name, startDate, endDate });
-      if (!rows.length) {
-        listEl.innerHTML = `<div class="empty-state">검색 결과가 없습니다.</div>`;
-        return;
-      }
-
-      const counts = { '입고완료': 0, '부분입고': 0, '미입고': 0 };
-      rows.forEach((r) => { if (counts[r.status] !== undefined) counts[r.status]++; });
-      summaryEl.innerHTML = `
-        <div class="inbound-summary-item"><span class="label">총 신청</span><span class="value">${rows.length}건</span></div>
-        <div class="inbound-summary-item summary-done"><span class="label">입고완료</span><span class="value">${counts['입고완료']}건</span></div>
-        <div class="inbound-summary-item summary-partial"><span class="label">부분입고</span><span class="value">${counts['부분입고']}건</span></div>
-        <div class="inbound-summary-item summary-none"><span class="label">미입고</span><span class="value">${counts['미입고']}건</span></div>
-      `;
-      summaryEl.classList.remove('hidden');
-
-      listEl.innerHTML = rows.map((r) => renderInboundCard(r)).join('');
-      listEl.querySelectorAll('.inbound-cancel-btn').forEach((btn) => {
-        btn.addEventListener('click', onInboundCancelClick);
-      });
+      state.inboundRows = await Api.get('checkInbound', { site: state.site, name, startDate, endDate });
+      renderInboundSummary();
+      renderInboundList();
     } catch (err) {
+      state.inboundRows = [];
       listEl.innerHTML = `<div class="empty-state">오류: ${escapeHtml(err.message)}</div>`;
     }
   }
 
-  // 재고사용(O,X)이 'O'인 행은 입고를 받을 일이 없는 요청이라 상태 표시를 "재고사용"(파란색)으로 바꿔 보여준다.
-  function inboundStatusInfo(r) {
-    const stockUse = String(r.stockUse || '').trim().toUpperCase();
-    if (stockUse === 'O') {
-      return { label: '재고사용', className: 'po-status-stock' };
+  function renderInboundSummary() {
+    const summaryEl = $('#inbound-summary');
+    const rows = state.inboundRows;
+    if (!rows.length) {
+      summaryEl.classList.add('hidden');
+      summaryEl.innerHTML = '';
+      return;
     }
-    return { label: r.status, className: poStatusClass(r.status) };
+
+    const counts = {};
+    INBOUND_STATUS_KEYS.forEach((k) => (counts[k] = 0));
+    rows.forEach((r) => { if (counts[r.category] !== undefined) counts[r.category]++; });
+
+    summaryEl.innerHTML = INBOUND_STATUS_KEYS.map((key) => {
+      const suffix = INBOUND_STATUS_SUFFIX[key] || 'none';
+      const active = state.inboundFilter === key ? ' is-active' : '';
+      return `
+        <button type="button" class="inbound-summary-item summary-${suffix}${active}" data-status="${escapeHtml(key)}">
+          <span class="label">${escapeHtml(key)}</span><span class="value">${counts[key]}건</span>
+        </button>
+      `;
+    }).join('');
+    summaryEl.classList.remove('hidden');
+
+    $$('.inbound-summary-item', summaryEl).forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const key = btn.dataset.status;
+        state.inboundFilter = state.inboundFilter === key ? null : key;
+        renderInboundSummary();
+        renderInboundList();
+      });
+    });
   }
 
-  function inboundCancelState(stockUse) {
+  function renderInboundList() {
+    const listEl = $('#inbound-list');
+    const rows = state.inboundFilter
+      ? state.inboundRows.filter((r) => r.category === state.inboundFilter)
+      : state.inboundRows;
+
+    if (!rows.length) {
+      listEl.innerHTML = `<div class="empty-state">${state.inboundRows.length ? '해당 상태의 요청이 없습니다.' : '검색 결과가 없습니다.'}</div>`;
+      return;
+    }
+
+    listEl.innerHTML = rows.map((r) => renderInboundCard(r)).join('');
+    $$('.inbound-stock-btn', listEl).forEach((btn) => btn.addEventListener('click', onInboundStockUsageClick));
+    $$('.inbound-receive-btn', listEl).forEach((btn) => btn.addEventListener('click', onInboundReceiveClick));
+    $$('.inbound-outbound-btn', listEl).forEach((btn) => btn.addEventListener('click', onInboundOutboundClick));
+    $$('.inbound-cancel-btn', listEl).forEach((btn) => btn.addEventListener('click', onInboundCancelClick));
+  }
+
+  function statusBadgeClass(status) {
+    return 'po-status-' + (INBOUND_STATUS_SUFFIX[status] || 'none');
+  }
+
+  function inboundCancelState(stockUse, outboundDone) {
+    if (outboundDone) return { disabled: true, blocked: true, label: '취소불가' };
     const v = String(stockUse || '').trim().toUpperCase();
     if (v === '취소') return { disabled: true, blocked: false, label: '취소됨' };
     if (v === 'O' || v === 'X') return { disabled: false, blocked: true, label: '취소불가' };
@@ -1950,9 +2010,22 @@
   }
 
   function renderInboundCard(r) {
-    const statusInfo = inboundStatusInfo(r);
-    const cancelState = inboundCancelState(r.stockUse);
+    const cancelState = inboundCancelState(r.stockUse, r.outboundDone);
     const cancelBtnClass = cancelState.blocked ? 'inbound-cancel-btn is-blocked' : 'inbound-cancel-btn btn-danger';
+    const stockUseUpper = String(r.stockUse || '').trim().toUpperCase();
+    const canReceive = !r.outboundDone && stockUseUpper !== 'O' && stockUseUpper !== '취소';
+    const canShipOut = !r.outboundDone && (stockUseUpper === 'O' || r.status === '입고완료');
+
+    const actionsHtml = canManageInbound() ? `
+      <div class="inbound-card-actions">
+        <button type="button" class="btn btn-small btn-secondary inbound-stock-btn" data-row-index="${r.rowIndex}" data-value="O" ${r.outboundDone ? 'disabled' : ''}>재고사용</button>
+        <button type="button" class="btn btn-small btn-secondary inbound-stock-btn" data-row-index="${r.rowIndex}" data-value="X" ${r.outboundDone ? 'disabled' : ''}>구매필요</button>
+        <button type="button" class="btn btn-small btn-secondary inbound-receive-btn" data-row-index="${r.rowIndex}" ${canReceive ? '' : 'disabled'}>입고</button>
+        <button type="button" class="btn btn-small btn-primary inbound-outbound-btn" data-row-index="${r.rowIndex}" ${canShipOut ? '' : 'disabled'}>출고완료</button>
+        <button type="button" class="btn btn-small ${cancelBtnClass}" data-row-index="${r.rowIndex}" ${cancelState.disabled ? 'disabled' : ''}>${escapeHtml(cancelState.label)}</button>
+      </div>
+    ` : '';
+
     return `
       <div class="card inbound-card">
         <div class="inbound-card-meta">
@@ -1964,40 +2037,106 @@
             <span class="primary">${escapeHtml(r.itemName)}</span>
             <span class="secondary">${escapeHtml(r.itemId)}${r.spec ? ' · ' + escapeHtml(r.spec) : ''}</span>
           </div>
-          <span class="po-status-tag ${statusInfo.className}">${escapeHtml(statusInfo.label)}</span>
+          <span class="po-status-tag ${statusBadgeClass(r.status)}">${escapeHtml(r.status)}</span>
         </div>
         <div class="inbound-card-qty">
           <div class="iq-item"><span class="iq-label">요청수량</span><span class="iq-value">${Number(r.requestedQty).toLocaleString()}</span></div>
           <div class="iq-item"><span class="iq-label">누적입고수량</span><span class="iq-value">${Number(r.cumulativeQty).toLocaleString()}</span></div>
           <div class="iq-item"><span class="iq-label">잔여수량</span><span class="iq-value">${Number(r.remainingQty).toLocaleString()}</span></div>
         </div>
-        <div class="inbound-card-actions">
-          <button type="button" class="btn btn-small ${cancelBtnClass}"
-            data-row-index="${r.rowIndex}" data-stock-use="${escapeHtml(r.stockUse || '')}"
-            ${cancelState.disabled ? 'disabled' : ''}>${escapeHtml(cancelState.label)}</button>
+        ${actionsHtml}
+      </div>
+    `;
+  }
+
+  // "재고사용"/"구매필요" 버튼: 재고사용(O,X) 컬럼을 O 또는 X로 바꾼다.
+  async function onInboundStockUsageClick(e) {
+    const btn = e.currentTarget;
+    const rowIndex = Number(btn.dataset.rowIndex);
+    const value = btn.dataset.value;
+    const label = value === 'O' ? '재고사용' : '구매필요';
+    if (!confirm(`${label}(으)로 처리하시겠습니까?`)) return;
+
+    btn.disabled = true;
+    try {
+      await Api.post('updateStockUsage', { site: state.site, rowIndex, value, pin: state.user.pin });
+      toast(`${label} 처리되었습니다.`, 'success');
+      await fetchInboundRows();
+    } catch (err) {
+      btn.disabled = false;
+      toast(err.message || '처리 중 오류가 발생했습니다.', 'error');
+    }
+  }
+
+  function onInboundReceiveClick(e) {
+    const rowIndex = Number(e.currentTarget.dataset.rowIndex);
+    const row = state.inboundRows.find((r) => r.rowIndex === rowIndex);
+    if (row) openInboundReceiveModal(row);
+  }
+
+  // "입고" 버튼: 수량 입력 팝업을 띄우고, 확인 시 그 요청 건에 직접 입고수량을 누적한다.
+  function openInboundReceiveModal(row) {
+    const html = `
+      <div class="modal-sheet">
+        <h3>입고 처리</h3>
+        <p class="muted">${escapeHtml(row.itemName)} (${escapeHtml(row.itemId)})</p>
+        <p class="muted">요청수량 ${Number(row.requestedQty).toLocaleString()} · 잔여수량 ${Number(row.remainingQty).toLocaleString()}</p>
+        <label class="field-label">입고 수량</label>
+        <input type="number" id="inbound-receive-qty" class="input" min="1" step="1" inputmode="numeric" placeholder="수량" />
+        <div class="modal-actions">
+          <button class="btn btn-secondary" id="inbound-receive-cancel">취소</button>
+          <button class="btn btn-primary" id="inbound-receive-confirm">확인</button>
         </div>
       </div>
     `;
+    openModal(html);
+    $('#inbound-receive-cancel').addEventListener('click', closeModal);
+    $('#inbound-receive-confirm').addEventListener('click', async () => {
+      const qty = Number($('#inbound-receive-qty').value);
+      if (!qty || qty <= 0) {
+        toast('올바른 수량을 입력하세요.', 'error');
+        return;
+      }
+      try {
+        await Api.post('inboundByManager', { site: state.site, rowIndex: row.rowIndex, quantity: qty, pin: state.user.pin });
+        toast('입고 처리되었습니다.', 'success');
+        closeModal();
+        await fetchInboundRows();
+      } catch (err) {
+        toast(err.message || '입고 처리 중 오류가 발생했습니다.', 'error');
+      }
+    });
+  }
+
+  // "출고완료" 버튼: 출고 시트에 기록하고, 이 요청 건을 출고완료 상태로 마감한다.
+  async function onInboundOutboundClick(e) {
+    const btn = e.currentTarget;
+    const rowIndex = Number(btn.dataset.rowIndex);
+    const row = state.inboundRows.find((r) => r.rowIndex === rowIndex);
+    if (!row) return;
+    if (!confirm(`${row.itemName} 출고완료 처리하시겠습니까? (요청수량 ${Number(row.requestedQty).toLocaleString()} 출고)`)) return;
+
+    btn.disabled = true;
+    try {
+      await Api.post('outboundComplete', { site: state.site, rowIndex, pin: state.user.pin });
+      toast('출고완료 처리되었습니다.', 'success');
+      await fetchInboundRows();
+    } catch (err) {
+      btn.disabled = false;
+      toast(err.message || '출고완료 처리 중 오류가 발생했습니다.', 'error');
+    }
   }
 
   async function onInboundCancelClick(e) {
     const btn = e.currentTarget;
     const rowIndex = Number(btn.dataset.rowIndex);
-    const stockUse = String(btn.dataset.stockUse || '').trim().toUpperCase();
-
-    if (stockUse === 'O' || stockUse === 'X') {
-      toast('이미 처리된 건은 취소가 불가능합니다', 'error');
-      return;
-    }
-
     if (!confirm('구매 요청을 취소하시겠습니까?')) return;
 
     btn.disabled = true;
     try {
       await Api.post('cancelPurchase', { site: state.site, rowIndex });
-      btn.dataset.stockUse = '취소';
-      btn.textContent = '취소됨';
       toast('구매 요청이 취소되었습니다.', 'success');
+      await fetchInboundRows();
     } catch (err) {
       btn.disabled = false;
       toast(err.message || '취소 처리 중 오류가 발생했습니다.', 'error');

@@ -24,6 +24,10 @@ html, body {
   color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
   -webkit-tap-highlight-color: transparent;
+  /* 가장자리에서 좌우로 스와이프하면 브라우저가 뒤/앞 페이지로 이동하는 제스처를 막는다.
+     세로 스크롤(pan-y)만 허용해 화면 전환은 앱 내 뒤로가기 로직으로만 이뤄지게 한다. */
+  overscroll-behavior-x: none;
+  touch-action: pan-y;
 }
 
 #app {

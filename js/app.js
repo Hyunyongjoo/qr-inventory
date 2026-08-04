@@ -42,6 +42,10 @@
     inboundFilter: null
   };
 
+  // popstate(뒤로가기) 처리 중 switchView가 다시 history.pushState를 호출해
+  // 뒤로가기 한 번에 히스토리 항목이 새로 쌓이는 것을 막기 위한 플래그.
+  let handlingPopState = false;
+
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
@@ -70,7 +74,8 @@
     // 새로 받아온 경우)에서 특정 화면의 요소를 찾지 못해 bindXxx() 하나가 실패하더라도,
     // 그 뒤에 이어지는 다른 화면 바인딩과 로그인 화면 진입까지는 막히지 않게 각각 감싸서 실행한다.
     [bindLogin, bindSite, bindNav, bindActions, bindLine, bindOutMode, bindOrderOut, bindHome, bindScan,
-      bindPurchase, bindReturn, bindItems, bindInboundCheck, bindHistory, bindLogout, bindHardRefresh
+      bindPurchase, bindReturn, bindItems, bindInboundCheck, bindHistory, bindLogout, bindHardRefresh,
+      bindBackNavigation
     ].forEach((bindFn) => {
       try {
         bindFn();
@@ -347,29 +352,32 @@
     });
   }
 
+  // switchView가 실제로 화면을 바꿨으면 true, 사용자가 확인창에서 취소해 화면을 그대로
+  // 유지했으면 false를 반환한다. 뒤로가기(popstate) 핸들러가 이 값을 보고 브라우저 히스토리를
+  // 앱 화면과 다시 맞출지 판단한다.
   function switchView(name) {
     if (name !== 'site' && !state.site) name = 'site';
 
     if (state.currentView === 'scan' && name !== 'scan' && state.cart.length > 0) {
-      if (!confirm(`담아둔 ${state.cart.length}건이 사라집니다. 이동하시겠습니까?`)) return;
+      if (!confirm(`담아둔 ${state.cart.length}건이 사라집니다. 이동하시겠습니까?`)) return false;
       state.cart = [];
       renderCart();
     }
 
     if (state.currentView === 'purchase' && name !== 'purchase' && state.purchaseCart.length > 0) {
-      if (!confirm(`담아둔 ${state.purchaseCart.length}건이 사라집니다. 이동하시겠습니까?`)) return;
+      if (!confirm(`담아둔 ${state.purchaseCart.length}건이 사라집니다. 이동하시겠습니까?`)) return false;
       state.purchaseCart = [];
       renderPurchaseCart();
     }
 
     if (state.currentView === 'return' && name !== 'return' && state.returnCart.length > 0) {
-      if (!confirm(`담아둔 ${state.returnCart.length}건이 사라집니다. 이동하시겠습니까?`)) return;
+      if (!confirm(`담아둔 ${state.returnCart.length}건이 사라집니다. 이동하시겠습니까?`)) return false;
       state.returnCart = [];
       renderReturnCart();
     }
 
     if (state.currentView === 'order-out' && name !== 'order-out' && state.orderOutItems.some((it) => it.checked)) {
-      if (!confirm('확인한 출고 목록이 사라집니다. 이동하시겠습니까?')) return;
+      if (!confirm('확인한 출고 목록이 사라집니다. 이동하시겠습니까?')) return false;
       state.orderOutNo = '';
       state.orderOutItems = [];
       renderOrderOutSubmitUI();
@@ -388,6 +396,54 @@
     if (name === 'history') loadHistory();
 
     state.currentView = name;
+
+    // 뒤로가기(popstate)에 반응해 화면을 맞추는 중에는 다시 히스토리를 쌓지 않는다
+    // (브라우저가 이미 그 방향으로 이동을 완료한 상태라 여기서 또 push하면 앞으로 가기가 꼬인다).
+    if (!handlingPopState) pushViewHistory_(name);
+    return true;
+  }
+
+  // 사이트를 아직 고르지 않은 최초의 사이트 선택 화면이거나, 로그인 직후 기본 탭인 "입출고"
+  // 화면일 때를 앱의 "메인 화면"으로 본다. 이 화면에서 뒤로가기를 누르면 더 이상 돌아갈
+  // 앱 내부 화면이 없으므로, 그냥 브라우저 뒤로가기(=앱 종료)로 흘려보내지 않고 확인창을 띄운다.
+  function isMainAppScreen_(name) {
+    return name === 'actions' || (name === 'site' && !state.site);
+  }
+
+  function pushViewHistory_(name) {
+    history.pushState({ qrInvView: name }, '', location.href);
+  }
+
+  // 하드웨어/브라우저 뒤로가기 버튼(스와이프 포함) 처리.
+  // - 메인 화면이면: 취소를 선택했을 때만 히스토리를 다시 쌓아 제자리로 되돌리고, 확인을
+  //   선택하면 그대로 두어(브라우저는 이미 뒤로 이동을 마친 뒤) 실제로 앱을 벗어나게(=종료) 한다.
+  // - 그 외 화면이면: 그 히스토리 항목에 저장해둔 화면 이름으로 switchView를 호출해 맞춘다.
+  function handlePopState_(e) {
+    // 로그인 전(switchView가 한 번도 호출되지 않아 아직 앱 화면 추적이 시작되지 않은 상태)에는
+    // 관여하지 않고 기본 브라우저 동작에 맡긴다.
+    if (!state.currentView) return;
+
+    if (isMainAppScreen_(state.currentView)) {
+      // 브라우저는 이미 뒤로 이동을 마친 뒤이므로, 취소를 선택했을 때만 히스토리를 다시
+      // 쌓아 제자리로 되돌린다. 확인을 선택하면 그대로 두어 실제로 앱을 벗어나게(=종료) 한다.
+      if (!confirm('앱을 종료하시겠습니까?')) {
+        pushViewHistory_(state.currentView);
+      }
+      return;
+    }
+
+    const targetView = (e.state && e.state.qrInvView) || 'actions';
+    handlingPopState = true;
+    const navigated = switchView(targetView);
+    handlingPopState = false;
+
+    // 사용자가 확인창에서 취소해 화면을 바꾸지 않았다면, 브라우저 히스토리만 뒤로 간 상태이므로
+    // 원래 화면을 다시 쌓아 앱 화면과 히스토리 위치를 맞춘다.
+    if (!navigated) pushViewHistory_(state.currentView);
+  }
+
+  function bindBackNavigation() {
+    window.addEventListener('popstate', handlePopState_);
   }
 
   function escapeHtml(str) {

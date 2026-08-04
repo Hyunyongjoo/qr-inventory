@@ -1048,45 +1048,50 @@
     try {
       const rows = await Api.get('searchMaterials', { site: state.site, query: q });
       state.purchaseSearchRows = rows;
-      if (!rows.length) {
-        resultsEl.innerHTML = `<div class="empty-state">검색 결과가 없습니다.</div>`;
-        renderPurchaseBulkUI();
-        return;
-      }
-      resultsEl.innerHTML = rows.map((m, i) => `
-        <div class="item-row" data-idx="${i}">
-          <label class="item-checkbox-wrap">
-            <input type="checkbox" class="purchase-item-checkbox" data-idx="${i}" />
-          </label>
-          <div class="row-main purchase-item-main" data-idx="${i}">
-            <span class="primary">${escapeHtml(m.itemName)}</span>
-            <span class="secondary">${escapeHtml(m.itemId)}${m.bqms ? ' · ' + escapeHtml(m.bqms) : ''}${m.spec ? ' · ' + escapeHtml(m.spec) : ''}${m.equipment ? ' · ' + escapeHtml(m.equipment) : ''}</span>
-          </div>
-          <button type="button" class="item-photo-btn" data-idx="${i}" title="사진 보기" aria-label="사진 보기">📷</button>
-        </div>
-      `).join('');
-      $$('.purchase-item-main', resultsEl).forEach((el, i) => {
-        el.addEventListener('click', () => selectPurchaseMaterial(rows[i]));
-      });
-      $$('.purchase-item-checkbox', resultsEl).forEach((cb, i) => {
-        cb.addEventListener('click', (e) => e.stopPropagation());
-        cb.addEventListener('change', (e) => {
-          if (e.target.checked) state.purchaseSelectedIdx.add(i);
-          else state.purchaseSelectedIdx.delete(i);
-          renderPurchaseBulkUI();
-        });
-      });
-      $$('.item-photo-btn', resultsEl).forEach((btn, i) => {
-        btn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          openMaterialPhoto(rows[i]);
-        });
-      });
-      renderPurchaseBulkUI();
+      renderPurchaseSearchList(rows);
     } catch (err) {
       resultsEl.innerHTML = `<div class="empty-state">오류: ${escapeHtml(err.message)}</div>`;
       renderPurchaseBulkUI();
     }
+  }
+
+  function renderPurchaseSearchList(rows) {
+    const resultsEl = $('#purchase-search-results');
+    if (!rows.length) {
+      resultsEl.innerHTML = `<div class="empty-state">검색 결과가 없습니다.</div>`;
+      renderPurchaseBulkUI();
+      return;
+    }
+    resultsEl.innerHTML = rows.map((m, i) => `
+      <div class="item-row" data-idx="${i}">
+        <label class="item-checkbox-wrap">
+          <input type="checkbox" class="purchase-item-checkbox" data-idx="${i}" />
+        </label>
+        <div class="row-main purchase-item-main" data-idx="${i}">
+          <span class="primary">${escapeHtml(m.itemName)}</span>
+          <span class="secondary">${escapeHtml(m.itemId)}${m.bqms ? ' · ' + escapeHtml(m.bqms) : ''}${m.spec ? ' · ' + escapeHtml(m.spec) : ''}${m.equipment ? ' · ' + escapeHtml(m.equipment) : ''}</span>
+        </div>
+        <button type="button" class="item-photo-btn" data-idx="${i}" title="사진 보기" aria-label="사진 보기">📷</button>
+      </div>
+    `).join('');
+    $$('.purchase-item-main', resultsEl).forEach((el, i) => {
+      el.addEventListener('click', () => selectPurchaseMaterial(rows[i]));
+    });
+    $$('.purchase-item-checkbox', resultsEl).forEach((cb, i) => {
+      cb.addEventListener('click', (e) => e.stopPropagation());
+      cb.addEventListener('change', (e) => {
+        if (e.target.checked) state.purchaseSelectedIdx.add(i);
+        else state.purchaseSelectedIdx.delete(i);
+        renderPurchaseBulkUI();
+      });
+    });
+    $$('.item-photo-btn', resultsEl).forEach((btn, i) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openMaterialPhoto(rows[i]);
+      });
+    });
+    renderPurchaseBulkUI();
   }
 
   function togglePurchaseSelectAll(checked) {
@@ -1217,7 +1222,6 @@
     $('#purchase-item-equipment').textContent = material.equipment || '-';
     $('#purchase-quantity').value = '';
     $('#purchase-search-results').innerHTML = '';
-    state.purchaseSearchRows = [];
     state.purchaseSelectedIdx = new Set();
     renderPurchaseBulkUI();
   }
@@ -1226,6 +1230,7 @@
     state.currentPurchaseItem = null;
     $('#purchase-result-card').classList.add('hidden');
     $('#purchase-quantity').value = '';
+    renderPurchaseSearchList(state.purchaseSearchRows);
   }
 
   function addToPurchaseCart() {

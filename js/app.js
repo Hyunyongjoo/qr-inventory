@@ -2001,28 +2001,34 @@
     return 'po-status-' + (INBOUND_STATUS_SUFFIX[status] || 'none');
   }
 
-  function inboundCancelState(stockUse, outboundDone) {
-    if (outboundDone) return { disabled: true, blocked: true, label: '취소불가' };
-    const v = String(stockUse || '').trim().toUpperCase();
-    if (v === '취소') return { disabled: true, blocked: false, label: '취소됨' };
-    if (v === 'O' || v === 'X') return { disabled: false, blocked: true, label: '취소불가' };
-    return { disabled: false, blocked: false, label: '취소' };
+  // 취소 버튼은 재고확인중/신청대기 상태에서만, 신청자 본인이거나 자재담당자/관리자인 경우에만 표시한다.
+  // (신청완료/재고사용/입고완료/부분입고/출고완료로 넘어간 건은 이미 절차가 진행된 것으로 보고 취소를 막는다.)
+  function canCancelInbound(r) {
+    if (r.status !== '재고확인중' && r.status !== '신청대기') return false;
+    const isOwner = !!(state.user && r.requester && String(state.user.name).trim() === String(r.requester).trim());
+    return isOwner || canManageInbound();
   }
 
   function renderInboundCard(r) {
-    const cancelState = inboundCancelState(r.stockUse, r.outboundDone);
-    const cancelBtnClass = cancelState.blocked ? 'inbound-cancel-btn is-blocked' : 'inbound-cancel-btn btn-danger';
     const stockUseUpper = String(r.stockUse || '').trim().toUpperCase();
     const canReceive = !r.outboundDone && stockUseUpper !== 'O' && stockUseUpper !== '취소';
     const canShipOut = !r.outboundDone && (stockUseUpper === 'O' || r.status === '입고완료');
 
-    const actionsHtml = canManageInbound() ? `
+    const managerActionsHtml = canManageInbound() ? `
+      <button type="button" class="btn btn-small btn-secondary inbound-stock-btn" data-row-index="${r.rowIndex}" data-value="O" ${r.outboundDone ? 'disabled' : ''}>재고사용</button>
+      <button type="button" class="btn btn-small btn-secondary inbound-stock-btn" data-row-index="${r.rowIndex}" data-value="X" ${r.outboundDone ? 'disabled' : ''}>구매필요</button>
+      <button type="button" class="btn btn-small btn-secondary inbound-receive-btn" data-row-index="${r.rowIndex}" ${canReceive ? '' : 'disabled'}>입고</button>
+      <button type="button" class="btn btn-small btn-primary inbound-outbound-btn" data-row-index="${r.rowIndex}" ${canShipOut ? '' : 'disabled'}>출고완료</button>
+    ` : '';
+
+    const cancelHtml = canCancelInbound(r)
+      ? `<button type="button" class="btn btn-small inbound-cancel-btn btn-danger" data-row-index="${r.rowIndex}">취소</button>`
+      : '';
+
+    const actionsHtml = (managerActionsHtml || cancelHtml) ? `
       <div class="inbound-card-actions">
-        <button type="button" class="btn btn-small btn-secondary inbound-stock-btn" data-row-index="${r.rowIndex}" data-value="O" ${r.outboundDone ? 'disabled' : ''}>재고사용</button>
-        <button type="button" class="btn btn-small btn-secondary inbound-stock-btn" data-row-index="${r.rowIndex}" data-value="X" ${r.outboundDone ? 'disabled' : ''}>구매필요</button>
-        <button type="button" class="btn btn-small btn-secondary inbound-receive-btn" data-row-index="${r.rowIndex}" ${canReceive ? '' : 'disabled'}>입고</button>
-        <button type="button" class="btn btn-small btn-primary inbound-outbound-btn" data-row-index="${r.rowIndex}" ${canShipOut ? '' : 'disabled'}>출고완료</button>
-        <button type="button" class="btn btn-small ${cancelBtnClass}" data-row-index="${r.rowIndex}" ${cancelState.disabled ? 'disabled' : ''}>${escapeHtml(cancelState.label)}</button>
+        ${managerActionsHtml}
+        ${cancelHtml}
       </div>
     ` : '';
 
@@ -2134,7 +2140,7 @@
 
     btn.disabled = true;
     try {
-      await Api.post('cancelPurchase', { site: state.site, rowIndex });
+      await Api.post('cancelPurchase', { site: state.site, rowIndex, pin: state.user.pin });
       toast('구매 요청이 취소되었습니다.', 'success');
       await fetchInboundRows();
     } catch (err) {

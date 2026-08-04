@@ -879,35 +879,30 @@ function registerNewItemIfMissing_(itemId, itemName, spec) {
   });
 }
 
-// 입고확인 화면에서 아직 처리되지 않은(재고사용(O,X)이 공란인) 구매 요청을 취소한다.
-// 자재담당자가 이미 재고사용 여부를 확정한 건(O/X)은 이미 구매가 진행된 것으로 보고 취소를 막는다.
+// 입고확인 화면에서 아직 처리되지 않은(재고확인중/신청대기 상태인) 구매 요청을 취소한다.
+// 신청완료(구매요청번호 등록)/재고사용/입고완료/출고완료로 넘어간 건은 이미 절차가 진행된 것으로 보고 취소를 막는다.
+// 취소 권한은 그 요청의 신청자 본인이거나, Role이 자재담당자/관리자인 사용자에게만 있다.
 function cancelPurchase_(body) {
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try {
     const site = assertSite_(body.site);
-    const rowIndex = Number(body.rowIndex);
-    if (!rowIndex || rowIndex < 2) throw new Error('취소할 구매 요청을 찾을 수 없습니다.');
+    const row = findPoRowByIndex_(site, body.rowIndex);
+    const user = handleLogin_(body.pin);
 
-    const sheet = sheet_(poInSheetName_(site));
-    if (rowIndex > sheet.getLastRow()) throw new Error('취소할 구매 요청을 찾을 수 없습니다.');
-
-    const row = readAll_(sheet).find(r => r._row === rowIndex);
-    if (!row) throw new Error('취소할 구매 요청을 찾을 수 없습니다.');
-
-    if (isOutboundDoneRow_(row)) {
-      throw new Error('이미 출고완료된 요청은 취소할 수 없습니다.');
-    }
-    const stockUse = String(row['재고사용(O,X)'] || '').trim().toUpperCase();
-    if (stockUse === 'O' || stockUse === 'X') {
-      throw new Error('이미 처리된 건은 취소 불가');
-    }
-    if (stockUse === '취소') {
-      throw new Error('이미 취소된 요청입니다.');
+    const isOwner = String(row['신청자'] || '').trim() === String(user.name || '').trim();
+    const isManager = MANAGER_ROLES.indexOf(user.role) !== -1;
+    if (!isOwner && !isManager) {
+      throw new Error('취소 권한이 없습니다. 신청자 본인 또는 자재담당자/관리자만 취소할 수 있습니다.');
     }
 
-    updateRow_(sheet, rowIndex, { '재고사용(O,X)': '취소' });
-    return { rowIndex, stockUse: '취소' };
+    const info = computeInboundStatus_(row);
+    if (info.status !== '재고확인중' && info.status !== '신청대기') {
+      throw new Error('재고확인중 또는 신청대기 상태에서만 취소할 수 있습니다.');
+    }
+
+    updateRow_(sheet_(poInSheetName_(site)), row._row, { '재고사용(O,X)': '취소' });
+    return poRowToInboundView_(findPoRowByIndex_(site, body.rowIndex));
   } finally {
     lock.releaseLock();
   }

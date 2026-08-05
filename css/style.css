@@ -28,24 +28,23 @@ html, body {
   /* overscroll-behavior: none은 두 가지를 함께 막는다 —
      (1) 위→아래로 당길 때 브라우저가 페이지를 새로고침하는 pull-to-refresh 제스처
      (2) 가장자리에서 좌우로 스와이프할 때 브라우저가 뒤/앞 페이지로 이동하는 제스처
-     overflow: hidden은 html/body 자체가 스크롤되는 일이 없게 막아(실제 스크롤은 내부
-     #view-container가 담당) 삼성 인터넷 등 overscroll-behavior 지원이 불완전한
-     브라우저에서도 잡아당김 새로고침이 발동할 여지를 줄인다.
+     html/body에 overflow: hidden을 걸어 실제 스크롤을 #view-container 안으로만 가두려던
+     이전 시도는 일부 브라우저(삼성 인터넷 등)에서 터치 스크롤 자체를 중첩 스크롤 영역으로
+     넘기지 못해 앱 전체가 스크롤 불가능해지는 문제가 있어 제거했다. html/body는 평범하게
+     두고, pull-to-refresh 차단은 overscroll-behavior와 아래 JS의 touchmove 가드(실제
+     스크롤 영역인 #view-container가 맨 위일 때 아래로 당기는 제스처만 막음)에 맡긴다.
      touch-action: pan-y는 세로 스크롤(리스트 스크롤)은 허용하되 가로 스와이프 제스처는
-     막아, 화면 전환이 앱 내 뒤로가기 로직(popstate)으로만 이뤄지게 한다.
-     (touch-action: pan-x를 쓰면 세로 스크롤 자체가 막혀 리스트를 스크롤할 수 없게
-     되므로 사용하지 않았다 — 아래 JS의 touchmove 가드가 새로고침 제스처만 별도로 막는다.) */
+     막아, 화면 전환이 앱 내 뒤로가기 로직(popstate)으로만 이뤄지게 한다. */
   overscroll-behavior: none;
   overscroll-behavior-y: none;
-  overflow: hidden;
   touch-action: pan-y;
 }
 
 #app {
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
-  min-height: 100dvh;
+  height: 100vh;
+  height: 100dvh;
 }
 
 .hidden { display: none !important; }

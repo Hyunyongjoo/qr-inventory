@@ -165,3 +165,21 @@ function monthlyStockRollover_() {
     Logger.log(site + '_재고: ' + rows.length + '건 월초재고 롤오버 완료');
   });
 }
+
+/**
+ * 5분마다 keepAlive()(Code.gs)를 호출하는 시간 트리거를 설치한다.
+ * 스크립트 편집기에서 한 번 수동으로 실행한다 (setupSpreadsheet()에서는 자동 호출하지 않음).
+ * 기존에 설치된 keepAlive 트리거가 있으면 지우고 다시 만들어 중복 등록을 막는다.
+ */
+function setupTrigger() {
+  ScriptApp.getProjectTriggers().forEach(t => {
+    if (t.getHandlerFunction() === 'keepAlive') {
+      ScriptApp.deleteTrigger(t);
+    }
+  });
+  ScriptApp.newTrigger('keepAlive')
+    .timeBased()
+    .everyMinutes(5)
+    .create();
+  Logger.log('트리거 설정 완료');
+}

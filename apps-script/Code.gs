@@ -1369,3 +1369,11 @@ function listTransactions_(filter) {
   const limit = filter.limit || 50;
   return rows.slice(0, limit).map(stripRow_);
 }
+
+// ------------------------- 유지보수(Keep-alive) -------------------------
+
+// 5분마다 실행되는 트리거(Setup.gs의 setupTrigger() 참고)가 호출하는 핑 함수.
+// 시트/스프레드시트를 건드리지 않고 로그만 남긴다.
+function keepAlive() {
+  Logger.log('ping: ' + new Date().toISOString());
+}

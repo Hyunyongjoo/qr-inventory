@@ -2125,7 +2125,9 @@
     const stockUseUpper = String(r.stockUse || '').trim().toUpperCase();
     const isStockUsed = stockUseUpper === 'O';
     const isPurchaseNeeded = stockUseUpper === 'X';
-    const canReceive = !r.outboundDone && stockUseUpper !== 'O' && stockUseUpper !== '취소';
+    // 입고 버튼은 신청완료(구매요청번호 등록) 상태 중 미입고/부분입고일 때만 활성화한다.
+    // 재고확인중/신청대기/재고사용/입고완료/부분출고/출고완료는 모두 비활성화.
+    const canReceive = r.status === '미입고' || r.status === '부분입고';
     // 출고 진행 상태(부분출고/출고완료)가 status 표시를 덮어쓸 수 있으므로, 출고완료 버튼 활성화
     // 여부는 status 문자열이 아니라 원본 입고 완료 여부(누적입고수량 >= 요청수량)로 판단한다.
     const isInboundDone = r.requestedQty > 0 && r.cumulativeQty >= r.requestedQty;

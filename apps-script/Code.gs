@@ -1001,6 +1001,8 @@ function updateStockUsage_(body) {
 
 // 입고확인 화면의 "입고" 버튼: 팝업으로 입력받은 수량을 그 구매요청 행 하나에 직접 누적한다.
 // (QR 스캔 입고(stockIn_)와 달리 여러 발주에 FIFO로 나눠 채우지 않고, 화면에 보이는 그 요청 건에만 반영한다.)
+// 신청완료(구매요청번호 등록) 상태 중 미입고/부분입고 건에서만 처리할 수 있다 — 재고확인중/신청대기/
+// 재고사용/입고완료/부분출고/출고완료는 모두 막는다(입고 버튼 활성화 조건과 동일하게 서버에서도 검증).
 function inboundByManager_(body) {
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
@@ -1011,9 +1013,10 @@ function inboundByManager_(body) {
     if (!qty || qty <= 0) throw new Error('입고 수량은 0보다 커야 합니다.');
 
     const row = findPoRowByIndex_(site, body.rowIndex);
-    if (isOutboundDoneRow_(row)) throw new Error('이미 출고완료된 요청입니다.');
-    const stockUse = String(row['재고사용(O,X)'] || '').trim().toUpperCase();
-    if (stockUse === 'O') throw new Error('재고사용으로 처리된 요청은 입고할 수 없습니다.');
+    const info = computeInboundStatus_(row);
+    if (info.status !== '미입고' && info.status !== '부분입고') {
+      throw new Error('신청완료(미입고/부분입고) 상태에서만 입고 처리할 수 있습니다.');
+    }
 
     const requested = Number(row['요청수량']) || 0;
     const before = Number(row['누적입고수량']) || 0;

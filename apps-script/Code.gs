@@ -1139,8 +1139,10 @@ function stockIn_(body) {
   }
 }
 
-// QR 스캔 출고 전용 선입선출 장부 처리. 실제 재고 차감은 이미 stockOut_이 기록한 출고 1건으로
-// 끝났으므로(중복 차감 방지), 여기서는 구매발주및입고 시트의 누적출고수량/출고여부만 갱신한다.
+// QR 스캔 출고 전용 선입선출 장부 처리. 실제 재고 차감은 stockOut_이 (건별로 나눠) 기록하는
+// 출고 행들의 합으로 이루어지므로, 여기서는 구매발주및입고 시트의 누적출고수량/출고여부/최종출고일만
+// 갱신하고, 각 건에서 얼마나 차감했는지(라인구매번호 + 차감수량)를 배열로 돌려준다 — 호출부가 그
+// 배열을 그대로 출고 시트에 건별 행으로 나눠 기록한다.
 // 같은 자재코드 + 같은 라인(zone)의 행만 대상으로 하며(다른 라인 구매 건은 건드리지 않음),
 // 재고사용(O)/취소 건과 아직 한 번도 입고되지 않은(최종입고일이 없는) 건은 제외하고,
 // 최종입고일 오름차순(오래된 건부터)으로 스캔 수량이 남는 동안 순서대로 채운다.
@@ -1160,6 +1162,7 @@ function applyLineFifoOutboundBookkeeping_(site, itemId, zone, qty) {
     return (a._row || 0) - (b._row || 0);
   });
 
+  const allocations = [];
   let remaining = qty;
   for (let i = 0; i < rows.length && remaining > 0; i++) {
     const po = rows[i];
@@ -1178,10 +1181,14 @@ function applyLineFifoOutboundBookkeeping_(site, itemId, zone, qty) {
       '최종출고일': Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd')
     });
 
+    allocations.push({ lineOrderNo: po['라인구매번호'] || '', appliedQty: applied });
     remaining -= applied;
   }
+  return allocations;
 }
 
+// QR 스캔 출고: 같은 자재+라인의 구매요청 건들을 선입선출로 매칭해 각 건의 누적출고수량/출고여부를
+// 갱신하고, 매칭된 건별로 출고 시트에 행을 나눠 기록한다(라인구매번호 포함, 건별 이력 추적용).
 function stockOut_(body) {
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
@@ -1197,14 +1204,28 @@ function stockOut_(body) {
     const current = calculateCurrentStock_(site, itemId);
     if (current < qty) throw new Error(`재고 부족: 현재 ${current}${item.Unit || ''}, 출고 요청 ${qty}${item.Unit || ''}`);
 
-    logTransaction_(site, {
-      itemId, itemName: item.ItemName, spec: item.Spec, unit: item.Unit, zone,
-      quantity: qty, worker: worker.name
-    });
+    // 스캔한 수량만큼, 같은 자재+라인의 구매요청 건들을 선입선출로 "출고됨" 처리하고(구매발주및입고
+    // 시트의 누적출고수량/출고여부 갱신), 각 건에서 차감된 수량(+라인구매번호)을 돌려받는다.
+    const allocations = applyLineFifoOutboundBookkeeping_(site, itemId, zone, qty);
 
-    // 스캔한 수량만큼, 같은 자재+라인의 구매요청 건들을 선입선출로 "출고됨" 처리한다 (장부만 갱신,
-    // 재고는 위 출고 1건으로 이미 차감했으므로 중복 차감하지 않는다).
-    applyLineFifoOutboundBookkeeping_(site, itemId, zone, qty);
+    // 건별로 매칭된 수량만큼 출고 시트에 행을 나눠 기록한다(예: 10개 출고가 두 건에서
+    // 6개/4개로 나뉘어 차감됐다면 출고 시트에도 두 줄로 남긴다).
+    let remaining = qty;
+    allocations.forEach((a) => {
+      logTransaction_(site, {
+        itemId, itemName: item.ItemName, spec: item.Spec, unit: item.Unit, zone,
+        quantity: a.appliedQty, worker: worker.name, lineOrderNo: a.lineOrderNo
+      });
+      remaining -= a.appliedQty;
+    });
+    // 어떤 구매요청 건에도 매칭되지 않은 나머지(예: 구매요청 없이 재고만 있는 자재)는
+    // 라인구매번호 없이 한 줄로 기록한다.
+    if (remaining > 0) {
+      logTransaction_(site, {
+        itemId, itemName: item.ItemName, spec: item.Spec, unit: item.Unit, zone,
+        quantity: remaining, worker: worker.name
+      });
+    }
 
     // 방금 기록한 출고를 포함해 현재고를 다시 계산해 재고 시트에 반영한다.
     const newQty = recalculateStock_(site, itemId, item);

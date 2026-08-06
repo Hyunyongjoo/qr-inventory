@@ -2310,6 +2310,8 @@
     });
   }
 
+  // 취소 처리 후 서버가 돌려준 최신 행 데이터로 그 카드만 갱신한다(updateInboundRowInPlace).
+  // 전체 목록을 다시 불러오지 않아 나머지 카드와 스크롤 위치는 그대로 유지된다.
   async function onInboundCancelClick(e) {
     const btn = e.currentTarget;
     const rowIndex = Number(btn.dataset.rowIndex);
@@ -2317,9 +2319,9 @@
 
     btn.disabled = true;
     try {
-      await Api.post('cancelPurchase', { site: state.site, rowIndex, pin: state.user.pin });
+      const updatedRow = await Api.post('cancelPurchase', { site: state.site, rowIndex, pin: state.user.pin });
       toast('구매 요청이 취소되었습니다.', 'success');
-      await fetchInboundRows();
+      updateInboundRowInPlace(updatedRow);
     } catch (err) {
       btn.disabled = false;
       toast(err.message || '취소 처리 중 오류가 발생했습니다.', 'error');

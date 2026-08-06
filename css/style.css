@@ -529,6 +529,7 @@ html, body {
 .inbound-card-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 10px; }
 .inbound-card-actions .btn { flex: 0 0 auto; }
 .inbound-cancel-btn.is-blocked { background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); }
+.inbound-stock-btn.is-selected { border-color: var(--accent); color: var(--accent); background: var(--surface); font-weight: 700; opacity: 1; }
 .iq-label { font-size: 11px; color: var(--text-muted); }
 .iq-value { font-size: 15px; font-weight: 700; }
 

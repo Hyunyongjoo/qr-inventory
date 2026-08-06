@@ -25,6 +25,8 @@ const ZONES = {
 const SITE_CODES = { '기흥': 'GH', '화성': 'HS', '평택': 'PT' };
 // 입고확인 화면의 재고사용/구매필요/입고/출고완료 버튼을 사용할 수 있는 Role (Users 시트 Role 컬럼 값).
 const MANAGER_ROLES = ['자재담당자', '관리자'];
+// 입고확인 화면에서 이름/날짜/라인 조건 없이(=전체 라인) 검색할 때 돌려주는 최대 건수.
+const INBOUND_CHECK_MAX_ROWS = 100;
 // sheet_()가 실행 중 같은 시트에 대해 매번 컬럼 마이그레이션을 반복하지 않도록 하는 캐시 (실행마다 초기화됨).
 const ensuredColumnsCache_ = {};
 
@@ -593,17 +595,19 @@ function toDateOnly_(value) {
 
 // 입고확인 화면 전용: 신청자 이름(부분 일치) + 요청일자 범위 + 라인으로 그 사이트의 모든 발주(모든 자재)를 찾는다.
 // listOpenPurchaseOrders_와 달리 자재별이 아니라 신청자/날짜/라인 기준 조회이고, 입고완료 건도 포함한다.
-// 이름/시작일/종료일/라인은 모두 선택사항이지만 최소 하나는 있어야 한다:
+// 이름/시작일/종료일/라인은 모두 선택사항이며, 전부 비어 있으면(=전체 라인 + 조건 없음) 그 사이트의
+// 전체 데이터를 대상으로 하되 요청일자가 최근인 순으로 INBOUND_CHECK_MAX_ROWS건까지만 돌려준다.
 //  - 이름만: 이름으로만 필터
 //  - 이름 + 날짜 + 라인: 모두 AND 조건으로 필터
 //  - 라인만: 라인(정확히 일치)으로만 필터
+//  - 모두 없음: 필터 없이 전체 데이터 중 최근 요청 100건
 function checkInbound_(site, name, startDate, endDate, zone) {
   assertSite_(site);
   const q = (name || '').toString().trim();
   const start = toDateOnly_(startDate);
   const end = toDateOnly_(endDate);
   const zoneQ = (zone || '').toString().trim();
-  if (!q && !start && !end && !zoneQ) throw new Error('신청자 이름, 요청일자 또는 라인을 입력하세요.');
+  const hasFilter = !!(q || zoneQ || start || end);
 
   let rows = readAll_(sheet_(poInSheetName_(site)));
   if (q) rows = rows.filter(r => String(r['신청자'] || '').includes(q));
@@ -616,6 +620,17 @@ function checkInbound_(site, name, startDate, endDate, zone) {
       if (end && d > end) return false;
       return true;
     });
+  }
+
+  if (!hasFilter && rows.length > INBOUND_CHECK_MAX_ROWS) {
+    rows = rows
+      .slice()
+      .sort((a, b) => {
+        const da = a['요청일자'] ? new Date(a['요청일자']).getTime() : 0;
+        const db = b['요청일자'] ? new Date(b['요청일자']).getTime() : 0;
+        return db - da;
+      })
+      .slice(0, INBOUND_CHECK_MAX_ROWS);
   }
 
   const stockMap = buildStockMap_(site);
@@ -917,9 +932,11 @@ function registerNewItemIfMissing_(itemId, itemName, spec) {
   });
 }
 
-// 입고확인 화면에서 아직 처리되지 않은(재고확인중/신청대기 상태인) 구매 요청을 취소한다.
-// 신청완료(구매요청번호 등록)/재고사용/입고완료/출고완료로 넘어간 건은 이미 절차가 진행된 것으로 보고 취소를 막는다.
-// 취소 권한은 그 요청의 신청자 본인이거나, Role이 자재담당자/관리자인 사용자에게만 있다.
+// 입고확인 화면에서 아직 확정되지 않은 구매 요청을 취소한다. 취소 가능 범위는 역할에 따라 다르다:
+//  - 신청자 본인(라인담당자/작업자 등 비관리자): 재고확인중 상태의 본인 신청 건만 취소 가능.
+//    재고사용/구매필요(신청대기)/신청완료로 넘어간 건은 이미 절차가 진행된 것으로 보고 막는다.
+//  - Role이 자재담당자/관리자인 사용자: 재고확인중/재고사용/구매필요(신청대기) 건까지 취소 가능.
+//    신청완료(구매요청번호 등록, 미입고/부분입고/입고완료)·출고완료로 넘어간 건은 취소를 막는다.
 function cancelPurchase_(body) {
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
@@ -930,13 +947,18 @@ function cancelPurchase_(body) {
 
     const isOwner = String(row['신청자'] || '').trim() === String(user.name || '').trim();
     const isManager = MANAGER_ROLES.indexOf(user.role) !== -1;
-    if (!isOwner && !isManager) {
-      throw new Error('취소 권한이 없습니다. 신청자 본인 또는 자재담당자/관리자만 취소할 수 있습니다.');
-    }
-
     const info = computeInboundStatus_(row);
-    if (info.status !== '재고확인중' && info.status !== '신청대기') {
-      throw new Error('재고확인중 또는 신청대기 상태에서만 취소할 수 있습니다.');
+
+    if (isManager) {
+      if (info.status !== '재고확인중' && info.status !== '신청대기' && info.status !== '재고사용') {
+        throw new Error('재고확인중, 구매필요 또는 재고사용 상태에서만 취소할 수 있습니다.');
+      }
+    } else if (isOwner) {
+      if (info.status !== '재고확인중') {
+        throw new Error('재고확인중 상태의 본인 신청 건만 취소할 수 있습니다.');
+      }
+    } else {
+      throw new Error('취소 권한이 없습니다. 신청자 본인 또는 자재담당자/관리자만 취소할 수 있습니다.');
     }
 
     updateRow_(sheet_(poInSheetName_(site)), row._row, { '재고사용(O,X)': '취소' });

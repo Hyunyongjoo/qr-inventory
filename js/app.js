@@ -2026,16 +2026,14 @@
 
   // 서버에서 다시 불러와 현재 상태 필터를 유지한 채 화면을 갱신한다.
   // 재고사용/구매필요/입고/출고완료/취소 처리 직후에도 이 함수로 최신 상태를 반영한다.
+  // 이름/날짜/라인을 모두 비워두면(= 전체 라인) 조건 없이 전체 데이터를 검색하며,
+  // 결과가 많을 경우 서버에서 최근 100건으로 제한해 돌려준다.
   async function fetchInboundRows() {
     if (!state.site) return;
     const name = $('#inbound-search-input').value.trim();
     const startDate = $('#inbound-date-start').value;
     const endDate = $('#inbound-date-end').value;
     const zone = $('#inbound-zone-select').value;
-    if (!name && !startDate && !endDate && !zone) {
-      toast('신청자 이름, 요청일자 또는 라인을 입력하세요.', 'error');
-      return;
-    }
     const listEl = $('#inbound-list');
     listEl.innerHTML = `<div class="empty-state">불러오는 중...</div>`;
     $('#inbound-summary').classList.add('hidden');
@@ -2095,35 +2093,49 @@
     }
 
     listEl.innerHTML = rows.map((r) => renderInboundCard(r)).join('');
-    $$('.inbound-stock-btn', listEl).forEach((btn) => btn.addEventListener('click', onInboundStockUsageClick));
-    $$('.inbound-receive-btn', listEl).forEach((btn) => btn.addEventListener('click', onInboundReceiveClick));
-    $$('.inbound-outbound-btn', listEl).forEach((btn) => btn.addEventListener('click', onInboundOutboundClick));
-    $$('.inbound-cancel-btn', listEl).forEach((btn) => btn.addEventListener('click', onInboundCancelClick));
+    bindInboundCardActions(listEl);
+  }
+
+  // 카드(들)에 담긴 관리 버튼에 이벤트를 연결한다. 목록 전체를 새로 그릴 때뿐 아니라
+  // updateInboundRowInPlace()가 카드 하나만 다시 그릴 때도 재사용한다.
+  function bindInboundCardActions(container) {
+    $$('.inbound-stock-btn', container).forEach((btn) => btn.addEventListener('click', onInboundStockUsageClick));
+    $$('.inbound-receive-btn', container).forEach((btn) => btn.addEventListener('click', onInboundReceiveClick));
+    $$('.inbound-outbound-btn', container).forEach((btn) => btn.addEventListener('click', onInboundOutboundClick));
+    $$('.inbound-cancel-btn', container).forEach((btn) => btn.addEventListener('click', onInboundCancelClick));
   }
 
   function statusBadgeClass(status) {
     return 'po-status-' + (INBOUND_STATUS_SUFFIX[status] || 'none');
   }
 
-  // 취소 버튼은 재고확인중/신청대기 상태에서만, 신청자 본인이거나 자재담당자/관리자인 경우에만 표시한다.
-  // (신청완료/재고사용/입고완료/부분입고/출고완료로 넘어간 건은 이미 절차가 진행된 것으로 보고 취소를 막는다.)
+  // 라인담당자/작업자: 본인이 신청했고 아직 재고확인중 상태인 건만 취소할 수 있다.
+  // (재고사용/구매필요(신청대기)/신청완료로 넘어간 건은 이미 절차가 진행된 것으로 보고 취소를 막는다.)
+  // 관리자/자재담당자: 재고확인중/재고사용/구매필요(신청대기) 건까지는 취소할 수 있고,
+  // 신청완료(미입고/부분입고/입고완료)·출고완료로 넘어간 건은 취소할 수 없다.
   function canCancelInbound(r) {
-    if (r.status !== '재고확인중' && r.status !== '신청대기') return false;
+    if (canManageInbound()) {
+      return r.status === '재고확인중' || r.status === '신청대기' || r.status === '재고사용';
+    }
     const isOwner = !!(state.user && r.requester && String(state.user.name).trim() === String(r.requester).trim());
-    return isOwner || canManageInbound();
+    return isOwner && r.status === '재고확인중';
   }
 
   function renderInboundCard(r) {
     const stockUseUpper = String(r.stockUse || '').trim().toUpperCase();
+    const isStockUsed = stockUseUpper === 'O';
+    const isPurchaseNeeded = stockUseUpper === 'X';
     const canReceive = !r.outboundDone && stockUseUpper !== 'O' && stockUseUpper !== '취소';
     // 출고 진행 상태(부분출고/출고완료)가 status 표시를 덮어쓸 수 있으므로, 출고완료 버튼 활성화
     // 여부는 status 문자열이 아니라 원본 입고 완료 여부(누적입고수량 >= 요청수량)로 판단한다.
     const isInboundDone = r.requestedQty > 0 && r.cumulativeQty >= r.requestedQty;
     const canShipOut = !r.outboundDone && (stockUseUpper === 'O' || isInboundDone);
 
+    // 재고사용/구매필요는 토글: 이미 선택된 쪽은 비활성화(선택됨 표시)하고, 반대쪽은 활성 상태로
+    // 남겨 두어 언제든 다시 눌러 전환할 수 있게 한다.
     const managerActionsHtml = canManageInbound() ? `
-      <button type="button" class="btn btn-small btn-secondary inbound-stock-btn" data-row-index="${r.rowIndex}" data-value="O" ${r.outboundDone ? 'disabled' : ''}>재고사용</button>
-      <button type="button" class="btn btn-small btn-secondary inbound-stock-btn" data-row-index="${r.rowIndex}" data-value="X" ${r.outboundDone ? 'disabled' : ''}>구매필요</button>
+      <button type="button" class="btn btn-small btn-secondary inbound-stock-btn${isStockUsed ? ' is-selected' : ''}" data-row-index="${r.rowIndex}" data-value="O" ${(r.outboundDone || isStockUsed) ? 'disabled' : ''}>재고사용${isStockUsed ? ' ✓' : ''}</button>
+      <button type="button" class="btn btn-small btn-secondary inbound-stock-btn${isPurchaseNeeded ? ' is-selected' : ''}" data-row-index="${r.rowIndex}" data-value="X" ${(r.outboundDone || isPurchaseNeeded) ? 'disabled' : ''}>구매필요${isPurchaseNeeded ? ' ✓' : ''}</button>
       <button type="button" class="btn btn-small btn-secondary inbound-receive-btn" data-row-index="${r.rowIndex}" ${canReceive ? '' : 'disabled'}>입고</button>
       <button type="button" class="btn btn-small btn-primary inbound-outbound-btn" data-row-index="${r.rowIndex}" ${canShipOut ? '' : 'disabled'}>출고완료</button>
     ` : '';
@@ -2140,7 +2152,7 @@
     ` : '';
 
     return `
-      <div class="card inbound-card">
+      <div class="card inbound-card" data-row-index="${r.rowIndex}">
         <div class="inbound-card-meta">
           ${r.requestDate ? `<span>요청일자 ${formatPoDate(r.requestDate)}</span>` : ''}
           ${r.zone ? `<span>· ${escapeHtml(r.zone)}</span>` : ''}
@@ -2165,6 +2177,8 @@
   }
 
   // "재고사용"/"구매필요" 버튼: 재고사용(O,X) 컬럼을 O 또는 X로 바꾼다.
+  // 서버가 돌려준 최신 행 데이터로 그 카드만 갱신하고(updateInboundRowInPlace), 전체 목록을
+  // 다시 불러오지(fetchInboundRows) 않는다 — 다른 카드나 스크롤 위치를 건드리지 않기 위함.
   async function onInboundStockUsageClick(e) {
     const btn = e.currentTarget;
     const rowIndex = Number(btn.dataset.rowIndex);
@@ -2174,13 +2188,42 @@
 
     btn.disabled = true;
     try {
-      await Api.post('updateStockUsage', { site: state.site, rowIndex, value, pin: state.user.pin });
+      const updatedRow = await Api.post('updateStockUsage', { site: state.site, rowIndex, value, pin: state.user.pin });
       toast(`${label} 처리되었습니다.`, 'success');
-      await fetchInboundRows();
+      updateInboundRowInPlace(updatedRow);
     } catch (err) {
       btn.disabled = false;
       toast(err.message || '처리 중 오류가 발생했습니다.', 'error');
     }
+  }
+
+  // updateStockUsage 처리 직후 서버가 돌려준 최신 행 하나로 state.inboundRows와 화면(요약 건수 +
+  // 그 카드)만 갱신한다. 필터에 더 이상 맞지 않게 된 경우 카드를 제거하고, 목록이 비면
+  // (검색 결과 없음 메시지 등을 위해) renderInboundList()로 전체를 다시 그린다.
+  function updateInboundRowInPlace(updatedRow) {
+    const idx = state.inboundRows.findIndex((r) => r.rowIndex === updatedRow.rowIndex);
+    if (idx !== -1) state.inboundRows[idx] = updatedRow;
+    renderInboundSummary();
+
+    const listEl = $('#inbound-list');
+    const cardEl = listEl.querySelector(`.inbound-card[data-row-index="${updatedRow.rowIndex}"]`);
+    if (!cardEl) {
+      renderInboundList();
+      return;
+    }
+
+    const stillVisible = !state.inboundFilter || updatedRow.category === state.inboundFilter;
+    if (!stillVisible) {
+      cardEl.remove();
+      if (!listEl.querySelector('.inbound-card')) renderInboundList();
+      return;
+    }
+
+    const temp = document.createElement('div');
+    temp.innerHTML = renderInboundCard(updatedRow);
+    const newCardEl = temp.firstElementChild;
+    cardEl.replaceWith(newCardEl);
+    bindInboundCardActions(newCardEl);
   }
 
   function onInboundReceiveClick(e) {

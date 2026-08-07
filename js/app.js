@@ -39,7 +39,8 @@
     orderOutHtml5QrCode: null,
     orderOutScanning: false,
     inboundRows: [],
-    inboundFilter: null
+    inboundFilter: null,
+    inboundLoadedSite: null
   };
 
   // popstate(뒤로가기) 처리 중 switchView가 다시 history.pushState를 호출해
@@ -398,7 +399,7 @@
     if (name === 'home') loadStock();
     if (name === 'items') loadItems();
     if (name === 'history') loadHistory();
-    if (name === 'inbound') populateInboundZoneOptions();
+    if (name === 'inbound') enterInboundCheck();
 
     state.currentView = name;
 
@@ -2022,6 +2023,23 @@
     if (!state.site) return;
     state.inboundFilter = null;
     await fetchInboundRows();
+  }
+
+  // 입고확인 탭 진입 시 호출된다. 라인 드롭다운은 매번 현재 사이트 기준으로 다시 채우고,
+  // 마지막으로 데이터를 불러온 사이트와 현재 사이트가 다르면(= 그 사이 사이트가 바뀌었으면)
+  // 이전 사이트의 검색 조건/결과가 남아있지 않도록 검색창을 초기화하고 새로 조회한다.
+  async function enterInboundCheck() {
+    if (state.site && state.inboundLoadedSite !== state.site) {
+      $('#inbound-search-input').value = '';
+      $('#inbound-date-start').value = '';
+      $('#inbound-date-end').value = '';
+      $('#inbound-zone-select').value = '';
+      state.inboundLoadedSite = state.site;
+      populateInboundZoneOptions();
+      await loadInboundCheck();
+    } else {
+      populateInboundZoneOptions();
+    }
   }
 
   // 서버에서 다시 불러와 현재 상태 필터를 유지한 채 화면을 갱신한다.

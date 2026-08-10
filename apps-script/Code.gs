@@ -801,17 +801,16 @@ function appendAdhocReceiptRow_(site, item, qty) {
 // 원인 파악이 끝나면 false로 되돌려 로그를 끄면 된다.
 const SEARCH_MATERIALS_DEBUG = true;
 
-// 행 하나가 검색어 q(이미 trim+소문자 처리됨)와 일치하는지 검사한다. 자재코드/BQMS/품명/규격/비고
-// 5개 필드를 각각 부분 문자열로 비교하고, SEARCH_MATERIALS_DEBUG가 켜져 있으면 어느 필드에서
-// 매칭됐는지(그리고 그 필드의 실제 값)를 실행 로그에 남긴다 — 의도치 않은 필드에서 매칭되는
-// 원인(예: 규격/비고에 검색어가 숨어 있는 경우)을 찾기 위한 용도다.
+// 행 하나가 검색어 q(이미 trim+소문자 처리됨)와 일치하는지 검사한다. 자재코드/BQMS/품명/규격
+// 4개 필드를 각각 부분 문자열로 비교하고(비고는 검색 대상에서 제외), SEARCH_MATERIALS_DEBUG가
+// 켜져 있으면 어느 필드에서 매칭됐는지(그리고 그 필드의 실제 값)를 실행 로그에 남긴다 —
+// 의도치 않은 필드에서 매칭되는 원인을 찾기 위한 용도다.
 function matchesSearchQuery_(site, r, q) {
   const fields = {
     '자재코드': String(r['자재코드'] || ''),
     'BQMS': String(r['BQMS'] || ''),
     '품명': String(r['품명'] || ''),
-    '규격': String(r['규격'] || ''),
-    '비고': String(r['비고'] || '')
+    '규격': String(r['규격'] || '')
   };
   const matchedFields = Object.keys(fields).filter(k => fields[k].toLowerCase().includes(q));
 
@@ -826,9 +825,9 @@ function matchesSearchQuery_(site, r, q) {
   return matchedFields.length > 0;
 }
 
-// 구매요청 화면의 자재 검색. 검색어가 자재코드/BQMS/품명/규격/비고 중 어디든 부분 문자열로
-// 포함되면 검색된다(대소문자 구분 없음). 검색어가 비어있으면(리스트 진입 직후 등) 사용자재
-// 시트 전체를 반환한다.
+// 구매요청 화면의 자재 검색. 검색어가 자재코드/BQMS/품명/규격 중 어디든 부분 문자열로
+// 포함되면 검색된다(대소문자 구분 없음, 비고는 검색 대상 아님). 검색어가 비어있으면
+// (리스트 진입 직후 등) 사용자재 시트 전체를 반환한다.
 function searchMaterials_(site, query) {
   assertSite_(site);
   const q = (query || '').toString().trim().toLowerCase();

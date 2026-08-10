@@ -796,48 +796,20 @@ function appendAdhocReceiptRow_(site, item, qty) {
 
 // ------------------------- 구매요청(Purchase) -------------------------
 
-// 영문/숫자/한글(음절)을 "단어 문자"로 보고, 그 외 문자(공백, 하이픈, 괄호 등)는 단어 경계로 취급한다.
-// JS 정규식의 \b는 [A-Za-z0-9_]만 단어 문자로 인식해 한글에는 제대로 동작하지 않으므로 직접 판정한다.
-function isWordChar_(ch) {
-  return /[a-z0-9가-힣]/i.test(ch || '');
-}
-
-// text 안에 term이 "단어 단위"로(부분 문자열이 아니라, 앞뒤가 단어 경계여야) 포함되는지 검사한다.
-// 예: "O-RING SET"에서 "set"은 앞뒤가 공백/문자열 끝이라 단어 단위로 일치하지만,
-//     "OFFSET"의 "set"은 앞이 'f'(단어 문자)라서 일치하지 않는다. 대소문자는 구분하지 않는다.
-function includesWholeWord_(text, term) {
-  const t = String(text || '');
-  const w = String(term || '').trim();
-  if (!w) return false;
-  const tLower = t.toLowerCase();
-  const wLower = w.toLowerCase();
-  let fromIndex = 0;
-  while (true) {
-    const idx = tLower.indexOf(wLower, fromIndex);
-    if (idx === -1) return false;
-    const beforeOk = idx === 0 || !isWordChar_(t[idx - 1]);
-    const afterIdx = idx + wLower.length;
-    const afterOk = afterIdx >= t.length || !isWordChar_(t[afterIdx]);
-    if (beforeOk && afterOk) return true;
-    fromIndex = idx + 1;
-  }
-}
-
-// 구매요청 화면의 자재 검색. 검색어를 공백 기준으로 단어 분리하고, 분리된 단어 모두가
-// 자재코드/BQMS/품명 중 하나 이상에 "단어 단위로" 포함되어야 검색된다(부분 문자열 오검색 방지 —
-// 예: "set" 검색 시 "OFFSET"처럼 단어 중간에 섞여 있는 경우는 제외하고, "O-RING SET"처럼
-// 단어로 분리되어 있는 경우만 매칭한다).
-// 검색어가 비어있으면(리스트 진입 직후 등) 사용자재 시트 전체를 반환한다.
+// 구매요청 화면의 자재 검색. 검색어가 자재코드/BQMS/품명/규격/비고 중 어디든 부분 문자열로
+// 포함되면 검색된다(대소문자 구분 없음). 검색어가 비어있으면(리스트 진입 직후 등) 사용자재
+// 시트 전체를 반환한다.
 function searchMaterials_(site, query) {
   assertSite_(site);
-  const q = (query || '').toString().trim();
+  const q = (query || '').toString().trim().toLowerCase();
   const rows = readAll_(sheet_(usedMaterialsSheetName_(site)));
-  const terms = q ? q.split(/\s+/).filter(Boolean) : [];
-  const filtered = terms.length
-    ? rows.filter(r => terms.every(term =>
-        includesWholeWord_(r['자재코드'], term) ||
-        includesWholeWord_(r['BQMS'], term) ||
-        includesWholeWord_(r['품명'], term)))
+  const filtered = q
+    ? rows.filter(r =>
+        String(r['자재코드'] || '').toLowerCase().includes(q) ||
+        String(r['BQMS'] || '').toLowerCase().includes(q) ||
+        String(r['품명'] || '').toLowerCase().includes(q) ||
+        String(r['규격'] || '').toLowerCase().includes(q) ||
+        String(r['비고'] || '').toLowerCase().includes(q))
     : rows;
   return filtered.map(r => ({
     itemId: r['자재코드'] || '',

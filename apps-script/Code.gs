@@ -801,24 +801,33 @@ function appendAdhocReceiptRow_(site, item, qty) {
 // 원인 파악이 끝나면 false로 되돌려 로그를 끄면 된다.
 const SEARCH_MATERIALS_DEBUG = true;
 
-// 행 하나가 검색어 q(이미 trim+소문자 처리됨)와 일치하는지 검사한다. 자재코드/BQMS/품명
-// 3개 필드를 각각 부분 문자열로 비교하고(규격/비고는 이 검색어의 대상이 아님 — 규격은
-// specQuery로 별도 검색), SEARCH_MATERIALS_DEBUG가 켜져 있으면 어느 필드에서 매칭됐는지
-// (그리고 그 필드의 실제 값)를 실행 로그에 남긴다 — 의도치 않은 필드에서 매칭되는 원인을
-// 찾기 위한 용도다.
+// 품명 검색창(query)이 실제로 비교하는 필드는 이 3개뿐이다 — 사용설비/비고는 절대 포함하지
+// 않는다(둘 다 검색 대상에서 완전히 제외하라는 요구사항). 이 배열을 SSOT로 두고
+// matchesSearchQuery_/디버그 로그가 함께 사용해, 필드 목록이 여러 곳에서 따로 흩어져
+// 실수로 어긋나는 일을 막는다.
+const SEARCH_MATERIALS_QUERY_FIELDS_ = ['자재코드', 'BQMS', '품명'];
+
+// 행 하나가 검색어 q(이미 trim+소문자 처리됨)와 일치하는지 검사한다.
+// SEARCH_MATERIALS_QUERY_FIELDS_(자재코드/BQMS/품명)만 부분 문자열로 비교한다 — 규격은
+// specQuery로 별도 검색(searchMaterials_ 참고)하고, 사용설비/비고는 어떤 검색창에서도
+// 매칭 대상이 아니다.
+// SEARCH_MATERIALS_DEBUG가 켜져 있으면 매칭된 행마다 실행 로그(Apps Script 편집기 >
+// 실행 기록)에 다음을 남긴다:
+//   - 어느 필드(자재코드/BQMS/품명)에서, 어떤 값으로 매칭됐는지
+//   - (참고용) 매칭에 전혀 관여하지 않는 사용설비/비고 값도 함께 표시해, "매칭 대상이
+//     아닌 필드에 우연히 검색어가 들어있어서 헷갈리는 것뿐인지" 눈으로 바로 구분할 수 있게 한다.
 function matchesSearchQuery_(site, r, q) {
-  const fields = {
-    '자재코드': String(r['자재코드'] || ''),
-    'BQMS': String(r['BQMS'] || ''),
-    '품명': String(r['품명'] || '')
-  };
-  const matchedFields = Object.keys(fields).filter(k => fields[k].toLowerCase().includes(q));
+  const fields = {};
+  SEARCH_MATERIALS_QUERY_FIELDS_.forEach(k => { fields[k] = String(r[k] || ''); });
+  const matchedFields = SEARCH_MATERIALS_QUERY_FIELDS_.filter(k => fields[k].toLowerCase().includes(q));
 
   if (matchedFields.length && SEARCH_MATERIALS_DEBUG) {
     const detail = matchedFields.map(k => k + '="' + fields[k] + '"').join(', ');
+    const equipment = String(r['사용설비'] || '');
+    const note = String(r['비고'] || '');
     Logger.log(
-      '[searchMaterials_] site=%s q="%s" row=%s 자재코드=%s → 매칭필드=[%s] %s',
-      site, q, r._row, fields['자재코드'], matchedFields.join(', '), detail
+      '[searchMaterials_] site=%s q="%s" row=%s 자재코드=%s → 매칭필드=[%s] %s (참고, 검색대상 아님: 사용설비="%s" 비고="%s")',
+      site, q, r._row, fields['자재코드'], matchedFields.join(', '), detail, equipment, note
     );
   }
 
@@ -838,7 +847,14 @@ function searchMaterials_(site, query, specQuery) {
   const filtered = (q || specQ)
     ? rows.filter(r => {
         const mainOk = !q || matchesSearchQuery_(site, r, q);
-        const specOk = !specQ || String(r['규격'] || '').toLowerCase().includes(specQ);
+        const spec = String(r['규격'] || '');
+        const specOk = !specQ || spec.toLowerCase().includes(specQ);
+        if (specQ && specOk && SEARCH_MATERIALS_DEBUG) {
+          Logger.log(
+            '[searchMaterials_] site=%s specQuery="%s" row=%s 자재코드=%s → 규격 매칭 규격="%s"',
+            site, specQ, r._row, r['자재코드'] || '', spec
+          );
+        }
         return mainOk && specOk;
       })
     : rows;

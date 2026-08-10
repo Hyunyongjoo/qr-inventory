@@ -172,7 +172,7 @@ function sheet_(name) {
   // 기존 스프레드시트에 이미 데이터가 있어 Setup.gs가 헤더를 새로 쓰지 못하는 경우를 위해,
   // 입고확인 화면 개편(재고사용/입고/출고완료 버튼)에 필요한 컬럼이 없으면 여기서 안전하게 추가한다.
   if (name.slice(-8) === '_구매발주및입고') {
-    ensureColumnsOnce_(sheet, name, ['누적출고수량', '출고여부', '최종출고일']);
+    ensureColumnsOnce_(sheet, name, ['누적출고수량', '출고여부', '최종출고일', '비고']);
   } else if (name.slice(-3) === '_출고') {
     ensureColumnsOnce_(sheet, name, ['라인구매번호']);
   }
@@ -242,6 +242,23 @@ function usedMaterialsSheetName_(site) {
 // 반납 시트 (출고되었던 자재를 재고로 되돌릴 때 한 줄씩 기록)
 function returnSheetName_(site) {
   return site + '_반납';
+}
+
+// 묶음자재(세트) 구성표 시트 (구매요청에서 "*** 세트명"을 선택하면 여기서 구성 자재를 찾는다)
+function bundledMaterialsSheetName_(site) {
+  return site + '_묶음자재';
+}
+
+// 품명이 "***"로 시작하면 세트(묶음자재)로 인식한다.
+function isSetItemName_(itemName) {
+  return String(itemName || '').trim().indexOf('***') === 0;
+}
+
+// 세트명으로 그 사이트의 묶음자재 시트에서 구성 자재 행들을 모두 찾는다.
+function findBundleComponents_(site, setName) {
+  const rows = readAll_(sheet_(bundledMaterialsSheetName_(site)));
+  const name = String(setName).trim();
+  return rows.filter(r => String(r['세트명'] || '').trim() === name);
 }
 
 function headers_(sheet) {
@@ -692,7 +709,8 @@ function poRowToInboundView_(site, po, stockMap) {
     status: info.status,
     category: info.category,
     stockUse: po['재고사용(O,X)'] || '',
-    outboundDone: isOutboundDoneRow_(po)
+    outboundDone: isOutboundDoneRow_(po),
+    note: po['비고'] || ''
   };
 }
 
@@ -857,11 +875,52 @@ function submitPurchase_(body) {
     const lineOrderNo = generateLineOrderNo_(site);
     let count = 0;
     items.forEach(it => {
-      const itemId = String(it.itemId || '').trim();
       const qty = Number(it.quantity);
-      if (!itemId || !qty || qty <= 0) return;
+      if (!qty || qty <= 0) return;
+      const itemName = it.itemName || '';
 
-      registerNewItemIfMissing_(itemId, it.itemName || '', it.spec || '');
+      // 세트(품명이 "***"로 시작): 묶음자재 시트에서 구성 자재를 찾아, 세트 수량 × 구성 수량으로
+      // 계산한 요청수량을 각 구성 자재마다 한 행씩 등록한다. 비고에 세트명을 남겨 입고확인
+      // 화면에서 같은 세트 주문임을 알아볼 수 있게 한다.
+      if (isSetItemName_(itemName)) {
+        const components = findBundleComponents_(site, itemName);
+        if (!components.length) throw new Error('세트 구성을 찾을 수 없습니다: ' + itemName);
+
+        components.forEach(comp => {
+          const compItemId = String(comp['자재코드'] || '').trim();
+          const compQty = qty * (Number(comp['수량']) || 0);
+          if (!compItemId || compQty <= 0) return;
+
+          registerNewItemIfMissing_(compItemId, comp['품명'] || '', comp['규격'] || '');
+
+          appendRow_(sheet, {
+            '요청일자': today,
+            '신청자': worker.name,
+            '라인': zone,
+            'BQMS': comp['BQMS'] || '',
+            '자재코드': compItemId,
+            '자재명': comp['품명'] || '',
+            '규격': comp['규격'] || '',
+            '필요일자': requiredDate,
+            '요청수량': compQty,
+            '현재고수량': stockMap[compItemId] !== undefined ? stockMap[compItemId] : 0,
+            '재고사용(O,X)': '',
+            '누적입고수량': '',
+            '잔여수량': compQty,
+            '입고여부': '미입고',
+            '최종입고일': '',
+            '라인구매번호': lineOrderNo,
+            '비고': '[세트: ' + itemName + ']'
+          });
+          count++;
+        });
+        return;
+      }
+
+      const itemId = String(it.itemId || '').trim();
+      if (!itemId) return;
+
+      registerNewItemIfMissing_(itemId, itemName, it.spec || '');
 
       appendRow_(sheet, {
         '요청일자': today,
@@ -869,7 +928,7 @@ function submitPurchase_(body) {
         '라인': zone,
         'BQMS': it.bqms || '',
         '자재코드': itemId,
-        '자재명': it.itemName || '',
+        '자재명': itemName,
         '규격': it.spec || '',
         '필요일자': requiredDate,
         '요청수량': qty,

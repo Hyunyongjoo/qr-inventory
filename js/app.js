@@ -2185,6 +2185,7 @@
           </div>
           <span class="po-status-tag ${statusBadgeClass(r.status)}">${escapeHtml(r.status)}</span>
         </div>
+        ${r.note ? `<div class="inbound-card-set-tag">${escapeHtml(r.note)}</div>` : ''}
         <div class="inbound-card-qty">
           <div class="iq-item"><span class="iq-label">요청수량</span><span class="iq-value">${Number(r.requestedQty).toLocaleString()}</span></div>
           <div class="iq-item"><span class="iq-label">재고수량</span><span class="iq-value">${Number(r.stockQty).toLocaleString()}</span></div>

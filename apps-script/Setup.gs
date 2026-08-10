@@ -29,7 +29,7 @@ function setupSpreadsheet() {
       '구매요청번호', '요청일자', '신청자', '라인', 'BQMS', '자재코드',
       '자재명', '규격', '필요일자', '요청수량', '현재고수량', '재고사용(O,X)',
       '누적입고수량', '잔여수량', '입고여부', '최종입고일', '라인구매번호',
-      '누적출고수량', '출고여부', '최종출고일'
+      '누적출고수량', '출고여부', '최종출고일', '비고'
     ], [2, 9, 16, 20]); // 요청일자, 필요일자, 최종입고일, 최종출고일
 
     createSheetIfMissing_(ss, site + '_출고', [
@@ -50,7 +50,19 @@ function setupSpreadsheet() {
     createSheetIfMissing_(ss, site + '_반납', [
       '반납일자', '자재코드', '자재명', '규격', '반납수량', '담당자', '비고'
     ], [1]); // 반납일자
+
+    // 세트(묶음) 자재 구성표: 구매요청 화면에서 "*** 세트명"을 선택하면 이 시트에서
+    // 세트명이 일치하는 행들을 찾아 구매발주및입고 시트에 구성 자재별로 나눠 등록한다.
+    createSheetIfMissing_(ss, site + '_묶음자재', [
+      '세트명', '자재코드', 'BQMS', '품명', '규격', '수량'
+    ], []);
   });
+
+  // 화성_묶음자재 기본 데이터 자동 입력 (세트 오링 TRITON(V1)/(V2), 시트가 비어있을 때만)
+  seedHwaseongBundledMaterials_(ss);
+
+  // 화성_사용자재 시트에 세트 항목(*** 세트 오링 TRITON(V1)/(V2)) 자동 등록 (이미 있으면 건너뜀)
+  seedHwaseongSetUsedMaterials_(ss);
 
   // 매월 1일 00시에 현재고 값을 월초재고로 복사하는 트리거 (이미 설치되어 있으면 건너뜀)
   ensureMonthlyStockRolloverTrigger_();
@@ -72,6 +84,55 @@ function setupSpreadsheet() {
 
   SpreadsheetApp.flush();
   Logger.log('설정 완료: Items, Users, 사이트별(기흥/화성/평택) 구매발주및입고·출고·재고·사용자재·반납 시트가 준비되었습니다. (데이터가 있는 기존 시트는 변경하지 않았습니다)');
+}
+
+// 화성_묶음자재 시트에 "세트 오링 TRITON(V1)"/"(V2)" 구성표를 채워 넣는다.
+// 시트에 이미 데이터가 있으면(2행 이후가 비어있지 않으면) 아무 것도 하지 않는다(중복 입력 방지).
+function seedHwaseongBundledMaterials_(ss) {
+  const sheet = ss.getSheetByName('화성_묶음자재');
+  if (!sheet || sheet.getLastRow() >= 2) return;
+
+  const rows = [
+    // *** 세트 오링 TRITON(V1)
+    ['*** 세트 오링 TRITON(V1)', '7234-100-050', 'K7002007-000686', 'VITON O-RING', 'VITON, NW50.!', 2],
+    ['*** 세트 오링 TRITON(V1)', '7234-101-130', 'K7002007-000617', 'TRITON(Ver1) PRE WET SIDE PM#1 COVER O-RING', 'VITON, 153.5x227, Φ5', 1],
+    ['*** 세트 오링 TRITON(V1)', '7234-101-140', 'K7002007-000618', 'TRITON(Ver1) PRE WET SIDE PM#2 COVER O-RING', 'VITON, 104.5x227, Φ5', 1],
+    ['*** 세트 오링 TRITON(V1)', '7234-100-070', 'K7002007-000685', 'VITON O-RING', 'VITON, NW80.!', 3],
+    ['*** 세트 오링 TRITON(V1)', '7237-101-590', 'K7002007-000664', 'O-RING', 'VITON, G200.!', 2],
+    ['*** 세트 오링 TRITON(V1)', '7237-101-610', 'K7002007-000677', 'O-RING', 'VITON, G220.!', 2],
+    ['*** 세트 오링 TRITON(V1)', '7237-101-460', 'K7002007-000671', 'O-RING', 'VITON, G135.!', 1],
+    ['*** 세트 오링 TRITON(V1)', '7234-100-080', 'K7002007-000684', 'VITON O-RING', 'VITON, NW100.!', 7],
+    ['*** 세트 오링 TRITON(V1)', '7234-100-090', 'K7002007-000683', 'VITON O-RING', 'VITON, NW160.!', 2],
+    ['*** 세트 오링 TRITON(V1)', '7234-101-230', 'K7002007-000627', '투시창 COVER O-RING', 'VITON, 325.5x135.5, Φ5', 1],
+    // *** 세트 오링 TRITON(V2)
+    ['*** 세트 오링 TRITON(V2)', '7234-101-160', 'K7002007-000620', 'TRITON PRE WET FRONT NOZZLE COVER O-RING', 'VITON, 263x157, Φ5', 2],
+    ['*** 세트 오링 TRITON(V2)', '7234-101-170', 'K7002007-000621', 'TRITON PRE WET SIDE PM COVER O-RING', 'VITON, 209x227, Φ5', 1],
+    ['*** 세트 오링 TRITON(V2)', '7234-100-070', 'K7002007-000685', 'VITON O-RING', 'VITON, NW80.!', 3],
+    ['*** 세트 오링 TRITON(V2)', '7237-101-590', 'K7002007-000664', 'O-RING', 'VITON, G200.!', 2],
+    ['*** 세트 오링 TRITON(V2)', '7237-101-610', 'K7002007-000677', 'O-RING', 'VITON, G220.!', 2],
+    ['*** 세트 오링 TRITON(V2)', '7237-101-460', 'K7002007-000671', 'O-RING', 'VITON, G135.!', 1],
+    ['*** 세트 오링 TRITON(V2)', '7234-100-080', 'K7002007-000684', 'VITON O-RING', 'VITON, NW100.!', 7],
+    ['*** 세트 오링 TRITON(V2)', '7234-100-090', 'K7002007-000683', 'VITON O-RING', 'VITON, NW160.!', 2],
+    ['*** 세트 오링 TRITON(V2)', '7234-101-230', 'K7002007-000627', '투시창 COVER O-RING', 'VITON, 325.5x135.5, Φ5', 1]
+  ];
+
+  sheet.getRange(2, 1, rows.length, 6).setValues(rows);
+  Logger.log('화성_묶음자재: 세트 오링 TRITON(V1)/(V2) 구성 ' + rows.length + '건 입력 완료');
+}
+
+// 화성_사용자재 시트에 세트(*** 세트 오링 TRITON(V1)/(V2)) 항목을 등록해, 구매요청 화면의
+// 자재 검색에서 세트를 선택할 수 있게 한다. 이미 같은 품명이 등록돼 있으면 다시 넣지 않는다.
+function seedHwaseongSetUsedMaterials_(ss) {
+  const sheet = ss.getSheetByName('화성_사용자재');
+  if (!sheet) return;
+
+  const setNames = ['*** 세트 오링 TRITON(V1)', '*** 세트 오링 TRITON(V2)'];
+  const existingNames = readAll_(sheet).map(r => String(r['품명'] || '').trim());
+
+  setNames.forEach(name => {
+    if (existingNames.indexOf(name) !== -1) return;
+    sheet.appendRow(['', '', name, 'SET', '화성 공용', '세트구성']);
+  });
 }
 
 /**

@@ -332,10 +332,10 @@ function generateLineOrderNo_(site) {
 // ------------------------- 사용자 / 로그인 -------------------------
 
 function handleLogin_(pin) {
-  if (!pin) throw new Error('PIN을 입력하세요.');
+  if (!pin) throw new Error('사번을 입력하세요.');
   const users = readAll_(sheet_('Users'));
   const user = users.find(u => String(u.PIN) === String(pin));
-  if (!user) throw new Error('PIN이 올바르지 않습니다.');
+  if (!user) throw new Error('사번이 올바르지 않습니다.');
   return { name: user.Name, role: user.Role, pin: String(user.PIN) };
 }
 

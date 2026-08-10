@@ -65,7 +65,7 @@ function doGet(e) {
         result = checkInbound_(e.parameter.site || '', e.parameter.name || '', e.parameter.startDate || '', e.parameter.endDate || '', e.parameter.zone || '');
         break;
       case 'searchMaterials':
-        result = searchMaterials_(e.parameter.site || '', e.parameter.query || '');
+        result = searchMaterials_(e.parameter.site || '', e.parameter.query || '', e.parameter.specQuery || '');
         break;
       case 'getPhotoUrl':
         result = getPhotoUrl_(e.parameter.itemId || '');
@@ -801,16 +801,16 @@ function appendAdhocReceiptRow_(site, item, qty) {
 // 원인 파악이 끝나면 false로 되돌려 로그를 끄면 된다.
 const SEARCH_MATERIALS_DEBUG = true;
 
-// 행 하나가 검색어 q(이미 trim+소문자 처리됨)와 일치하는지 검사한다. 자재코드/BQMS/품명/규격
-// 4개 필드를 각각 부분 문자열로 비교하고(비고는 검색 대상에서 제외), SEARCH_MATERIALS_DEBUG가
-// 켜져 있으면 어느 필드에서 매칭됐는지(그리고 그 필드의 실제 값)를 실행 로그에 남긴다 —
-// 의도치 않은 필드에서 매칭되는 원인을 찾기 위한 용도다.
+// 행 하나가 검색어 q(이미 trim+소문자 처리됨)와 일치하는지 검사한다. 자재코드/BQMS/품명
+// 3개 필드를 각각 부분 문자열로 비교하고(규격/비고는 이 검색어의 대상이 아님 — 규격은
+// specQuery로 별도 검색), SEARCH_MATERIALS_DEBUG가 켜져 있으면 어느 필드에서 매칭됐는지
+// (그리고 그 필드의 실제 값)를 실행 로그에 남긴다 — 의도치 않은 필드에서 매칭되는 원인을
+// 찾기 위한 용도다.
 function matchesSearchQuery_(site, r, q) {
   const fields = {
     '자재코드': String(r['자재코드'] || ''),
     'BQMS': String(r['BQMS'] || ''),
-    '품명': String(r['품명'] || ''),
-    '규격': String(r['규격'] || '')
+    '품명': String(r['품명'] || '')
   };
   const matchedFields = Object.keys(fields).filter(k => fields[k].toLowerCase().includes(q));
 
@@ -825,15 +825,22 @@ function matchesSearchQuery_(site, r, q) {
   return matchedFields.length > 0;
 }
 
-// 구매요청 화면의 자재 검색. 검색어가 자재코드/BQMS/품명/규격 중 어디든 부분 문자열로
-// 포함되면 검색된다(대소문자 구분 없음, 비고는 검색 대상 아님). 검색어가 비어있으면
+// 구매요청 화면의 자재 검색. query는 자재코드/BQMS/품명 중 어디든 부분 문자열로 포함되면
+// 매칭되고(대소문자 구분 없음), specQuery는 규격에서만 별도로 부분 문자열 매칭한다.
+// 두 검색어를 모두 입력하면 AND 조건으로 둘 다 만족하는 행만 반환한다(예: query="O-RING" +
+// specQuery="NW50" → 품명에 O-RING이 있으면서 규격에 NW50이 있는 자재만). 둘 다 비어있으면
 // (리스트 진입 직후 등) 사용자재 시트 전체를 반환한다.
-function searchMaterials_(site, query) {
+function searchMaterials_(site, query, specQuery) {
   assertSite_(site);
   const q = (query || '').toString().trim().toLowerCase();
+  const specQ = (specQuery || '').toString().trim().toLowerCase();
   const rows = readAll_(sheet_(usedMaterialsSheetName_(site)));
-  const filtered = q
-    ? rows.filter(r => matchesSearchQuery_(site, r, q))
+  const filtered = (q || specQ)
+    ? rows.filter(r => {
+        const mainOk = !q || matchesSearchQuery_(site, r, q);
+        const specOk = !specQ || String(r['규격'] || '').toLowerCase().includes(specQ);
+        return mainOk && specOk;
+      })
     : rows;
   return filtered.map(r => ({
     itemId: r['자재코드'] || '',

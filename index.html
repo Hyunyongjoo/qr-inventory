@@ -215,14 +215,15 @@
 
     <!-- 구매요청 -->
     <section id="view-purchase" class="view hidden">
-      <div class="view-header">
-        <h2>구매요청</h2>
-        <button class="btn-link" id="purchase-back-btn">← 뒤로</button>
-      </div>
-      <div class="scan-context muted" id="purchase-context-label"></div>
-
       <div id="purchase-search-sticky" class="purchase-search-sticky">
+        <div class="view-header">
+          <h2>구매요청</h2>
+          <button class="btn-link" id="purchase-back-btn">← 뒤로</button>
+        </div>
+        <div class="scan-context muted" id="purchase-context-label"></div>
+
         <input type="text" id="purchase-search-input" class="input" placeholder="자재코드 / BQMS / 품명으로 검색" />
+        <input type="text" id="purchase-spec-search-input" class="input" placeholder="규격 검색" />
 
         <div id="purchase-select-all-row" class="select-all-row hidden">
           <label class="checkbox-label">

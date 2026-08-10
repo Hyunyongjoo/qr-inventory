@@ -1006,6 +1006,7 @@
       if (state.currentView === 'line') renderLineButtons();
     });
     $('#purchase-search-input').addEventListener('input', debounce(searchMaterials, 300));
+    $('#purchase-spec-search-input').addEventListener('input', debounce(searchMaterials, 300));
     $('#purchase-select-all').addEventListener('change', (e) => togglePurchaseSelectAll(e.target.checked));
     $('#purchase-bulk-add-btn').addEventListener('click', openPurchaseBulkQuantityModal);
     $('#purchase-add-btn').addEventListener('click', addToPurchaseCart);
@@ -1026,6 +1027,7 @@
     state.purchaseSelectedIdx = new Set();
     $('#purchase-result-card').classList.add('hidden');
     $('#purchase-search-input').value = '';
+    $('#purchase-spec-search-input').value = '';
     $('#purchase-search-results').innerHTML = '';
     $('#purchase-required-date').value = '';
     switchView('purchase');
@@ -1034,12 +1036,15 @@
     renderPurchaseBulkUI();
   }
 
+  // 품명 검색창(자재코드/BQMS/품명)과 규격 검색창은 AND 조건으로 함께 서버에 전달된다
+  // (둘 다 입력하면 두 조건을 모두 만족하는 자재만 반환됨 — searchMaterials_ 참고).
   async function searchMaterials() {
     const q = $('#purchase-search-input').value.trim();
+    const specQ = $('#purchase-spec-search-input').value.trim();
     const resultsEl = $('#purchase-search-results');
     state.purchaseSearchRows = [];
     state.purchaseSelectedIdx = new Set();
-    if (!q) {
+    if (!q && !specQ) {
       resultsEl.innerHTML = '';
       renderPurchaseBulkUI();
       return;
@@ -1047,7 +1052,7 @@
     resultsEl.innerHTML = `<div class="empty-state">검색 중...</div>`;
     renderPurchaseBulkUI();
     try {
-      const rows = await Api.get('searchMaterials', { site: state.site, query: q });
+      const rows = await Api.get('searchMaterials', { site: state.site, query: q, specQuery: specQ });
       state.purchaseSearchRows = rows;
       renderPurchaseSearchList(rows);
     } catch (err) {
@@ -1177,6 +1182,7 @@
       state.purchaseSelectedIdx = new Set();
       state.purchaseSearchRows = [];
       $('#purchase-search-input').value = '';
+      $('#purchase-spec-search-input').value = '';
       $('#purchase-search-results').innerHTML = '';
       renderPurchaseBulkUI();
       $('#purchase-search-input').focus();
@@ -1258,6 +1264,7 @@
     state.currentPurchaseItem = null;
     $('#purchase-result-card').classList.add('hidden');
     $('#purchase-search-input').value = '';
+    $('#purchase-spec-search-input').value = '';
     $('#purchase-search-results').innerHTML = '';
     $('#purchase-search-input').focus();
   }

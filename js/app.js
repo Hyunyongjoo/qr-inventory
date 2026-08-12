@@ -1115,8 +1115,10 @@
     const selected = state.purchaseSelectedIdx.size;
 
     $('#purchase-select-all-row').classList.toggle('hidden', total === 0);
-    $('#purchase-selected-count').textContent = selected > 0 ? `${selected}개 선택됨` : '';
-    $('#purchase-bulk-add-btn').classList.toggle('hidden', selected === 0);
+
+    const bulkBtn = $('#purchase-bulk-add-btn');
+    bulkBtn.disabled = selected === 0;
+    bulkBtn.textContent = selected > 0 ? `${selected}개 선택됨 · 담기` : '선택된 자재 없음';
 
     const selectAllCb = $('#purchase-select-all');
     selectAllCb.checked = total > 0 && selected === total;

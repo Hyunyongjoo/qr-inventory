@@ -1280,17 +1280,37 @@
 
     const listEl = $('#purchase-cart-list');
     listEl.innerHTML = cart.map((c) => `
-      <div class="cart-row" data-uid="${c.uid}">
+      <div class="cart-row purchase-cart-row" data-uid="${c.uid}">
         <div class="row-main">
           <span class="primary">${escapeHtml(c.itemName)}${c.spec ? ' / ' + escapeHtml(c.spec) : ''}</span>
-          <span class="secondary">${escapeHtml(c.itemId)}${c.bqms ? ' · ' + escapeHtml(c.bqms) : ''} · 수량 ${Number(c.quantity).toLocaleString()}</span>
+          <span class="secondary">${escapeHtml(c.itemId)}${c.bqms ? ' · ' + escapeHtml(c.bqms) : ''}</span>
         </div>
+        <input type="number" class="input cart-qty-input" data-uid="${c.uid}" min="1" step="1" inputmode="numeric" value="${c.quantity}" aria-label="수량" />
         <button class="cart-delete-btn" data-uid="${c.uid}" aria-label="삭제">🗑️</button>
       </div>
     `).join('');
     $$('.cart-delete-btn', listEl).forEach((btn) => {
       btn.addEventListener('click', () => removeFromPurchaseCart(btn.dataset.uid));
     });
+    $$('.cart-qty-input', listEl).forEach((input) => {
+      input.addEventListener('change', () => updatePurchaseCartQuantity(input.dataset.uid, input.value));
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') input.blur();
+      });
+    });
+  }
+
+  function updatePurchaseCartQuantity(uid, rawValue) {
+    const item = state.purchaseCart.find((c) => c.uid === uid);
+    if (!item) return;
+    const qty = Number(rawValue);
+    if (!qty || qty <= 0) {
+      toast('올바른 수량을 입력하세요.', 'error');
+      renderPurchaseCart();
+      return;
+    }
+    item.quantity = qty;
+    renderPurchaseCart();
   }
 
   function removeFromPurchaseCart(uid) {

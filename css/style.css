@@ -453,6 +453,15 @@ html, body {
 }
 .cart-delete-btn:active { background: rgba(239,68,68,.25); }
 
+.purchase-cart-row .row-main { flex: 1; min-width: 0; }
+.cart-qty-input {
+  width: 72px;
+  flex-shrink: 0;
+  margin-bottom: 0;
+  padding: 8px 6px;
+  text-align: center;
+}
+
 .cart-footer {
   position: fixed;
   left: 0; right: 0;

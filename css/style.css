@@ -271,7 +271,7 @@ html, body {
 .bulk-qty-row .row-main { flex: 1; min-width: 0; }
 .bulk-qty-input { width: 90px; flex-shrink: 0; }
 
-#purchase-bulk-add-btn { margin: 12px 0; }
+#purchase-bulk-add-btn { flex-shrink: 0; white-space: nowrap; }
 .qty-in { color: var(--success); }
 .qty-out { color: var(--danger); }
 .qty-move { color: var(--warn); }

@@ -286,6 +286,7 @@ html, body {
 .tag-move { background: rgba(245,158,11,.15); color: var(--warn); }
 
 .empty-state { text-align: center; color: var(--text-muted); padding: 40px 10px; font-size: 14px; }
+.api-error-state p { margin: 0 0 12px; }
 
 /* ---------- 사이트 선택 ---------- */
 .site-grid {

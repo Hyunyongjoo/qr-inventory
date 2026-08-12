@@ -480,6 +480,18 @@
     return String(str || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
 
+  // API 호출 실패 시 오류 메시지와 "재시도" 버튼을 함께 표시한다.
+  // retryFn은 실패했던 요청과 동일한 함수를 다시 실행해 그 자리에서 재조회한다.
+  function renderApiError_(el, err, retryFn) {
+    el.innerHTML = `
+      <div class="empty-state api-error-state">
+        <p>오류: ${escapeHtml(err.message)}</p>
+        <button type="button" class="btn btn-secondary btn-small api-retry-btn">재시도</button>
+      </div>
+    `;
+    $('.api-retry-btn', el).addEventListener('click', retryFn);
+  }
+
   // ------------------------- 홈 / 재고 현황 -------------------------
 
   function bindHome() {
@@ -509,7 +521,7 @@
         </div>
       `).join('');
     } catch (err) {
-      listEl.innerHTML = `<div class="empty-state">오류: ${escapeHtml(err.message)}</div>`;
+      renderApiError_(listEl, err, loadStock);
     }
   }
 
@@ -1056,7 +1068,7 @@
       state.purchaseSearchRows = rows;
       renderPurchaseSearchList(rows);
     } catch (err) {
-      resultsEl.innerHTML = `<div class="empty-state">오류: ${escapeHtml(err.message)}</div>`;
+      renderApiError_(resultsEl, err, searchMaterials);
       renderPurchaseBulkUI();
     }
   }
@@ -1208,17 +1220,23 @@
     openModal(html);
     $('#photo-modal-close').addEventListener('click', closeModal);
 
-    try {
-      const url = await Api.get('getPhotoUrl', { itemId: material.itemId });
-      const bodyEl = $('#photo-modal-body');
-      if (!bodyEl) return; // 응답 오기 전에 팝업이 닫힌 경우
-      bodyEl.innerHTML = url
-        ? `<img src="${escapeHtml(url)}" alt="${escapeHtml(material.itemName)}" class="photo-modal-img" />`
-        : `<div class="empty-state">등록된 사진이 없습니다.</div>`;
-    } catch (err) {
-      const bodyEl = $('#photo-modal-body');
-      if (bodyEl) bodyEl.innerHTML = `<div class="empty-state">오류: ${escapeHtml(err.message)}</div>`;
+    async function loadPhoto() {
+      const loadingEl = $('#photo-modal-body');
+      if (!loadingEl) return;
+      loadingEl.innerHTML = `<div class="empty-state">불러오는 중...</div>`;
+      try {
+        const url = await Api.get('getPhotoUrl', { itemId: material.itemId });
+        const bodyEl = $('#photo-modal-body');
+        if (!bodyEl) return; // 응답 오기 전에 팝업이 닫힌 경우
+        bodyEl.innerHTML = url
+          ? `<img src="${escapeHtml(url)}" alt="${escapeHtml(material.itemName)}" class="photo-modal-img" />`
+          : `<div class="empty-state">등록된 사진이 없습니다.</div>`;
+      } catch (err) {
+        const bodyEl = $('#photo-modal-body');
+        if (bodyEl) renderApiError_(bodyEl, err, loadPhoto);
+      }
     }
+    await loadPhoto();
   }
 
   function selectPurchaseMaterial(material) {
@@ -1540,7 +1558,7 @@
         row.addEventListener('click', () => selectReturnMaterial(rows[i]));
       });
     } catch (err) {
-      resultsEl.innerHTML = `<div class="empty-state">오류: ${escapeHtml(err.message)}</div>`;
+      renderApiError_(resultsEl, err, searchReturnMaterials);
     }
   }
 
@@ -1914,7 +1932,7 @@
         });
       });
     } catch (err) {
-      listEl.innerHTML = `<div class="empty-state">오류: ${escapeHtml(err.message)}</div>`;
+      renderApiError_(listEl, err, loadItems);
     }
   }
 
@@ -2090,7 +2108,7 @@
       renderInboundList();
     } catch (err) {
       state.inboundRows = [];
-      listEl.innerHTML = `<div class="empty-state">오류: ${escapeHtml(err.message)}</div>`;
+      renderApiError_(listEl, err, fetchInboundRows);
     }
   }
 
@@ -2413,7 +2431,7 @@
         `;
       }).join('');
     } catch (err) {
-      listEl.innerHTML = `<div class="empty-state">오류: ${escapeHtml(err.message)}</div>`;
+      renderApiError_(listEl, err, loadHistory);
     }
   }
 

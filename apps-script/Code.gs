@@ -801,19 +801,38 @@ function appendAdhocReceiptRow_(site, item, qty) {
 // 원인 파악이 끝나면 false로 되돌려 로그를 끄면 된다.
 const SEARCH_MATERIALS_DEBUG = true;
 
-// 품명 검색창(query)이 실제로 비교하는 필드는 이 3개뿐이다 — 사용설비/비고는 절대 포함하지
-// 않는다(둘 다 검색 대상에서 완전히 제외하라는 요구사항). 이 배열을 SSOT로 두고
-// matchesSearchQuery_/디버그 로그가 함께 사용해, 필드 목록이 여러 곳에서 따로 흩어져
-// 실수로 어긋나는 일을 막는다.
+// 품명 검색창(query)이 부분 문자열로 비교하는 일반 필드는 이 3개뿐이다 — 사용설비/비고는
+// 절대 포함하지 않는다(둘 다 검색 대상에서 완전히 제외하라는 요구사항). 한글검색 컬럼은
+// 쉼표로 여러 값을 담을 수 있고 공백 제거 후 비교해야 해서 별도 로직(matchesHangulField_)으로
+// 처리한다. 이 배열을 SSOT로 두고 matchesSearchQuery_/디버그 로그가 함께 사용해, 필드 목록이
+// 여러 곳에서 따로 흩어져 실수로 어긋나는 일을 막는다.
 const SEARCH_MATERIALS_QUERY_FIELDS_ = ['자재코드', 'BQMS', '품명'];
+const SEARCH_MATERIALS_HANGUL_FIELD_ = '한글검색';
+
+// 문자열에서 모든 공백(스페이스/탭 등)을 제거한다. 한글검색 컬럼 비교에서
+// "타워램프"와 "타워 램프"를 동일하게 취급하기 위해 사용한다.
+function stripSpaces_(s) {
+  return String(s == null ? '' : s).replace(/\s+/g, '');
+}
+
+// 한글검색 컬럼(쉼표로 여러 값 구분)이 검색어 qNoSpace(이미 공백 제거+소문자 처리됨)와
+// 부분 일치하는지 검사한다. 각 값도 공백을 제거한 뒤 비교한다.
+function matchesHangulField_(r, qNoSpace) {
+  const raw = String(r[SEARCH_MATERIALS_HANGUL_FIELD_] || '');
+  if (!raw || !qNoSpace) return { matched: false, matchedValue: '' };
+  const tokens = raw.split(',').map(t => stripSpaces_(t)).filter(t => t);
+  const matchedToken = tokens.find(t => t.toLowerCase().includes(qNoSpace));
+  return { matched: !!matchedToken, matchedValue: matchedToken || '' };
+}
 
 // 행 하나가 검색어 q(이미 trim+소문자 처리됨)와 일치하는지 검사한다.
-// SEARCH_MATERIALS_QUERY_FIELDS_(자재코드/BQMS/품명)만 부분 문자열로 비교한다 — 규격은
+// SEARCH_MATERIALS_QUERY_FIELDS_(자재코드/BQMS/품명)는 부분 문자열로 비교하고,
+// 한글검색 컬럼은 쉼표로 분리한 각 값을 공백 제거 후 부분 일치로 비교한다 — 규격은
 // specQuery로 별도 검색(searchMaterials_ 참고)하고, 사용설비/비고는 어떤 검색창에서도
 // 매칭 대상이 아니다.
 // SEARCH_MATERIALS_DEBUG가 켜져 있으면 매칭된 행마다 실행 로그(Apps Script 편집기 >
 // 실행 기록)에 다음을 남긴다:
-//   - 어느 필드(자재코드/BQMS/품명)에서, 어떤 값으로 매칭됐는지
+//   - 어느 필드(자재코드/BQMS/품명/한글검색)에서, 어떤 값으로 매칭됐는지
 //   - (참고용) 매칭에 전혀 관여하지 않는 사용설비/비고 값도 함께 표시해, "매칭 대상이
 //     아닌 필드에 우연히 검색어가 들어있어서 헷갈리는 것뿐인지" 눈으로 바로 구분할 수 있게 한다.
 function matchesSearchQuery_(site, r, q) {
@@ -821,21 +840,29 @@ function matchesSearchQuery_(site, r, q) {
   SEARCH_MATERIALS_QUERY_FIELDS_.forEach(k => { fields[k] = String(r[k] || ''); });
   const matchedFields = SEARCH_MATERIALS_QUERY_FIELDS_.filter(k => fields[k].toLowerCase().includes(q));
 
-  if (matchedFields.length && SEARCH_MATERIALS_DEBUG) {
-    const detail = matchedFields.map(k => k + '="' + fields[k] + '"').join(', ');
+  const qNoSpace = stripSpaces_(q).toLowerCase();
+  const hangul = matchesHangulField_(r, qNoSpace);
+  const matchedFieldNames = hangul.matched ? matchedFields.concat([SEARCH_MATERIALS_HANGUL_FIELD_]) : matchedFields;
+
+  if (matchedFieldNames.length && SEARCH_MATERIALS_DEBUG) {
+    const detail = matchedFields.map(k => k + '="' + fields[k] + '"')
+      .concat(hangul.matched ? [SEARCH_MATERIALS_HANGUL_FIELD_ + '="' + hangul.matchedValue + '"'] : [])
+      .join(', ');
     const equipment = String(r['사용설비'] || '');
     const note = String(r['비고'] || '');
     Logger.log(
       '[searchMaterials_] site=%s q="%s" row=%s 자재코드=%s → 매칭필드=[%s] %s (참고, 검색대상 아님: 사용설비="%s" 비고="%s")',
-      site, q, r._row, fields['자재코드'], matchedFields.join(', '), detail, equipment, note
+      site, q, r._row, fields['자재코드'], matchedFieldNames.join(', '), detail, equipment, note
     );
   }
 
-  return matchedFields.length > 0;
+  return matchedFieldNames.length > 0;
 }
 
-// 구매요청 화면의 자재 검색. query는 자재코드/BQMS/품명 중 어디든 부분 문자열로 포함되면
-// 매칭되고(대소문자 구분 없음), specQuery는 규격에서만 별도로 부분 문자열 매칭한다.
+// 구매요청 화면의 자재 검색. query는 자재코드/BQMS/품명/한글검색 중 어디든 부분 문자열로
+// 포함되면 매칭되고(대소문자 구분 없음), 한글검색은 쉼표로 구분된 값마다 공백을 제거한 뒤
+// 검색어도 공백을 제거해 비교한다(예: "타워램프" = "타워 램프"). specQuery는 규격에서만
+// 별도로 부분 문자열 매칭한다.
 // 두 검색어를 모두 입력하면 AND 조건으로 둘 다 만족하는 행만 반환한다(예: query="O-RING" +
 // specQuery="NW50" → 품명에 O-RING이 있으면서 규격에 NW50이 있는 자재만). 둘 다 비어있으면
 // (리스트 진입 직후 등) 사용자재 시트 전체를 반환한다.

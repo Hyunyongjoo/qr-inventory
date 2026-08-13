@@ -44,7 +44,7 @@ function setupSpreadsheet() {
     if (stockSheet) formatStockSheetNumberColumns_(stockSheet);
 
     createSheetIfMissing_(ss, site + '_사용자재', [
-      '자재코드', 'BQMS', '품명', '규격', '사용설비', '비고'
+      '자재코드', 'BQMS', '품명', '규격', '사용설비', '비고', '한글검색'
     ], []);
 
     createSheetIfMissing_(ss, site + '_반납', [
@@ -131,7 +131,7 @@ function seedHwaseongSetUsedMaterials_(ss) {
 
   setNames.forEach(name => {
     if (existingNames.indexOf(name) !== -1) return;
-    sheet.appendRow(['', '', name, 'SET', '화성 공용', '세트구성']);
+    sheet.appendRow(['', '', name, 'SET', '화성 공용', '세트구성', '']);
   });
 }
 

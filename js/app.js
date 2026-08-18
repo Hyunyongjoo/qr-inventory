@@ -2072,21 +2072,32 @@
     await fetchInboundRows();
   }
 
-  // 입고확인 탭 진입 시 호출된다. 라인 드롭다운은 매번 현재 사이트 기준으로 다시 채우고,
+  // 라인담당자는 본인이 신청한 건만 보면 되므로 이름을 자동으로 채워 주고,
+  // 그 외 역할(관리자/자재담당자 등)은 여러 사람의 신청을 함께 봐야 하므로 공란으로 둔다.
+  function fillInboundNameByRole() {
+    const input = $('#inbound-search-input');
+    if (!input) return;
+    input.value = (state.user && state.user.role === '라인담당자') ? (state.user.name || '') : '';
+  }
+
+  // 입고확인 탭 진입 시 호출된다. 자동 조회는 하지 않고 검색 버튼을 눌러야만 조회한다.
+  // 라인 드롭다운은 매번 현재 사이트 기준으로 다시 채우고, 이름 입력란은 역할에 따라 채우거나 비운다.
   // 마지막으로 데이터를 불러온 사이트와 현재 사이트가 다르면(= 그 사이 사이트가 바뀌었으면)
-  // 이전 사이트의 검색 조건/결과가 남아있지 않도록 검색창을 초기화하고 새로 조회한다.
+  // 이전 사이트의 검색 조건/결과가 남아있지 않도록 검색창/목록을 초기화한다.
   async function enterInboundCheck() {
     if (state.site && state.inboundLoadedSite !== state.site) {
-      $('#inbound-search-input').value = '';
       $('#inbound-date-start').value = '';
       $('#inbound-date-end').value = '';
       $('#inbound-zone-select').value = '';
       state.inboundLoadedSite = state.site;
-      populateInboundZoneOptions();
-      await loadInboundCheck();
-    } else {
-      populateInboundZoneOptions();
+      state.inboundRows = [];
+      state.inboundFilter = null;
+      $('#inbound-summary').classList.add('hidden');
+      $('#inbound-summary').innerHTML = '';
+      $('#inbound-list').innerHTML = `<div class="empty-state">검색 버튼을 눌러 조회하세요.</div>`;
     }
+    populateInboundZoneOptions();
+    fillInboundNameByRole();
   }
 
   // 서버에서 다시 불러와 현재 상태 필터를 유지한 채 화면을 갱신한다.

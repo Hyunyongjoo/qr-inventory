@@ -1211,20 +1211,24 @@ function outboundComplete_(body) {
     }
 
     const current = calculateCurrentStock_(site, itemId);
-    if (current < qty) {
-      throw new Error(`재고 부족: 현재 ${current}${item.Unit || ''}, 출고 요청 ${qty}${item.Unit || ''}`);
+    if (current <= 0) {
+      throw new Error(`재고가 없어 출고할 수 없습니다. (현재 재고 0${item.Unit || ''})`);
     }
+
+    // 재고수량이 입력한 출고수량보다 적으면, 요청수량 전체가 아니라 실제 재고수량만큼만
+    // 부분 출고 처리한다(재고수량 >= 출고수량이면 그대로, 재고수량 < 출고수량이면 재고수량만큼).
+    const actualQty = Math.min(qty, current);
 
     logTransaction_(site, {
       itemId, itemName: item.ItemName, spec: item.Spec, unit: item.Unit,
-      zone: row['라인'] || '', quantity: qty, worker: worker.name,
+      zone: row['라인'] || '', quantity: actualQty, worker: worker.name,
       lineOrderNo: row['라인구매번호'] || ''
     });
 
     recalculateStock_(site, itemId, item);
 
     const shippedBefore = Number(row['누적출고수량']) || 0;
-    const shippedCumulative = shippedBefore + qty;
+    const shippedCumulative = shippedBefore + actualQty;
     const outboundStatus = shippedCumulative <= 0 ? '' : (shippedCumulative < requested ? '부분출고' : '출고완료');
 
     updateRow_(sheet_(poInSheetName_(site)), row._row, {
@@ -1233,7 +1237,10 @@ function outboundComplete_(body) {
       '최종출고일': Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd')
     });
 
-    return poRowToInboundView_(site, findPoRowByIndex_(site, body.rowIndex));
+    const updatedView = poRowToInboundView_(site, findPoRowByIndex_(site, body.rowIndex));
+    updatedView.shippedNow = actualQty;
+    updatedView.requestedNow = qty;
+    return updatedView;
   } finally {
     lock.releaseLock();
   }

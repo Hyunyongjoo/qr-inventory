@@ -2247,8 +2247,8 @@
         <div class="inbound-card-qty">
           <div class="iq-item"><span class="iq-label">요청수량</span><span class="iq-value">${Number(r.requestedQty).toLocaleString()}</span></div>
           <div class="iq-item"><span class="iq-label">재고수량</span><span class="iq-value">${Number(r.stockQty).toLocaleString()}</span></div>
-          <div class="iq-item"><span class="iq-label">누적입고수량</span><span class="iq-value">${Number(r.cumulativeQty).toLocaleString()}</span></div>
-          <div class="iq-item"><span class="iq-label">잔여수량</span><span class="iq-value">${Number(r.remainingQty).toLocaleString()}</span></div>
+          <div class="iq-item"><span class="iq-label">입고수량</span><span class="iq-value">${Number(r.cumulativeQty).toLocaleString()}</span></div>
+          <div class="iq-item"><span class="iq-label">출고수량</span><span class="iq-value">${Number(r.shippedQty).toLocaleString()}</span></div>
         </div>
         ${actionsHtml}
       </div>
@@ -2353,13 +2353,18 @@
 
   // "출고완료" 버튼: 수량 입력 팝업을 띄우고, 확인 시 그 요청 건에만(다른 건은 건드리지 않고)
   // 입력한 수량만큼 누적출고수량을 더한다. 선입선출은 적용하지 않는다(QR 스캔 출고 전용 로직).
+  // 출고 가능 여부는 요청수량이 아니라 실제 재고수량 기준으로 판단한다: 재고수량 >= 출고수량이면
+  // 그대로, 재고수량 < 출고수량이면 재고수량만큼만 부분 출고된다(서버에서 최종 확정).
   function openInboundShipModal(row) {
-    const remaining = Number(row.remainingShipQty);
+    const remaining = Math.max(0, Number(row.remainingShipQty) || 0);
+    const stockQty = Math.max(0, Number(row.stockQty) || 0);
+    const shippable = Math.min(remaining, stockQty);
     const html = `
       <div class="modal-sheet">
         <h3>출고완료 처리</h3>
         <p class="muted">${escapeHtml(row.itemName)} (${escapeHtml(row.itemId)})</p>
-        <p class="muted">요청수량 ${Number(row.requestedQty).toLocaleString()} · 누적출고수량 ${Number(row.shippedQty).toLocaleString()} · 잔여출고수량 ${remaining.toLocaleString()}</p>
+        <p class="muted">요청수량 ${Number(row.requestedQty).toLocaleString()} · 재고수량 ${stockQty.toLocaleString()} · 출고수량 ${Number(row.shippedQty).toLocaleString()}</p>
+        <p class="muted">출고 가능 수량 ${shippable.toLocaleString()}${shippable < remaining ? ' (재고 부족으로 일부만 출고 가능)' : ''}</p>
         <label class="field-label">출고 수량</label>
         <input type="number" id="inbound-ship-qty" class="input" min="1" step="1" inputmode="numeric" placeholder="수량" />
         <div class="modal-actions">
@@ -2377,8 +2382,13 @@
         return;
       }
       try {
-        await Api.post('outboundComplete', { site: state.site, rowIndex: row.rowIndex, quantity: qty, pin: state.user.pin });
-        toast('출고완료 처리되었습니다.', 'success');
+        const result = await Api.post('outboundComplete', { site: state.site, rowIndex: row.rowIndex, quantity: qty, pin: state.user.pin });
+        const shippedNow = Number(result.shippedNow ?? qty);
+        if (shippedNow < qty) {
+          toast(`재고 부족으로 ${shippedNow.toLocaleString()}개만 출고 처리되었습니다.`, 'success');
+        } else {
+          toast('출고완료 처리되었습니다.', 'success');
+        }
         closeModal();
         await fetchInboundRows();
       } catch (err) {

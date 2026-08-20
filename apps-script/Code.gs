@@ -721,6 +721,7 @@ function poRowToInboundView_(site, po, stockMap) {
     category: info.category,
     stockUse: po['재고사용(O,X)'] || '',
     outboundDone: isOutboundDoneRow_(po),
+    outboundPartial: isOutboundPartialRow_(po),
     note: po['비고'] || ''
   };
 }

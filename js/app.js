@@ -2206,8 +2206,9 @@
     const canReceive = r.status === '미입고' || r.status === '부분입고';
     // 출고 진행 상태(부분출고/출고완료)가 status 표시를 덮어쓸 수 있으므로, 출고완료 버튼 활성화
     // 여부는 status 문자열이 아니라 원본 입고 완료 여부(누적입고수량 >= 요청수량)로 판단한다.
+    // 한 번이라도 출고가 시작된 행(부분출고/출고완료)은 버튼을 비활성화한다.
     const isInboundDone = r.requestedQty > 0 && r.cumulativeQty >= r.requestedQty;
-    const canShipOut = !r.outboundDone && (stockUseUpper === 'O' || isInboundDone);
+    const canShipOut = !r.outboundDone && !r.outboundPartial && (stockUseUpper === 'O' || isInboundDone);
 
     // 재고사용/구매필요는 토글: 이미 선택된 쪽은 비활성화(선택됨 표시)하고, 반대쪽은 활성 상태로
     // 남겨 두어 언제든 다시 눌러 전환할 수 있게 한다.

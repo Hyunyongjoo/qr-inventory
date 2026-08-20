@@ -1302,20 +1302,21 @@ function stockIn_(body) {
 // 갱신하고, 각 건에서 얼마나 차감했는지(라인구매번호 + 차감수량)를 배열로 돌려준다 — 호출부가 그
 // 배열을 그대로 출고 시트에 건별 행으로 나눠 기록한다.
 // 같은 자재코드 + 같은 라인(zone)의 행만 대상으로 하며(다른 라인 구매 건은 건드리지 않음),
-// 재고사용(O)/취소 건과 아직 한 번도 입고되지 않은(최종입고일이 없는) 건은 제외하고,
-// 최종입고일 오름차순(오래된 건부터)으로 스캔 수량이 남는 동안 순서대로 채운다.
+// 취소 건은 제외하고, 입고완료/부분입고(누적입고수량 > 0) 또는 재고사용(O) 건을 모두 대상에 포함한다
+// (재고사용(O) 건은 실제 입고를 받지 않으므로 최종입고일로는 걸러낼 수 없다).
+// 요청일자 오름차순(오래된 건부터)으로 스캔 수량이 남는 동안 순서대로 채운다.
 function applyLineFifoOutboundBookkeeping_(site, itemId, zone, qty) {
   const sheet = sheet_(poInSheetName_(site));
-  const rows = readAll_(sheet).filter(r =>
-    String(r['자재코드']) === String(itemId) &&
-    String(r['라인'] || '').trim() === String(zone).trim() &&
-    !isStockCoveredRow_(r) &&
-    !isCancelledRow_(r) &&
-    !!r['최종입고일']
-  );
+  const rows = readAll_(sheet).filter(r => {
+    if (String(r['자재코드']) !== String(itemId)) return false;
+    if (String(r['라인'] || '').trim() !== String(zone).trim()) return false;
+    if (isCancelledRow_(r)) return false;
+    const cumulativeIn = Number(r['누적입고수량']) || 0;
+    return isStockCoveredRow_(r) || cumulativeIn > 0;
+  });
   rows.sort((a, b) => {
-    const da = a['최종입고일'] ? new Date(a['최종입고일']).getTime() : Infinity;
-    const db = b['최종입고일'] ? new Date(b['최종입고일']).getTime() : Infinity;
+    const da = a['요청일자'] ? new Date(a['요청일자']).getTime() : Infinity;
+    const db = b['요청일자'] ? new Date(b['요청일자']).getTime() : Infinity;
     if (da !== db) return da - db;
     return (a._row || 0) - (b._row || 0);
   });

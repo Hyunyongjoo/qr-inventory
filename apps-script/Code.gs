@@ -1210,7 +1210,7 @@ function outboundComplete_(body) {
       item = { ItemID: itemId, ItemName: row['자재명'] || '', Spec: row['규격'] || '', Unit: '' };
     }
 
-    const current = calculateCurrentStock_(site, itemId);
+    const current = getStockQty_(site, itemId);
     if (current <= 0) {
       throw new Error(`재고가 없어 출고할 수 없습니다. (현재 재고 0${item.Unit || ''})`);
     }
@@ -1347,8 +1347,8 @@ function stockOut_(body) {
     const item = assertItemExists_(itemId);
     const worker = handleLogin_(pin);
 
-    const current = calculateCurrentStock_(site, itemId);
-    if (current < qty) throw new Error(`재고 부족: 현재 ${current}${item.Unit || ''}, 출고 요청 ${qty}${item.Unit || ''}`);
+    const current = getStockQty_(site, itemId);
+    if (current < qty) throw new Error(`재고 부족: 현재고 ${current}${item.Unit || ''}, 출고 요청 ${qty}${item.Unit || ''}`);
 
     // 스캔한 수량만큼, 같은 자재+라인의 구매요청 건들을 선입선출로 "출고됨" 처리하고(구매발주및입고
     // 시트의 누적출고수량/출고여부 갱신), 각 건에서 차감된 수량(+라인구매번호)을 돌려받는다.
@@ -1402,9 +1402,9 @@ function stockOutByOrder_(body) {
       if (!itemId || !qty || qty <= 0) return;
       const item = assertItemExists_(itemId);
 
-      const current = calculateCurrentStock_(site, itemId);
+      const current = getStockQty_(site, itemId);
       if (current < qty) {
-        throw new Error(`재고 부족: ${item.ItemName}(${itemId}) 현재 ${current}${item.Unit || ''}, 출고 요청 ${qty}${item.Unit || ''}`);
+        throw new Error(`재고 부족: ${item.ItemName}(${itemId}) 현재고 ${current}${item.Unit || ''}, 출고 요청 ${qty}${item.Unit || ''}`);
       }
 
       logTransaction_(site, {

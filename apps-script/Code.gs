@@ -491,6 +491,17 @@ function recalculateStock_(site, itemId, item) {
   return newQty;
 }
 
+// 출고 시 재고 시트의 현재고에서 출고수량만큼 직접 차감한다(현재고 = 현재고 - 출고수량).
+// calculateCurrentStock_처럼 입고/출고/반납 이력 전체를 매번 다시 합산하지 않으므로, 과거 이력
+// 데이터의 누락/중복 등으로 인한 드리프트가 현재고에 반영되지 않는다. 락(LockService)으로 감싼
+// 함수 안에서만 호출해 동시 요청에 의한 중복 차감을 막는다.
+function decrementStockQuantity_(site, itemId, qty, item) {
+  const current = getStockQty_(site, itemId);
+  const newQty = current - qty;
+  setStockQuantity_(site, itemId, newQty, item);
+  return newQty;
+}
+
 function assertItemExists_(itemId) {
   const item = readAll_(sheet_('Items')).find(it => String(it.ItemID) === String(itemId));
   if (!item) throw new Error('자재를 찾을 수 없습니다: ' + itemId);
@@ -1225,7 +1236,7 @@ function outboundComplete_(body) {
       lineOrderNo: row['라인구매번호'] || ''
     });
 
-    recalculateStock_(site, itemId, item);
+    decrementStockQuantity_(site, itemId, actualQty, item);
 
     const shippedBefore = Number(row['누적출고수량']) || 0;
     const shippedCumulative = shippedBefore + actualQty;
@@ -1373,8 +1384,8 @@ function stockOut_(body) {
       });
     }
 
-    // 방금 기록한 출고를 포함해 현재고를 다시 계산해 재고 시트에 반영한다.
-    const newQty = recalculateStock_(site, itemId, item);
+    // 방금 기록한 출고수량만큼 재고 시트의 현재고를 직접 차감한다.
+    const newQty = decrementStockQuantity_(site, itemId, qty, item);
 
     return { newQuantity: newQty };
   } finally {
@@ -1411,7 +1422,7 @@ function stockOutByOrder_(body) {
         itemId, itemName: item.ItemName, spec: item.Spec, unit: item.Unit, zone,
         quantity: qty, worker: worker.name
       });
-      recalculateStock_(site, itemId, item);
+      decrementStockQuantity_(site, itemId, qty, item);
       count++;
     });
 

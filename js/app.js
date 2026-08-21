@@ -40,7 +40,9 @@
     orderOutScanning: false,
     inboundRows: [],
     inboundFilter: null,
-    inboundLoadedSite: null
+    inboundLoadedSite: null,
+    downloadRows: { purchase: [], outbound: [], transaction: [] },
+    downloadLoadedSite: null
   };
 
   // popstate(뒤로가기) 처리 중 switchView가 다시 history.pushState를 호출해
@@ -75,7 +77,7 @@
     // 새로 받아온 경우)에서 특정 화면의 요소를 찾지 못해 bindXxx() 하나가 실패하더라도,
     // 그 뒤에 이어지는 다른 화면 바인딩과 로그인 화면 진입까지는 막히지 않게 각각 감싸서 실행한다.
     [bindLogin, bindSite, bindNav, bindActions, bindLine, bindOutMode, bindOrderOut, bindHome, bindScan,
-      bindPurchase, bindReturn, bindItems, bindInboundCheck, bindHistory, bindLogout, bindHardRefresh,
+      bindPurchase, bindReturn, bindItems, bindInboundCheck, bindHistory, bindDownload, bindLogout, bindHardRefresh,
       bindBackNavigation, bindPullToRefreshGuard
     ].forEach((bindFn) => {
       try {
@@ -400,6 +402,7 @@
     if (name === 'items') loadItems();
     if (name === 'history') loadHistory();
     if (name === 'inbound') enterInboundCheck();
+    if (name === 'download') enterDownloadView();
 
     state.currentView = name;
 
@@ -2455,6 +2458,124 @@
     } catch (err) {
       renderApiError_(listEl, err, loadHistory);
     }
+  }
+
+  // ------------------------- 다운로드 -------------------------
+
+  function bindDownload() {
+    $('#download-search-btn').addEventListener('click', searchDownload);
+    $('#download-purchase-btn').addEventListener('click', () => exportDownloadExcel('purchase'));
+    $('#download-outbound-btn').addEventListener('click', () => exportDownloadExcel('outbound'));
+    $('#download-transaction-btn').addEventListener('click', () => exportDownloadExcel('transaction'));
+  }
+
+  // 라인 드롭다운은 사이트마다 목록이 달라서, 다운로드 화면에 들어갈 때마다 현재 사이트 기준으로 다시 채운다.
+  function populateDownloadZoneOptions() {
+    const sel = $('#download-zone-select');
+    if (!sel) return;
+    const zones = ZONES[state.site] || [];
+    const current = sel.value;
+    sel.innerHTML = `<option value="">전체 라인</option>` +
+      zones.map((z) => `<option value="${escapeHtml(z)}">${escapeHtml(z)}</option>`).join('');
+    sel.value = zones.includes(current) ? current : '';
+  }
+
+  // 다운로드 탭 진입 시 호출된다. 사이트가 바뀌었으면 이전 검색 조건/결과를 초기화한다.
+  function enterDownloadView() {
+    if (state.site && state.downloadLoadedSite !== state.site) {
+      $('#download-date-start').value = '';
+      $('#download-date-end').value = '';
+      $('#download-zone-select').value = '';
+      state.downloadLoadedSite = state.site;
+      state.downloadRows = { purchase: [], outbound: [], transaction: [] };
+      $('#download-summary').classList.add('hidden');
+      $('#download-summary').innerHTML = '';
+      $('#download-buttons').classList.add('hidden');
+    }
+    populateDownloadZoneOptions();
+  }
+
+  // 검색 버튼: 구매/출고/거래명세서 세 가지 다운로드 데이터를 한 번에 조회해 두었다가,
+  // 아래 버튼을 누르면 다시 서버를 조회하지 않고 바로 엑셀로 만든다.
+  async function searchDownload() {
+    if (!state.site) return;
+    const startDate = $('#download-date-start').value;
+    const endDate = $('#download-date-end').value;
+    const zone = $('#download-zone-select').value;
+    const summaryEl = $('#download-summary');
+    const buttonsEl = $('#download-buttons');
+
+    buttonsEl.classList.add('hidden');
+    summaryEl.classList.remove('hidden');
+    summaryEl.innerHTML = `<div class="empty-state">검색 중...</div>`;
+
+    try {
+      const [purchase, outbound, transaction] = await Promise.all([
+        Api.get('getPurchaseDownload', { site: state.site, startDate, endDate, zone }),
+        Api.get('getOutboundDownload', { site: state.site, startDate, endDate, zone }),
+        Api.get('getTransactionDownload', { site: state.site, startDate, endDate, zone })
+      ]);
+      state.downloadRows = { purchase, outbound, transaction };
+      renderDownloadSummary();
+      buttonsEl.classList.remove('hidden');
+    } catch (err) {
+      state.downloadRows = { purchase: [], outbound: [], transaction: [] };
+      renderApiError_(summaryEl, err, searchDownload);
+    }
+  }
+
+  function renderDownloadSummary() {
+    const summaryEl = $('#download-summary');
+    const { purchase, outbound, transaction } = state.downloadRows;
+    summaryEl.innerHTML = `
+      <div class="download-summary-row"><span>구매</span><span class="value">${purchase.length}건</span></div>
+      <div class="download-summary-row"><span>출고</span><span class="value">${outbound.length}건</span></div>
+      <div class="download-summary-row"><span>거래명세서</span><span class="value">${transaction.length}건</span></div>
+    `;
+    summaryEl.classList.remove('hidden');
+  }
+
+  const DOWNLOAD_KIND_META = {
+    purchase: {
+      label: '구매',
+      columns: ['자재코드', '자재명', '규격', '단위', '필요일자', '요청수량', '라인'],
+      toRow: (r) => [r.itemId, r.itemName, r.spec, r.unit, r.dueDate, r.qty, r.zone]
+    },
+    outbound: {
+      label: '출고',
+      columns: ['자재코드', '자재명', '규격', '단위', '출고수량', '라인'],
+      toRow: (r) => [r.itemId, r.itemName, r.spec, r.unit, r.qty, r.zone]
+    },
+    transaction: {
+      label: '거래명세서',
+      columns: ['BQMS', 'S/N', '수량', '라인', '층'],
+      toRow: (r) => [r.bqms, r.sn, r.qty, r.zone, r.floor]
+    }
+  };
+
+  // 파일명: {구분}_{YYYYMMDD}_{라인명 또는 전체}.xlsx (오늘 날짜 기준)
+  function buildDownloadFilename_(label) {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, '0');
+    const d = String(now.getDate()).padStart(2, '0');
+    const zone = $('#download-zone-select').value.trim();
+    const zoneLabel = zone || '전체';
+    return `${label}_${y}${m}${d}_${zoneLabel}.xlsx`;
+  }
+
+  function exportDownloadExcel(kind) {
+    const meta = DOWNLOAD_KIND_META[kind];
+    const rows = state.downloadRows[kind] || [];
+    if (!rows.length) {
+      toast(`다운로드할 ${meta.label} 데이터가 없습니다.`, 'error');
+      return;
+    }
+    const aoa = [meta.columns].concat(rows.map(meta.toRow));
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, meta.label);
+    XLSX.writeFile(wb, buildDownloadFilename_(meta.label));
   }
 
   // ------------------------- 모달 -------------------------

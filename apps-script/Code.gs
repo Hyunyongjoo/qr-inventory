@@ -87,6 +87,15 @@ function doGet(e) {
       case 'getByLineOrderNo':
         result = getPurchaseByLineOrderNo_(e.parameter.site || '', e.parameter.orderNo || '');
         break;
+      case 'getPurchaseDownload':
+        result = getPurchaseDownload_(e.parameter.site || '', e.parameter.startDate || '', e.parameter.endDate || '', e.parameter.zone || '');
+        break;
+      case 'getOutboundDownload':
+        result = getOutboundDownload_(e.parameter.site || '', e.parameter.startDate || '', e.parameter.endDate || '', e.parameter.zone || '');
+        break;
+      case 'getTransactionDownload':
+        result = getTransactionDownload_(e.parameter.site || '', e.parameter.startDate || '', e.parameter.endDate || '', e.parameter.zone || '');
+        break;
       default:
         throw new Error('알 수 없는 action: ' + action);
     }
@@ -1570,6 +1579,129 @@ function listTransactions_(filter) {
   rows.sort((a, b) => new Date(b.Timestamp) - new Date(a.Timestamp));
   const limit = filter.limit || 50;
   return rows.slice(0, limit).map(stripRow_);
+}
+
+// ------------------------- 엑셀 다운로드 -------------------------
+
+// 자재코드 → 단위(Unit) 맵 (Items 시트는 사이트 공통, 구매발주및입고 시트에는 단위 컬럼이 없어 여기서 보충한다).
+function buildItemUnitMap_() {
+  const map = {};
+  readAll_(sheet_('Items')).forEach(it => { map[String(it.ItemID)] = it.Unit || ''; });
+  return map;
+}
+
+// 다운로드 화면 공용: dateField(예: 필요일자/출고일자) 기준으로 시작일~종료일 범위에 드는 행만 남긴다.
+// 시작일/종료일이 모두 비어있으면(=기간 조건 없음) 그대로 반환한다.
+function filterByDateRange_(rows, dateField, startDate, endDate) {
+  const start = toDateOnly_(startDate);
+  const end = toDateOnly_(endDate);
+  if (!start && !end) return rows;
+  return rows.filter(r => {
+    const d = toDateOnly_(r[dateField]);
+    if (!d) return false;
+    if (start && d < start) return false;
+    if (end && d > end) return false;
+    return true;
+  });
+}
+
+// 구매 다운로드: 구매발주및입고 시트에서 아직 실제 구매발주로 넘어가지 않은(구매요청번호 없음),
+// 재고사용(O)이나 취소로 처리되지 않은 요청만 대상으로 한다(=자재담당자가 실제로 구매를 넣어야 하는 항목).
+// 같은 자재코드가 여러 행(다른 신청자/필요일자/라인)에 걸쳐 있으면 요청수량을 합산해 1행으로 합친다.
+// 필요일자는 합쳐진 행 중 가장 이른 날짜, 라인은 서로 다른 값이 섞여 있으면 콤마로 나열한다.
+function getPurchaseDownload_(site, startDate, endDate, zone) {
+  assertSite_(site);
+  const zoneQ = (zone || '').toString().trim();
+  const unitMap = buildItemUnitMap_();
+
+  let rows = readAll_(sheet_(poInSheetName_(site)));
+  rows = rows.filter(r => !String(r['구매요청번호'] || '').trim() && !isStockCoveredRow_(r) && !isCancelledRow_(r));
+  if (zoneQ) rows = rows.filter(r => String(r['라인'] || '').trim() === zoneQ);
+  rows = filterByDateRange_(rows, '필요일자', startDate, endDate);
+
+  const merged = {};
+  rows.forEach(r => {
+    const itemId = String(r['자재코드'] || '').trim();
+    if (!itemId) return;
+    const qty = Number(r['요청수량']) || 0;
+    const dueDate = r['필요일자'] || '';
+    const lineZone = String(r['라인'] || '').trim();
+
+    if (!merged[itemId]) {
+      merged[itemId] = {
+        itemId, itemName: r['자재명'] || '', spec: r['규격'] || '',
+        unit: unitMap[itemId] || '', dueDate: dueDate, qty: 0, zones: []
+      };
+    }
+    const m = merged[itemId];
+    m.qty += qty;
+    if (dueDate && (!m.dueDate || new Date(dueDate) < new Date(m.dueDate))) m.dueDate = dueDate;
+    if (lineZone && m.zones.indexOf(lineZone) === -1) m.zones.push(lineZone);
+  });
+
+  return Object.keys(merged).map(itemId => {
+    const m = merged[itemId];
+    return {
+      itemId: m.itemId,
+      itemName: m.itemName,
+      spec: m.spec,
+      unit: m.unit,
+      dueDate: m.dueDate ? Utilities.formatDate(new Date(m.dueDate), 'Asia/Seoul', 'yyyy-MM-dd') : '',
+      qty: m.qty,
+      zone: m.zones.join(', ')
+    };
+  });
+}
+
+// 출고 다운로드: 출고 시트에서 날짜/라인 조건에 맞는 행을 자재코드별로 합산해 1행으로 만든다.
+function getOutboundDownload_(site, startDate, endDate, zone) {
+  assertSite_(site);
+  const zoneQ = (zone || '').toString().trim();
+
+  let rows = readAll_(sheet_(txSheetName_(site)));
+  if (zoneQ) rows = rows.filter(r => String(r['라인'] || '').trim() === zoneQ);
+  rows = filterByDateRange_(rows, '출고일자', startDate, endDate);
+
+  const merged = {};
+  rows.forEach(r => {
+    const itemId = String(r['자재코드'] || '').trim();
+    if (!itemId) return;
+    const qty = Number(r['출고수량']) || 0;
+    const lineZone = String(r['라인'] || '').trim();
+
+    if (!merged[itemId]) {
+      merged[itemId] = {
+        itemId, itemName: r['자재명'] || '', spec: r['규격'] || '',
+        unit: r['단위'] || '', qty: 0, zones: []
+      };
+    }
+    const m = merged[itemId];
+    m.qty += qty;
+    if (lineZone && m.zones.indexOf(lineZone) === -1) m.zones.push(lineZone);
+  });
+
+  return Object.keys(merged).map(itemId => {
+    const m = merged[itemId];
+    return { itemId: m.itemId, itemName: m.itemName, spec: m.spec, unit: m.unit, qty: m.qty, zone: m.zones.join(', ') };
+  });
+}
+
+// 거래명세서 다운로드: 출고 시트 원본 그대로(자재코드 중복 합산 없이) BQMS/S-N/수량/라인/층만 뽑는다.
+function getTransactionDownload_(site, startDate, endDate, zone) {
+  assertSite_(site);
+  const zoneQ = (zone || '').toString().trim();
+
+  let rows = readAll_(sheet_(txSheetName_(site)));
+  if (zoneQ) rows = rows.filter(r => String(r['라인'] || '').trim() === zoneQ);
+  rows = filterByDateRange_(rows, '출고일자', startDate, endDate);
+
+  return rows.map(r => ({
+    bqms: r['BQMS'] || '',
+    sn: r['S/N'] || '',
+    qty: Number(r['수량']) || 0,
+    zone: r['라인'] || '',
+    floor: r['층'] || ''
+  }));
 }
 
 // ------------------------- 유지보수(Keep-alive) -------------------------

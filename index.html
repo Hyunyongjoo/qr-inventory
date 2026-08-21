@@ -355,6 +355,31 @@
       <div id="history-list" class="list"></div>
     </section>
 
+    <!-- 다운로드 -->
+    <section id="view-download" class="view hidden">
+      <div class="view-header"><h2>엑셀 다운로드</h2></div>
+
+      <label class="field-label">기간 (선택)</label>
+      <div class="inbound-date-range">
+        <input type="date" id="download-date-start" class="input" />
+        <span class="inbound-date-sep">~</span>
+        <input type="date" id="download-date-end" class="input" />
+      </div>
+
+      <label class="field-label">라인 (선택)</label>
+      <select id="download-zone-select" class="select"></select>
+
+      <button id="download-search-btn" class="btn btn-secondary btn-block">검색</button>
+
+      <div id="download-summary" class="download-summary hidden"></div>
+
+      <div id="download-buttons" class="download-buttons hidden">
+        <button id="download-purchase-btn" class="btn btn-primary btn-block">구매 다운로드</button>
+        <button id="download-outbound-btn" class="btn btn-primary btn-block">출고 다운로드</button>
+        <button id="download-transaction-btn" class="btn btn-primary btn-block">거래명세서 다운로드</button>
+      </div>
+    </section>
+
   </main>
 
   <nav id="bottom-nav" class="hidden">
@@ -363,6 +388,7 @@
     <button class="nav-btn" data-view="inbound"><span class="nav-icon">📋</span>입고확인</button>
     <button class="nav-btn" data-view="items"><span class="nav-icon">📦</span>자재</button>
     <button class="nav-btn" data-view="history"><span class="nav-icon">🕒</span>이력</button>
+    <button class="nav-btn" data-view="download"><span class="nav-icon">📥</span>다운로드</button>
   </nav>
 
   <div id="cart-footer" class="cart-footer hidden">
@@ -403,6 +429,7 @@
 
 <script src="lib/html5-qrcode.min.js"></script>
 <script src="lib/qrcode.min.js"></script>
+<script src="lib/xlsx.full.min.js"></script>
 <script src="js/api.js"></script>
 <script src="js/app.js"></script>
 </body>

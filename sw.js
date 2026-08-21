@@ -1,4 +1,4 @@
-const CACHE_NAME = 'qr-inventory-shell-v32';
+const CACHE_NAME = 'qr-inventory-shell-v33';
 const SHELL_FILES = [
   './index.html',
   './manifest.json',
@@ -7,6 +7,7 @@ const SHELL_FILES = [
   './js/app.js',
   './lib/html5-qrcode.min.js',
   './lib/qrcode.min.js',
+  './lib/xlsx.full.min.js',
   './icons/unisem-icon-192.png',
   './icons/unisem-icon-512.png'
 ];

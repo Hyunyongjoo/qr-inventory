@@ -1605,8 +1605,10 @@ function filterByDateRange_(rows, dateField, startDate, endDate) {
   });
 }
 
-// 구매 다운로드: 구매발주및입고 시트에서 아직 실제 구매발주로 넘어가지 않은(구매요청번호 없음),
-// 재고사용(O)이나 취소로 처리되지 않은 요청만 대상으로 한다(=자재담당자가 실제로 구매를 넣어야 하는 항목).
+// 구매 다운로드: 구매발주및입고 시트에서 재고사용(O,X)이 정확히 'X'(=구매필요, 자재담당자가
+// 실제로 구매를 넣어야 한다고 확정한 요청)로 표시된 행만 대상으로 한다. 재고사용(O,X)이 공란인
+// (아직 재고확인중) 행, 'O'(재고사용), '취소' 행은 모두 제외하고, 구매요청번호가 이미 등록된
+// (실제 구매발주로 넘어간) 행도 제외한다.
 // 같은 자재코드가 여러 행(다른 신청자/필요일자/라인)에 걸쳐 있으면 요청수량을 합산해 1행으로 합친다.
 // 필요일자는 합쳐진 행 중 가장 이른 날짜, 라인은 서로 다른 값이 섞여 있으면 콤마로 나열한다.
 function getPurchaseDownload_(site, startDate, endDate, zone) {
@@ -1615,7 +1617,7 @@ function getPurchaseDownload_(site, startDate, endDate, zone) {
   const unitMap = buildItemUnitMap_();
 
   let rows = readAll_(sheet_(poInSheetName_(site)));
-  rows = rows.filter(r => !String(r['구매요청번호'] || '').trim() && !isStockCoveredRow_(r) && !isCancelledRow_(r));
+  rows = rows.filter(r => String(r['재고사용(O,X)'] || '').trim().toUpperCase() === 'X' && !String(r['구매요청번호'] || '').trim());
   if (zoneQ) rows = rows.filter(r => String(r['라인'] || '').trim() === zoneQ);
   rows = filterByDateRange_(rows, '필요일자', startDate, endDate);
 

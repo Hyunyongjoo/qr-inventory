@@ -13,6 +13,7 @@
   --orange: #fb923c;
   --purple: #a855f7;
   --teal: #14b8a6;
+  --brown: #a16207;
   --radius: 12px;
 }
 
@@ -416,6 +417,7 @@ html, body {
 .po-status-shipped { background: rgba(168,85,247,.15); color: var(--purple); }
 .po-status-partial-out { background: rgba(20,184,166,.15); color: var(--teal); }
 .po-status-cancelled { background: rgba(137,150,176,.15); color: var(--text-muted); }
+.po-status-hold { background: rgba(161,98,7,.15); color: var(--brown); }
 .po-info-none {
   font-size: 13px;
   color: var(--text-muted);
@@ -556,6 +558,7 @@ html, body {
 .inbound-summary-item.summary-stock .value { color: var(--accent); }
 .inbound-summary-item.summary-partial-out .value { color: var(--teal); }
 .inbound-summary-item.summary-shipped .value { color: var(--purple); }
+.inbound-summary-item.summary-hold .value { color: var(--brown); }
 
 /* ---------- 다운로드 ---------- */
 .download-summary {
@@ -591,8 +594,10 @@ html, body {
 .inbound-card-actions .btn { flex: 0 0 auto; }
 .inbound-cancel-btn.is-blocked { background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); }
 .inbound-stock-btn.is-selected { border-color: var(--accent); color: var(--accent); background: var(--surface); font-weight: 700; opacity: 1; }
+.inbound-stock-btn.is-hold.is-selected { border-color: var(--brown); color: var(--brown); }
 .iq-label { font-size: 11px; color: var(--text-muted); }
 .iq-value { font-size: 15px; font-weight: 700; }
+.iq-pending { font-size: 10px; color: var(--brown); font-weight: 600; white-space: nowrap; }
 
 /* ---------- 하단 내비게이션 ---------- */
 #bottom-nav {

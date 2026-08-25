@@ -62,7 +62,7 @@ function doGet(e) {
         result = scanLookupForStockOut_(e.parameter.site || '', e.parameter.code || '');
         break;
       case 'checkInbound':
-        result = checkInbound_(e.parameter.site || '', e.parameter.name || '', e.parameter.startDate || '', e.parameter.endDate || '', e.parameter.zone || '');
+        result = checkInbound_(e.parameter.site || '', e.parameter.name || '', e.parameter.startDate || '', e.parameter.endDate || '', e.parameter.zone || '', e.parameter.materialQuery || '');
         break;
       case 'searchMaterials':
         result = searchMaterials_(e.parameter.site || '', e.parameter.query || '', e.parameter.specQuery || '');
@@ -181,7 +181,7 @@ function sheet_(name) {
   // 기존 스프레드시트에 이미 데이터가 있어 Setup.gs가 헤더를 새로 쓰지 못하는 경우를 위해,
   // 입고확인 화면 개편(재고사용/입고/출고완료 버튼)에 필요한 컬럼이 없으면 여기서 안전하게 추가한다.
   if (name.slice(-8) === '_구매발주및입고') {
-    ensureColumnsOnce_(sheet, name, ['누적출고수량', '출고여부', '최종출고일', '비고']);
+    ensureColumnsOnce_(sheet, name, ['누적출고수량', '출고여부', '최종출고일', '비고', '특이사항1', '특이사항2']);
   } else if (name.slice(-3) === '_출고') {
     ensureColumnsOnce_(sheet, name, ['라인구매번호']);
   }
@@ -540,6 +540,12 @@ function isCancelledRow_(r) {
   return String(r['재고사용(O,X)'] || '').trim() === '취소';
 }
 
+// 재고사용(O,X)이 '보류'로 표시된 행(자재담당자가 구매 진행을 보류한 요청)도 실제 구매/입고가
+// 진행되지 않는 상태이므로, 재고사용(O) 행과 마찬가지로 FIFO 입고 매칭 대상에서 제외한다.
+function isOnHoldRow_(r) {
+  return String(r['재고사용(O,X)'] || '').trim() === '보류';
+}
+
 // 누적출고수량이 요청수량 이상이면(=출고여부가 "출고완료"가 되는 조건) 이미 마감된 행으로 보고
 // 더 이상 입고/재출고 대상이 아니므로 제외한다. 별도 플래그 없이 수량 비교만으로 판단한다.
 function isOutboundDoneRow_(r) {
@@ -558,7 +564,7 @@ function isOutboundPartialRow_(r) {
 function findOpenPurchaseOrders_(site, itemId) {
   const rows = readAll_(sheet_(poInSheetName_(site)));
   return rows
-    .filter(r => String(r['자재코드']) === String(itemId) && r['입고여부'] !== '입고완료' && !isStockCoveredRow_(r) && !isCancelledRow_(r) && !isOutboundDoneRow_(r))
+    .filter(r => String(r['자재코드']) === String(itemId) && r['입고여부'] !== '입고완료' && !isStockCoveredRow_(r) && !isCancelledRow_(r) && !isOnHoldRow_(r) && !isOutboundDoneRow_(r))
     .sort(poSortComparator_);
 }
 
@@ -637,16 +643,19 @@ function toDateOnly_(value) {
 //  - 이름만: 이름으로만 필터
 //  - 이름 + 날짜 + 라인: 모두 AND 조건으로 필터
 //  - 라인만: 라인(정확히 일치)으로만 필터
+//  - 자재명: 자재코드/BQMS/품명 부분 일치(대소문자 무시)로 필터
 //  - 모두 없음: 필터 없이 전체 데이터 중 최근 요청 100건
-function checkInbound_(site, name, startDate, endDate, zone) {
+function checkInbound_(site, name, startDate, endDate, zone, materialQuery) {
   assertSite_(site);
   const q = (name || '').toString().trim();
   const start = toDateOnly_(startDate);
   const end = toDateOnly_(endDate);
   const zoneQ = (zone || '').toString().trim();
-  const hasFilter = !!(q || zoneQ || start || end);
+  const materialQ = (materialQuery || '').toString().trim().toLowerCase();
+  const hasFilter = !!(q || zoneQ || start || end || materialQ);
 
-  let rows = readAll_(sheet_(poInSheetName_(site)));
+  const allRows = readAll_(sheet_(poInSheetName_(site)));
+  let rows = allRows;
   if (q) rows = rows.filter(r => String(r['신청자'] || '').includes(q));
   if (zoneQ) rows = rows.filter(r => String(r['라인'] || '').trim() === zoneQ);
   if (start || end) {
@@ -658,6 +667,7 @@ function checkInbound_(site, name, startDate, endDate, zone) {
       return true;
     });
   }
+  if (materialQ) rows = rows.filter(r => materialMatchesQuery_(r, materialQ));
 
   if (!hasFilter && rows.length > INBOUND_CHECK_MAX_ROWS) {
     rows = rows
@@ -671,21 +681,32 @@ function checkInbound_(site, name, startDate, endDate, zone) {
   }
 
   const stockMap = buildStockMap_(site);
-  return rows.sort(poSortComparator_).map(r => poRowToInboundView_(site, r, stockMap));
+  const pendingMap = buildPendingInboundMap_(allRows);
+  return rows.sort(poSortComparator_).map(r => poRowToInboundView_(site, r, stockMap, pendingMap));
+}
+
+// 자재코드/BQMS/자재명(품명) 중 하나라도 검색어를 부분 포함하면(대소문자 무시) 일치로 본다.
+function materialMatchesQuery_(r, lowerQuery) {
+  const code = String(r['자재코드'] || '').toLowerCase();
+  const bqms = String(r['BQMS'] || '').toLowerCase();
+  const itemName = String(r['자재명'] || '').toLowerCase();
+  return code.includes(lowerQuery) || bqms.includes(lowerQuery) || itemName.includes(lowerQuery);
 }
 
 // 입고확인 화면 전용 상태 계산. 우선순위(위에서부터 먼저 매칭되는 것이 최종 상태):
 //   1) 누적출고수량 >= 요청수량  → 출고완료 (한 번이라도 출고가 시작되면 재고사용/입고 상태보다 우선)
 //   2) 0 < 누적출고수량 < 요청수량 → 부분출고
 //   3) 재고사용(O,X) = 취소    → 취소 (기존 구매요청 취소 기능, 건수 집계에는 포함하지 않음)
-//   4) 재고사용(O,X) = O       → 재고사용
-//   5) 구매요청번호 등록됨     → 미입고/부분입고/입고완료 (누적입고수량 vs 요청수량으로 판단)
-//   6) 재고사용(O,X) = X       → 신청대기 (자재담당자가 "구매필요"를 눌렀지만 아직 구매요청번호 미등록)
-//   7) 그 외(공란)             → 재고확인중
+//   4) 재고사용(O,X) = 보류    → 구매보류 (자재담당자가 구매 진행을 보류한 상태)
+//   5) 재고사용(O,X) = O       → 재고사용
+//   6) 구매요청번호 등록됨     → 미입고/부분입고/입고완료 (누적입고수량 vs 요청수량으로 판단)
+//   7) 재고사용(O,X) = X       → 신청대기 (자재담당자가 "구매필요"를 눌렀지만 아직 구매요청번호 미등록)
+//   8) 그 외(공란)             → 재고확인중
 // category는 상단 건수 필터가 사용하는 그룹 키로, status와 별개다
 // (미입고/부분입고/입고완료 세 상태 모두 category는 '신청완료'로 묶인다).
 function computeInboundStatus_(po) {
-  const stockUse = String(po['재고사용(O,X)'] || '').trim().toUpperCase();
+  const stockUse = String(po['재고사용(O,X)'] || '').trim();
+  const stockUseUpper = stockUse.toUpperCase();
   const purchaseReqNo = String(po['구매요청번호'] || '').trim();
   const requested = Number(po['요청수량']) || 0;
   const cumulative = Number(po['누적입고수량']) || 0;
@@ -693,24 +714,26 @@ function computeInboundStatus_(po) {
   if (isOutboundDoneRow_(po)) return { status: '출고완료', category: '출고완료' };
   if (isOutboundPartialRow_(po)) return { status: '부분출고', category: '부분출고' };
   if (stockUse === '취소') return { status: '취소', category: '취소' };
-  if (stockUse === 'O') return { status: '재고사용', category: '재고사용' };
+  if (stockUse === '보류') return { status: '구매보류', category: '구매보류' };
+  if (stockUseUpper === 'O') return { status: '재고사용', category: '재고사용' };
   if (purchaseReqNo) {
     const sub = cumulative <= 0 ? '미입고' : (cumulative < requested ? '부분입고' : '입고완료');
     return { status: sub, category: '신청완료' };
   }
-  if (stockUse === 'X') return { status: '신청대기', category: '신청대기' };
+  if (stockUseUpper === 'X') return { status: '신청대기', category: '신청대기' };
   return { status: '재고확인중', category: '재고확인중' };
 }
 
-// stockMap을 넘기면(여러 행을 한 번에 변환하는 checkInbound_) 그 맵에서 재고수량을 찾고,
-// 넘기지 않으면(관리 버튼 처리 후 행 하나만 반환하는 경우) 재고 시트를 직접 조회한다.
-function poRowToInboundView_(site, po, stockMap) {
+// stockMap/pendingMap을 넘기면(여러 행을 한 번에 변환하는 checkInbound_) 그 맵에서 값을 찾고,
+// 넘기지 않으면(관리 버튼 처리 후 행 하나만 반환하는 경우) 시트를 직접 조회해 계산한다.
+function poRowToInboundView_(site, po, stockMap, pendingMap) {
   const requested = Number(po['요청수량']) || 0;
   const cumulative = Number(po['누적입고수량']) || 0;
   const shipped = Number(po['누적출고수량']) || 0;
   const info = computeInboundStatus_(po);
   const itemId = po['자재코드'] || '';
   const stockQty = stockMap ? (stockMap[String(itemId)] || 0) : getStockQty_(site, itemId);
+  const pendingQty = pendingMap ? (pendingMap[String(itemId)] || 0) : getPendingInboundQty_(site, itemId);
   return {
     rowIndex: po._row,
     requestDate: po['요청일자'] || '',
@@ -721,6 +744,7 @@ function poRowToInboundView_(site, po, stockMap) {
     spec: po['규격'] || '',
     requestedQty: requested,
     stockQty: stockQty,
+    pendingQty: pendingQty,
     cumulativeQty: cumulative,
     remainingQty: requested - cumulative,
     shippedQty: shipped,
@@ -733,6 +757,28 @@ function poRowToInboundView_(site, po, stockMap) {
     outboundPartial: isOutboundPartialRow_(po),
     note: po['비고'] || ''
   };
+}
+
+// 같은 자재코드의 미입고/부분입고 건들의 (요청수량 - 누적입고수량)을 모두 합산해,
+// 자재코드별 "입고대기 수량" 맵을 만든다 (입고확인 화면 카드에 재고수량과 함께 표시).
+function buildPendingInboundMap_(rows) {
+  const map = {};
+  rows.forEach(r => {
+    const info = computeInboundStatus_(r);
+    if (info.status !== '미입고' && info.status !== '부분입고') return;
+    const itemId = String(r['자재코드'] || '');
+    if (!itemId) return;
+    const requested = Number(r['요청수량']) || 0;
+    const cumulative = Number(r['누적입고수량']) || 0;
+    map[itemId] = (map[itemId] || 0) + Math.max(0, requested - cumulative);
+  });
+  return map;
+}
+
+// buildPendingInboundMap_을 행 하나짜리 조회(관리 버튼 처리 직후 등)에서 재사용하기 위한 헬퍼.
+function getPendingInboundQty_(site, itemId) {
+  const rows = readAll_(sheet_(poInSheetName_(site)));
+  return buildPendingInboundMap_(rows)[String(itemId)] || 0;
 }
 
 // 사이트 재고 시트에서 자재 하나의 현재고를 조회한다 (입고확인 화면의 "재고수량" 표시용).
@@ -963,6 +1009,8 @@ function submitPurchase_(body) {
     if (!items.length) throw new Error('담긴 자재가 없습니다.');
 
     const requiredDate = body.requiredDate || '';
+    const note1 = String(body.note1 || '').trim();
+    const note2 = String(body.note2 || '').trim();
     const today = Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd');
 
     const stockRows = readAll_(sheet_(stockSheetName_(site)));
@@ -1008,7 +1056,9 @@ function submitPurchase_(body) {
             '입고여부': '미입고',
             '최종입고일': '',
             '라인구매번호': lineOrderNo,
-            '비고': '[세트: ' + itemName + ']'
+            '비고': '[세트: ' + itemName + ']',
+            '특이사항1': note1,
+            '특이사항2': note2
           });
           count++;
         });
@@ -1036,7 +1086,9 @@ function submitPurchase_(body) {
         '잔여수량': qty,
         '입고여부': '미입고',
         '최종입고일': '',
-        '라인구매번호': lineOrderNo
+        '라인구매번호': lineOrderNo,
+        '특이사항1': note1,
+        '특이사항2': note2
       });
       count++;
     });
@@ -1136,15 +1188,16 @@ function findPoRowByIndex_(site, rowIndex) {
   return row;
 }
 
-// 입고확인 화면의 "재고사용"/"구매필요" 버튼: 재고사용(O,X) 컬럼에 O 또는 X를 표시한다.
+// 입고확인 화면의 "재고사용"/"구매필요"/"구매보류" 버튼: 재고사용(O,X) 컬럼에 O, X 또는 보류를 표시한다.
 function updateStockUsage_(body) {
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try {
     const site = assertSite_(body.site);
     assertManagerRole_(body.pin);
-    const value = String(body.value || '').trim().toUpperCase();
-    if (value !== 'O' && value !== 'X') throw new Error('올바르지 않은 값입니다.');
+    const raw = String(body.value || '').trim();
+    const value = raw === '보류' ? raw : raw.toUpperCase();
+    if (value !== 'O' && value !== 'X' && value !== '보류') throw new Error('올바르지 않은 값입니다.');
 
     const row = findPoRowByIndex_(site, body.rowIndex);
     if (isOutboundDoneRow_(row)) throw new Error('이미 출고완료된 요청은 수정할 수 없습니다.');

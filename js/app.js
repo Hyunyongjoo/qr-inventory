@@ -1045,6 +1045,8 @@
     $('#purchase-spec-search-input').value = '';
     $('#purchase-search-results').innerHTML = '';
     $('#purchase-required-date').value = '';
+    $('#purchase-note1').value = '';
+    $('#purchase-note2').value = '';
     switchView('purchase');
     $('#purchase-context-label').textContent = `${state.site} · ${state.scanZone} · 구매요청`;
     renderPurchaseCart();
@@ -1356,6 +1358,8 @@
         zone: state.scanZone,
         pin: state.user.pin,
         requiredDate: $('#purchase-required-date').value,
+        note1: $('#purchase-note1').value.trim(),
+        note2: $('#purchase-note2').value.trim(),
         items: state.purchaseCart.map((c) => ({
           itemId: c.itemId, bqms: c.bqms, itemName: c.itemName, spec: c.spec, quantity: c.quantity
         }))
@@ -1368,6 +1372,8 @@
       }
       state.purchaseCart = [];
       $('#purchase-required-date').value = '';
+      $('#purchase-note1').value = '';
+      $('#purchase-note2').value = '';
       renderPurchaseCart();
       updateOfflineBadge();
     } catch (err) {
@@ -2029,10 +2035,11 @@
   // ------------------------- 입고확인 -------------------------
 
   // 상단 건수 표시 순서 + 각 상태의 배지/타일 색상 접미사(css의 po-status-*, summary-* 클래스와 대응).
-  const INBOUND_STATUS_KEYS = ['재고확인중', '신청대기', '신청완료', '미입고', '부분입고', '입고완료', '재고사용', '부분출고', '출고완료'];
+  const INBOUND_STATUS_KEYS = ['재고확인중', '신청대기', '구매보류', '신청완료', '미입고', '부분입고', '입고완료', '재고사용', '부분출고', '출고완료'];
   const INBOUND_STATUS_SUFFIX = {
     '재고확인중': 'checking',
     '신청대기': 'waiting',
+    '구매보류': 'hold',
     '신청완료': 'applied',
     '미입고': 'none',
     '부분입고': 'partial',
@@ -2042,6 +2049,8 @@
     '출고완료': 'shipped',
     '취소': 'cancelled'
   };
+  // updateStockUsage 버튼(재고사용/구매필요/구매보류)의 표시 라벨과 낙관적 업데이트에 쓸 매핑.
+  const INBOUND_STOCK_ACTION_LABELS = { O: '재고사용', X: '구매필요', '보류': '구매보류' };
 
   function canManageInbound() {
     return !!(state.user && (state.user.role === '자재담당자' || state.user.role === '관리자'));
@@ -2049,7 +2058,7 @@
 
   function bindInboundCheck() {
     $('#inbound-search-btn').addEventListener('click', loadInboundCheck);
-    ['#inbound-search-input', '#inbound-date-start', '#inbound-date-end'].forEach((sel) => {
+    ['#inbound-search-input', '#inbound-date-start', '#inbound-date-end', '#inbound-material-input'].forEach((sel) => {
       $(sel).addEventListener('keydown', (e) => {
         if (e.key === 'Enter') loadInboundCheck();
       });
@@ -2092,6 +2101,7 @@
       $('#inbound-date-start').value = '';
       $('#inbound-date-end').value = '';
       $('#inbound-zone-select').value = '';
+      $('#inbound-material-input').value = '';
       state.inboundLoadedSite = state.site;
       state.inboundRows = [];
       state.inboundFilter = null;
@@ -2113,11 +2123,12 @@
     const startDate = $('#inbound-date-start').value;
     const endDate = $('#inbound-date-end').value;
     const zone = $('#inbound-zone-select').value;
+    const materialQuery = $('#inbound-material-input').value.trim();
     const listEl = $('#inbound-list');
     listEl.innerHTML = `<div class="empty-state">불러오는 중...</div>`;
     $('#inbound-summary').classList.add('hidden');
     try {
-      state.inboundRows = await Api.get('checkInbound', { site: state.site, name, startDate, endDate, zone });
+      state.inboundRows = await Api.get('checkInbound', { site: state.site, name, startDate, endDate, zone, materialQuery });
       renderInboundSummary();
       renderInboundList();
     } catch (err) {
@@ -2201,11 +2212,13 @@
   }
 
   function renderInboundCard(r) {
-    const stockUseUpper = String(r.stockUse || '').trim().toUpperCase();
+    const stockUseTrim = String(r.stockUse || '').trim();
+    const stockUseUpper = stockUseTrim.toUpperCase();
     const isStockUsed = stockUseUpper === 'O';
     const isPurchaseNeeded = stockUseUpper === 'X';
+    const isOnHold = stockUseTrim === '보류';
     // 입고 버튼은 신청완료(구매요청번호 등록) 상태 중 미입고/부분입고일 때만 활성화한다.
-    // 재고확인중/신청대기/재고사용/입고완료/부분출고/출고완료는 모두 비활성화.
+    // 재고확인중/신청대기/구매보류/재고사용/입고완료/부분출고/출고완료는 모두 비활성화.
     const canReceive = r.status === '미입고' || r.status === '부분입고';
     // 출고 진행 상태(부분출고/출고완료)가 status 표시를 덮어쓸 수 있으므로, 출고완료 버튼 활성화
     // 여부는 status 문자열이 아니라 원본 입고 완료 여부(누적입고수량 >= 요청수량)로 판단한다.
@@ -2213,11 +2226,14 @@
     const isInboundDone = r.requestedQty > 0 && r.cumulativeQty >= r.requestedQty;
     const canShipOut = !r.outboundDone && (stockUseUpper === 'O' || isInboundDone);
 
-    // 재고사용/구매필요는 토글: 이미 선택된 쪽은 비활성화(선택됨 표시)하고, 반대쪽은 활성 상태로
-    // 남겨 두어 언제든 다시 눌러 전환할 수 있게 한다.
+    // 재고사용/구매필요/구매보류는 서로 배타적인 토글이다: 이미 선택된 것은 비활성화(선택됨
+    // 표시)하고, 나머지는 활성 상태로 남겨 두어 언제든 다시 눌러 전환할 수 있게 한다.
+    // 구매보류 상태에서도 재고사용/구매필요 버튼은 그대로 활성화되어 있어, 실제 재고를
+    // 확인/입고받은 뒤 재고사용을 누르면 O로 전환되고 출고완료 버튼이 활성화된다.
     const managerActionsHtml = canManageInbound() ? `
       <button type="button" class="btn btn-small btn-secondary inbound-stock-btn${isStockUsed ? ' is-selected' : ''}" data-row-index="${r.rowIndex}" data-value="O" ${(r.outboundDone || isStockUsed) ? 'disabled' : ''}>재고사용${isStockUsed ? ' ✓' : ''}</button>
       <button type="button" class="btn btn-small btn-secondary inbound-stock-btn${isPurchaseNeeded ? ' is-selected' : ''}" data-row-index="${r.rowIndex}" data-value="X" ${(r.outboundDone || isPurchaseNeeded) ? 'disabled' : ''}>구매필요${isPurchaseNeeded ? ' ✓' : ''}</button>
+      <button type="button" class="btn btn-small btn-secondary inbound-stock-btn is-hold${isOnHold ? ' is-selected' : ''}" data-row-index="${r.rowIndex}" data-value="보류" ${(r.outboundDone || isOnHold) ? 'disabled' : ''}>구매보류${isOnHold ? ' ✓' : ''}</button>
       <button type="button" class="btn btn-small btn-secondary inbound-receive-btn" data-row-index="${r.rowIndex}" ${canReceive ? '' : 'disabled'}>입고</button>
       <button type="button" class="btn btn-small btn-primary inbound-outbound-btn" data-row-index="${r.rowIndex}" ${canShipOut ? '' : 'disabled'}>출고완료</button>
     ` : '';
@@ -2250,7 +2266,11 @@
         ${r.note ? `<div class="inbound-card-set-tag">${escapeHtml(r.note)}</div>` : ''}
         <div class="inbound-card-qty">
           <div class="iq-item"><span class="iq-label">요청수량</span><span class="iq-value">${Number(r.requestedQty).toLocaleString()}</span></div>
-          <div class="iq-item"><span class="iq-label">재고수량</span><span class="iq-value">${Number(r.stockQty).toLocaleString()}</span></div>
+          <div class="iq-item">
+            <span class="iq-label">재고수량</span>
+            <span class="iq-value">${Number(r.stockQty).toLocaleString()}</span>
+            ${Number(r.pendingQty) > 0 ? `<span class="iq-pending">입고대기: ${Number(r.pendingQty).toLocaleString()}개</span>` : ''}
+          </div>
           <div class="iq-item"><span class="iq-label">입고수량</span><span class="iq-value">${Number(r.cumulativeQty).toLocaleString()}</span></div>
           <div class="iq-item"><span class="iq-label">출고수량</span><span class="iq-value">${Number(r.shippedQty).toLocaleString()}</span></div>
         </div>
@@ -2259,25 +2279,48 @@
     `;
   }
 
-  // "재고사용"/"구매필요" 버튼: 재고사용(O,X) 컬럼을 O 또는 X로 바꾼다.
-  // 서버가 돌려준 최신 행 데이터로 그 카드만 갱신하고(updateInboundRowInPlace), 전체 목록을
-  // 다시 불러오지(fetchInboundRows) 않는다 — 다른 카드나 스크롤 위치를 건드리지 않기 위함.
+  // "재고사용"/"구매필요"/"구매보류" 버튼: 재고사용(O,X) 컬럼을 O, X 또는 보류로 바꾼다.
+  // 낙관적 업데이트: API 응답을 기다리지 않고 화면을 즉시 갱신한 뒤, 백그라운드에서 Sheet를
+  // 갱신한다. 실패하면 클릭 전 원래 행 데이터로 되돌리고 오류 메시지를 띄운다.
   async function onInboundStockUsageClick(e) {
     const btn = e.currentTarget;
     const rowIndex = Number(btn.dataset.rowIndex);
     const value = btn.dataset.value;
-    const label = value === 'O' ? '재고사용' : '구매필요';
+    const label = INBOUND_STOCK_ACTION_LABELS[value] || value;
     if (!confirm(`${label}(으)로 처리하시겠습니까?`)) return;
 
-    btn.disabled = true;
+    const original = state.inboundRows.find((r) => r.rowIndex === rowIndex);
+    if (!original) return;
+
+    updateInboundRowInPlace(buildOptimisticStockUsageRow_(original, value));
+
     try {
       const updatedRow = await Api.post('updateStockUsage', { site: state.site, rowIndex, value, pin: state.user.pin });
       toast(`${label} 처리되었습니다.`, 'success');
       updateInboundRowInPlace(updatedRow);
     } catch (err) {
-      btn.disabled = false;
+      updateInboundRowInPlace(original);
       toast(err.message || '처리 중 오류가 발생했습니다.', 'error');
     }
+  }
+
+  // updateStockUsage 낙관적 업데이트용: 서버 응답 없이도 새 상태/카테고리를 미리 계산한다.
+  // 구매요청번호가 이미 등록된 행(신청완료 계열: 미입고/부분입고/입고완료)에서 "구매필요"를
+  // 누른 경우는 서버(computeInboundStatus_)와 동일하게 기존 상태를 그대로 유지한다.
+  function buildOptimisticStockUsageRow_(row, value) {
+    const clone = Object.assign({}, row, { stockUse: value });
+    const hasPurchaseReqNo = row.status === '미입고' || row.status === '부분입고' || row.status === '입고완료';
+    if (value === 'O') {
+      clone.status = '재고사용';
+      clone.category = '재고사용';
+    } else if (value === '보류') {
+      clone.status = '구매보류';
+      clone.category = '구매보류';
+    } else if (value === 'X' && !hasPurchaseReqNo) {
+      clone.status = '신청대기';
+      clone.category = '신청대기';
+    }
+    return clone;
   }
 
   // updateStockUsage 처리 직후 서버가 돌려준 최신 행 하나로 state.inboundRows와 화면(요약 건수 +
@@ -2401,20 +2444,23 @@
     });
   }
 
-  // 취소 처리 후 서버가 돌려준 최신 행 데이터로 그 카드만 갱신한다(updateInboundRowInPlace).
-  // 전체 목록을 다시 불러오지 않아 나머지 카드와 스크롤 위치는 그대로 유지된다.
+  // 낙관적 업데이트: 클릭 즉시 취소 상태로 화면을 갱신하고 백그라운드에서 Sheet에 반영한다.
+  // 실패하면 클릭 전 원래 행 데이터로 되돌리고 오류 메시지를 띄운다.
   async function onInboundCancelClick(e) {
-    const btn = e.currentTarget;
-    const rowIndex = Number(btn.dataset.rowIndex);
+    const rowIndex = Number(e.currentTarget.dataset.rowIndex);
     if (!confirm('구매 요청을 취소하시겠습니까?')) return;
 
-    btn.disabled = true;
+    const original = state.inboundRows.find((r) => r.rowIndex === rowIndex);
+    if (!original) return;
+
+    updateInboundRowInPlace(Object.assign({}, original, { stockUse: '취소', status: '취소', category: '취소' }));
+
     try {
       const updatedRow = await Api.post('cancelPurchase', { site: state.site, rowIndex, pin: state.user.pin });
       toast('구매 요청이 취소되었습니다.', 'success');
       updateInboundRowInPlace(updatedRow);
     } catch (err) {
-      btn.disabled = false;
+      updateInboundRowInPlace(original);
       toast(err.message || '취소 처리 중 오류가 발생했습니다.', 'error');
     }
   }

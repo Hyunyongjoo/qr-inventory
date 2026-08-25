@@ -261,6 +261,10 @@
         <div id="purchase-cart-list" class="list"></div>
         <label class="field-label">필요일자</label>
         <input type="date" id="purchase-required-date" class="input" />
+        <label class="field-label">특이사항1</label>
+        <input type="text" id="purchase-note1" class="input" placeholder="특이사항1 입력 (선택)" />
+        <label class="field-label">특이사항2</label>
+        <input type="text" id="purchase-note2" class="input" placeholder="특이사항2 입력 (선택)" />
       </div>
     </section>
 
@@ -338,6 +342,8 @@
       </div>
       <label class="field-label">라인 (선택)</label>
       <select id="inbound-zone-select" class="select"></select>
+      <label class="field-label">자재명 (선택)</label>
+      <input type="text" id="inbound-material-input" class="input" placeholder="자재코드 / BQMS / 품명으로 검색" />
       <div id="inbound-summary" class="inbound-summary hidden"></div>
       <div id="inbound-list" class="list"></div>
     </section>

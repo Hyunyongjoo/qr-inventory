@@ -643,7 +643,12 @@ function toDateOnly_(value) {
 //  - 이름만: 이름으로만 필터
 //  - 이름 + 날짜 + 라인: 모두 AND 조건으로 필터
 //  - 라인만: 라인(정확히 일치)으로만 필터
-//  - 자재명: 자재코드/BQMS/품명 부분 일치(대소문자 무시)로 필터
+//  - 자재명: 두 방법을 병행해 OR로 합친다(중복 제거) —
+//      1) 구매발주및입고 시트 자체의 자재코드/BQMS/자재명(+한글검색 컬럼이 있으면 그것도) 부분 일치
+//      2) 사용자재 시트의 한글검색 컬럼에서 부분 일치하는 자재코드를 먼저 찾고, 그 자재코드로
+//         구매발주및입고 시트를 조회 (구매발주및입고 시트 자체에는 한글 자재명이 없는 경우가
+//         많아, 한글 검색어는 사용자재 시트의 한글 별칭 목록을 거쳐야 매칭되기 때문)
+//    대소문자 구분 없음.
 //  - 모두 없음: 필터 없이 전체 데이터 중 최근 요청 100건
 function checkInbound_(site, name, startDate, endDate, zone, materialQuery) {
   assertSite_(site);
@@ -667,7 +672,10 @@ function checkInbound_(site, name, startDate, endDate, zone, materialQuery) {
       return true;
     });
   }
-  if (materialQ) rows = rows.filter(r => materialMatchesQuery_(r, materialQ));
+  if (materialQ) {
+    const hangulItemIds = findItemIdsByHangulAlias_(site, materialQ);
+    rows = rows.filter(r => materialMatchesQuery_(r, materialQ) || hangulItemIds.has(String(r['자재코드'] || '').trim()));
+  }
 
   if (!hasFilter && rows.length > INBOUND_CHECK_MAX_ROWS) {
     rows = rows
@@ -717,6 +725,32 @@ function materialMatchesQuery_(r, lowerQuery) {
     const t = normalizeForSearch_(stripSpaces_(token).toLowerCase());
     return t && t.includes(qNoSpace);
   });
+}
+
+// 구매발주및입고 시트에는 한글 자재명이 없는 경우가 많아, 자재명 검색어가 한글이면
+// materialMatchesQuery_만으로는 매칭되지 않는다. 이 함수는 그 사이트의 "사용자재" 시트에서
+// 한글검색 컬럼(쉼표로 구분된 여러 한글 별칭)이 검색어와 부분 일치하는 행을 찾아 그 자재코드
+// 집합을 돌려준다 — checkInbound_가 이 자재코드들을 구매발주및입고 시트 조회 조건에 OR로
+// 합쳐서(중복 제거는 Set + 행 필터가 자동으로 처리) 두 방법의 결과를 하나로 합친다.
+// lowerQuery는 호출부에서 이미 trim + toLowerCase + normalizeForSearch_ 처리된 값이다.
+function findItemIdsByHangulAlias_(site, lowerQuery) {
+  const ids = new Set();
+  const qNoSpace = stripSpaces_(lowerQuery);
+  if (!qNoSpace) return ids;
+
+  const rows = readAll_(sheet_(usedMaterialsSheetName_(site)));
+  rows.forEach(r => {
+    const itemId = String(r['자재코드'] || '').trim();
+    if (!itemId) return;
+    const hangul = String(r['한글검색'] || '');
+    if (!hangul) return;
+    const matched = hangul.split(',').some(token => {
+      const t = normalizeForSearch_(stripSpaces_(token).toLowerCase());
+      return t && t.includes(qNoSpace);
+    });
+    if (matched) ids.add(itemId);
+  });
+  return ids;
 }
 
 // 입고확인 화면 전용 상태 계산. 우선순위(위에서부터 먼저 매칭되는 것이 최종 상태):

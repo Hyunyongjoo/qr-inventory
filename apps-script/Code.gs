@@ -651,7 +651,7 @@ function checkInbound_(site, name, startDate, endDate, zone, materialQuery) {
   const start = toDateOnly_(startDate);
   const end = toDateOnly_(endDate);
   const zoneQ = (zone || '').toString().trim();
-  const materialQ = (materialQuery || '').toString().trim().toLowerCase();
+  const materialQ = normalizeForSearch_((materialQuery || '').toString().trim().toLowerCase());
   const hasFilter = !!(q || zoneQ || start || end || materialQ);
 
   const allRows = readAll_(sheet_(poInSheetName_(site)));
@@ -685,12 +685,38 @@ function checkInbound_(site, name, startDate, endDate, zone, materialQuery) {
   return rows.sort(poSortComparator_).map(r => poRowToInboundView_(site, r, stockMap, pendingMap));
 }
 
-// 자재코드/BQMS/자재명(품명) 중 하나라도 검색어를 부분 포함하면(대소문자 무시) 일치로 본다.
+// 문자열을 완성형 한글(NFC)로 정규화한다. 엑셀/CSV로 가져온 데이터나 일부 IME 입력은
+// 한글이 자모가 분리된 형태(NFD)로 저장되는 경우가 있는데, 이 상태에서는 화면에서는 같은
+// 글자로 보여도 includes()가 매칭에 실패한다(영문/숫자는 애초에 정규화 형태가 없어 이 문제가
+// 없으므로 "영문만 검색되고 한글은 안 되는" 증상으로 나타난다). 비교 전 양쪽 다 이 함수로
+// 정규화하면 저장/입력 형태가 달라도 같은 글자로 인식된다.
+function normalizeForSearch_(s) {
+  const str = String(s == null ? '' : s);
+  try {
+    return str.normalize('NFC');
+  } catch (e) {
+    return str;
+  }
+}
+
+// 자재코드/BQMS/자재명(품명) 중 하나라도 검색어를 부분 포함하면(대소문자 무시, 한글 정규화
+// 포함) 일치로 본다. 구매발주및입고 시트에 "한글검색" 컬럼이 있으면(사용자재 시트처럼 쉼표로
+// 구분된 여러 별칭을 담아둔 컬럼) 그 값들도 공백을 제거한 뒤 부분 일치로 함께 검색한다.
+// lowerQuery는 호출부(checkInbound_)에서 이미 trim + toLowerCase + normalizeForSearch_ 처리된 값이다.
 function materialMatchesQuery_(r, lowerQuery) {
-  const code = String(r['자재코드'] || '').toLowerCase();
-  const bqms = String(r['BQMS'] || '').toLowerCase();
-  const itemName = String(r['자재명'] || '').toLowerCase();
-  return code.includes(lowerQuery) || bqms.includes(lowerQuery) || itemName.includes(lowerQuery);
+  const code = normalizeForSearch_(String(r['자재코드'] || '').toLowerCase());
+  const bqms = normalizeForSearch_(String(r['BQMS'] || '').toLowerCase());
+  const itemName = normalizeForSearch_(String(r['자재명'] || '').toLowerCase());
+  if (code.includes(lowerQuery) || bqms.includes(lowerQuery) || itemName.includes(lowerQuery)) return true;
+
+  const hangul = String(r['한글검색'] || '');
+  if (!hangul) return false;
+  const qNoSpace = stripSpaces_(lowerQuery);
+  if (!qNoSpace) return false;
+  return hangul.split(',').some(token => {
+    const t = normalizeForSearch_(stripSpaces_(token).toLowerCase());
+    return t && t.includes(qNoSpace);
+  });
 }
 
 // 입고확인 화면 전용 상태 계산. 우선순위(위에서부터 먼저 매칭되는 것이 최종 상태):
@@ -759,13 +785,26 @@ function poRowToInboundView_(site, po, stockMap, pendingMap) {
   };
 }
 
+// 입고대기 합산 대상 여부: 구매발주및입고 시트의 "입고여부" 컬럼 값 자체가 미입고/부분입고인
+// 건만 대상으로 한다. computeInboundStatus_()가 화면에 보여주는 "status"와는 다르다 —
+// computeInboundStatus_는 구매요청번호가 수기로 입력된 이후에만 미입고/부분입고를 반환하는데,
+// 구매요청번호는 앱에서 자동으로 채워주는 값이 아니라 담당자가 사이트 밖 구매 절차를 마친 뒤
+// 시트에 직접 적어 넣는 값이라 실제로는 거의 비어 있다. 반면 입고여부 컬럼은 요청 등록 시점부터
+// '미입고'로 채워지므로(submitPurchase_/applyFifoReceipt_/inboundByManager_ 참고), 이 컬럼을
+// 그대로 보는 것이 "실제 입고를 기다리는 수량"을 놓치지 않는다. 다만 재고사용(O)/구매보류/취소로
+// 처리됐거나 이미 전량 출고된 건은 더 이상 입고를 기다리지 않으므로 제외한다.
+function isPendingInboundRow_(r) {
+  if (isStockCoveredRow_(r) || isCancelledRow_(r) || isOnHoldRow_(r) || isOutboundDoneRow_(r)) return false;
+  const inboundStatus = String(r['입고여부'] || '').trim();
+  return inboundStatus === '미입고' || inboundStatus === '부분입고';
+}
+
 // 같은 자재코드의 미입고/부분입고 건들의 (요청수량 - 누적입고수량)을 모두 합산해,
 // 자재코드별 "입고대기 수량" 맵을 만든다 (입고확인 화면 카드에 재고수량과 함께 표시).
 function buildPendingInboundMap_(rows) {
   const map = {};
   rows.forEach(r => {
-    const info = computeInboundStatus_(r);
-    if (info.status !== '미입고' && info.status !== '부분입고') return;
+    if (!isPendingInboundRow_(r)) return;
     const itemId = String(r['자재코드'] || '');
     if (!itemId) return;
     const requested = Number(r['요청수량']) || 0;

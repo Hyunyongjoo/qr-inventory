@@ -587,17 +587,16 @@ html, body {
 }
 
 .inbound-card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin-bottom: 10px; }
-.inbound-card-qty { display: flex; justify-content: space-between; gap: 8px; padding-top: 10px; border-top: 1px solid var(--border); }
-.iq-item { display: flex; flex-direction: column; align-items: center; gap: 2px; flex: 1; }
+.inbound-card-qty { display: flex; justify-content: space-between; gap: 4px; padding-top: 10px; border-top: 1px solid var(--border); }
+.iq-item { display: flex; flex-direction: column; align-items: center; gap: 2px; flex: 1; min-width: 0; }
 
 .inbound-card-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 10px; }
 .inbound-card-actions .btn { flex: 0 0 auto; }
 .inbound-cancel-btn.is-blocked { background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); }
 .inbound-stock-btn.is-selected { border-color: var(--accent); color: var(--accent); background: var(--surface); font-weight: 700; opacity: 1; }
 .inbound-stock-btn.is-hold.is-selected { border-color: var(--brown); color: var(--brown); }
-.iq-label { font-size: 11px; color: var(--text-muted); }
-.iq-value { font-size: 15px; font-weight: 700; }
-.iq-pending { font-size: 10px; color: var(--brown); font-weight: 600; white-space: nowrap; }
+.iq-label { font-size: 10px; color: var(--text-muted); white-space: nowrap; }
+.iq-value { font-size: 14px; font-weight: 700; }
 
 /* ---------- 하단 내비게이션 ---------- */
 #bottom-nav {

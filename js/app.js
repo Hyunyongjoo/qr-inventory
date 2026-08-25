@@ -2266,11 +2266,8 @@
         ${r.note ? `<div class="inbound-card-set-tag">${escapeHtml(r.note)}</div>` : ''}
         <div class="inbound-card-qty">
           <div class="iq-item"><span class="iq-label">요청수량</span><span class="iq-value">${Number(r.requestedQty).toLocaleString()}</span></div>
-          <div class="iq-item">
-            <span class="iq-label">재고수량</span>
-            <span class="iq-value">${Number(r.stockQty).toLocaleString()}</span>
-            ${Number(r.pendingQty) > 0 ? `<span class="iq-pending">입고대기: ${Number(r.pendingQty).toLocaleString()}개</span>` : ''}
-          </div>
+          <div class="iq-item"><span class="iq-label">재고수량</span><span class="iq-value">${Number(r.stockQty).toLocaleString()}</span></div>
+          <div class="iq-item"><span class="iq-label">입고대기</span><span class="iq-value">${Number(r.pendingQty).toLocaleString()}</span></div>
           <div class="iq-item"><span class="iq-label">입고수량</span><span class="iq-value">${Number(r.cumulativeQty).toLocaleString()}</span></div>
           <div class="iq-item"><span class="iq-label">출고수량</span><span class="iq-value">${Number(r.shippedQty).toLocaleString()}</span></div>
         </div>

@@ -785,18 +785,13 @@ function poRowToInboundView_(site, po, stockMap, pendingMap) {
   };
 }
 
-// 입고대기 합산 대상 여부: 구매발주및입고 시트의 "입고여부" 컬럼 값 자체가 미입고/부분입고인
-// 건만 대상으로 한다. computeInboundStatus_()가 화면에 보여주는 "status"와는 다르다 —
-// computeInboundStatus_는 구매요청번호가 수기로 입력된 이후에만 미입고/부분입고를 반환하는데,
-// 구매요청번호는 앱에서 자동으로 채워주는 값이 아니라 담당자가 사이트 밖 구매 절차를 마친 뒤
-// 시트에 직접 적어 넣는 값이라 실제로는 거의 비어 있다. 반면 입고여부 컬럼은 요청 등록 시점부터
-// '미입고'로 채워지므로(submitPurchase_/applyFifoReceipt_/inboundByManager_ 참고), 이 컬럼을
-// 그대로 보는 것이 "실제 입고를 기다리는 수량"을 놓치지 않는다. 다만 재고사용(O)/구매보류/취소로
-// 처리됐거나 이미 전량 출고된 건은 더 이상 입고를 기다리지 않으므로 제외한다.
+// 입고대기 합산 대상 여부: 구매요청번호가 등록되어(=실제로 구매가 진행되어) 신청완료로
+// 넘어간 건 중에서도 아직 입고가 끝나지 않은(미입고/부분입고) 건만 대상으로 한다.
+// 재고확인중/신청대기(구매요청번호 미등록)·재고사용·구매보류·취소·출고완료 건은 제외된다 —
+// computeInboundStatus_()가 화면에 보여주는 status와 정확히 같은 정의를 그대로 사용한다.
 function isPendingInboundRow_(r) {
-  if (isStockCoveredRow_(r) || isCancelledRow_(r) || isOnHoldRow_(r) || isOutboundDoneRow_(r)) return false;
-  const inboundStatus = String(r['입고여부'] || '').trim();
-  return inboundStatus === '미입고' || inboundStatus === '부분입고';
+  const info = computeInboundStatus_(r);
+  return info.status === '미입고' || info.status === '부분입고';
 }
 
 // 같은 자재코드의 미입고/부분입고 건들의 (요청수량 - 누적입고수량)을 모두 합산해,

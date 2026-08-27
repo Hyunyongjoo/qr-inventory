@@ -2260,6 +2260,8 @@
           <div class="row-main">
             <span class="primary">${escapeHtml(r.itemName)}</span>
             <span class="secondary">${escapeHtml(r.itemId)}${r.spec ? ' · ' + escapeHtml(r.spec) : ''}</span>
+            ${r.note1 ? `<span class="inbound-card-note">${escapeHtml(r.note1)}</span>` : ''}
+            ${r.note2 ? `<span class="inbound-card-note">${escapeHtml(r.note2)}</span>` : ''}
           </div>
           <span class="po-status-tag ${statusBadgeClass(r.status)}">${escapeHtml(r.status)}</span>
         </div>

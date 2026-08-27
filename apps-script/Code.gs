@@ -815,7 +815,9 @@ function poRowToInboundView_(site, po, stockMap, pendingMap) {
     stockUse: po['재고사용(O,X)'] || '',
     outboundDone: isOutboundDoneRow_(po),
     outboundPartial: isOutboundPartialRow_(po),
-    note: po['비고'] || ''
+    note: po['비고'] || '',
+    note1: po['특이사항1'] || '',
+    note2: po['특이사항2'] || ''
   };
 }
 

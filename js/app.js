@@ -2035,13 +2035,12 @@
   // ------------------------- 입고확인 -------------------------
 
   // 상단 건수 표시 순서 + 각 상태의 배지/타일 색상 접미사(css의 po-status-*, summary-* 클래스와 대응).
-  const INBOUND_STATUS_KEYS = ['재고확인중', '신청대기', '구매보류', '신청완료', '미입고', '부분입고', '입고완료', '재고사용', '부분출고', '출고완료'];
+  const INBOUND_STATUS_KEYS = ['재고확인중', '구매대기', '구매보류', '구매완료', '부분입고', '입고완료', '재고사용', '부분출고', '출고완료'];
   const INBOUND_STATUS_SUFFIX = {
     '재고확인중': 'checking',
-    '신청대기': 'waiting',
+    '구매대기': 'waiting',
     '구매보류': 'hold',
-    '신청완료': 'applied',
-    '미입고': 'none',
+    '구매완료': 'applied',
     '부분입고': 'partial',
     '입고완료': 'done',
     '재고사용': 'stock',
@@ -2200,12 +2199,12 @@
   }
 
   // 라인담당자/작업자: 본인이 신청했고 아직 재고확인중 상태인 건만 취소할 수 있다.
-  // (재고사용/구매필요(신청대기)/신청완료로 넘어간 건은 이미 절차가 진행된 것으로 보고 취소를 막는다.)
-  // 관리자/자재담당자: 재고확인중/재고사용/구매필요(신청대기) 건까지는 취소할 수 있고,
-  // 신청완료(미입고/부분입고/입고완료)·출고완료로 넘어간 건은 취소할 수 없다.
+  // (재고사용/구매필요(구매대기)/구매완료로 넘어간 건은 이미 절차가 진행된 것으로 보고 취소를 막는다.)
+  // 관리자/자재담당자: 재고확인중/재고사용/구매필요(구매대기) 건까지는 취소할 수 있고,
+  // 구매완료(부분입고/입고완료 포함)·출고완료로 넘어간 건은 취소할 수 없다.
   function canCancelInbound(r) {
     if (canManageInbound()) {
-      return r.status === '재고확인중' || r.status === '신청대기' || r.status === '재고사용';
+      return r.status === '재고확인중' || r.status === '구매대기' || r.status === '재고사용';
     }
     const isOwner = !!(state.user && r.requester && String(state.user.name).trim() === String(r.requester).trim());
     return isOwner && r.status === '재고확인중';
@@ -2217,9 +2216,9 @@
     const isStockUsed = stockUseUpper === 'O';
     const isPurchaseNeeded = stockUseUpper === 'X';
     const isOnHold = stockUseTrim === '보류';
-    // 입고 버튼은 신청완료(구매요청번호 등록) 상태 중 미입고/부분입고일 때만 활성화한다.
-    // 재고확인중/신청대기/구매보류/재고사용/입고완료/부분출고/출고완료는 모두 비활성화.
-    const canReceive = r.status === '미입고' || r.status === '부분입고';
+    // 입고 버튼은 구매완료(구매요청번호 등록) 상태 중 구매완료/부분입고일 때만 활성화한다.
+    // 재고확인중/구매대기/구매보류/재고사용/입고완료/부분출고/출고완료는 모두 비활성화.
+    const canReceive = r.status === '구매완료' || r.status === '부분입고';
     // 출고 진행 상태(부분출고/출고완료)가 status 표시를 덮어쓸 수 있으므로, 출고완료 버튼 활성화
     // 여부는 status 문자열이 아니라 원본 입고 완료 여부(누적입고수량 >= 요청수량)로 판단한다.
     // 재고사용(O)/입고완료/부분출고는 활성화하고, 출고완료(전량 출고됨)만 비활성화한다.
@@ -2304,11 +2303,11 @@
   }
 
   // updateStockUsage 낙관적 업데이트용: 서버 응답 없이도 새 상태/카테고리를 미리 계산한다.
-  // 구매요청번호가 이미 등록된 행(신청완료 계열: 미입고/부분입고/입고완료)에서 "구매필요"를
+  // 구매요청번호가 이미 등록된 행(구매완료 계열: 구매완료/부분입고/입고완료)에서 "구매필요"를
   // 누른 경우는 서버(computeInboundStatus_)와 동일하게 기존 상태를 그대로 유지한다.
   function buildOptimisticStockUsageRow_(row, value) {
     const clone = Object.assign({}, row, { stockUse: value });
-    const hasPurchaseReqNo = row.status === '미입고' || row.status === '부분입고' || row.status === '입고완료';
+    const hasPurchaseReqNo = row.status === '구매완료' || row.status === '부분입고' || row.status === '입고완료';
     if (value === 'O') {
       clone.status = '재고사용';
       clone.category = '재고사용';
@@ -2316,8 +2315,8 @@
       clone.status = '구매보류';
       clone.category = '구매보류';
     } else if (value === 'X' && !hasPurchaseReqNo) {
-      clone.status = '신청대기';
-      clone.category = '신청대기';
+      clone.status = '구매대기';
+      clone.category = '구매대기';
     }
     return clone;
   }

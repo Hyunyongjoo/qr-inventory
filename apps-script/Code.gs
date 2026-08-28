@@ -759,11 +759,12 @@ function findItemIdsByHangulAlias_(site, lowerQuery) {
 //   3) 재고사용(O,X) = 취소    → 취소 (기존 구매요청 취소 기능, 건수 집계에는 포함하지 않음)
 //   4) 재고사용(O,X) = 보류    → 구매보류 (자재담당자가 구매 진행을 보류한 상태)
 //   5) 재고사용(O,X) = O       → 재고사용
-//   6) 구매요청번호 등록됨     → 미입고/부분입고/입고완료 (누적입고수량 vs 요청수량으로 판단)
-//   7) 재고사용(O,X) = X       → 신청대기 (자재담당자가 "구매필요"를 눌렀지만 아직 구매요청번호 미등록)
+//   6) 구매요청번호 등록됨     → 구매완료/부분입고/입고완료 (누적입고수량 vs 요청수량으로 세분화;
+//                                아직 입고 전(누적입고수량 <= 0)이면 구매완료로 표시)
+//   7) 재고사용(O,X) = X       → 구매대기 (자재담당자가 "구매필요"를 눌렀지만 아직 구매요청번호 미등록)
 //   8) 그 외(공란)             → 재고확인중
-// category는 상단 건수 필터가 사용하는 그룹 키로, status와 별개다
-// (미입고/부분입고/입고완료 세 상태 모두 category는 '신청완료'로 묶인다).
+// category는 상단 건수 필터가 사용하는 그룹 키로, status와 항상 같은 값이다(건마다 정확히 하나의
+// 상태/집계 칸에만 속한다).
 function computeInboundStatus_(po) {
   const stockUse = String(po['재고사용(O,X)'] || '').trim();
   const stockUseUpper = stockUse.toUpperCase();
@@ -777,10 +778,10 @@ function computeInboundStatus_(po) {
   if (stockUse === '보류') return { status: '구매보류', category: '구매보류' };
   if (stockUseUpper === 'O') return { status: '재고사용', category: '재고사용' };
   if (purchaseReqNo) {
-    const sub = cumulative <= 0 ? '미입고' : (cumulative < requested ? '부분입고' : '입고완료');
-    return { status: sub, category: '신청완료' };
+    const status = cumulative <= 0 ? '구매완료' : (cumulative < requested ? '부분입고' : '입고완료');
+    return { status, category: status };
   }
-  if (stockUseUpper === 'X') return { status: '신청대기', category: '신청대기' };
+  if (stockUseUpper === 'X') return { status: '구매대기', category: '구매대기' };
   return { status: '재고확인중', category: '재고확인중' };
 }
 
@@ -821,16 +822,16 @@ function poRowToInboundView_(site, po, stockMap, pendingMap) {
   };
 }
 
-// 입고대기 합산 대상 여부: 구매요청번호가 등록되어(=실제로 구매가 진행되어) 신청완료로
-// 넘어간 건 중에서도 아직 입고가 끝나지 않은(미입고/부분입고) 건만 대상으로 한다.
-// 재고확인중/신청대기(구매요청번호 미등록)·재고사용·구매보류·취소·출고완료 건은 제외된다 —
+// 입고대기 합산 대상 여부: 구매요청번호가 등록되어(=실제로 구매가 진행되어) 구매완료로
+// 넘어간 건 중에서도 아직 입고가 끝나지 않은(구매완료/부분입고) 건만 대상으로 한다.
+// 재고확인중/구매대기(구매요청번호 미등록)·재고사용·구매보류·취소·출고완료 건은 제외된다 —
 // computeInboundStatus_()가 화면에 보여주는 status와 정확히 같은 정의를 그대로 사용한다.
 function isPendingInboundRow_(r) {
   const info = computeInboundStatus_(r);
-  return info.status === '미입고' || info.status === '부분입고';
+  return info.status === '구매완료' || info.status === '부분입고';
 }
 
-// 같은 자재코드의 미입고/부분입고 건들의 (요청수량 - 누적입고수량)을 모두 합산해,
+// 같은 자재코드의 구매완료/부분입고 건들의 (요청수량 - 누적입고수량)을 모두 합산해,
 // 자재코드별 "입고대기 수량" 맵을 만든다 (입고확인 화면 카드에 재고수량과 함께 표시).
 function buildPendingInboundMap_(rows) {
   const map = {};
@@ -1213,9 +1214,9 @@ function registerNewItemIfMissing_(itemId, itemName, spec) {
 
 // 입고확인 화면에서 아직 확정되지 않은 구매 요청을 취소한다. 취소 가능 범위는 역할에 따라 다르다:
 //  - 신청자 본인(라인담당자/작업자 등 비관리자): 재고확인중 상태의 본인 신청 건만 취소 가능.
-//    재고사용/구매필요(신청대기)/신청완료로 넘어간 건은 이미 절차가 진행된 것으로 보고 막는다.
-//  - Role이 자재담당자/관리자인 사용자: 재고확인중/재고사용/구매필요(신청대기) 건까지 취소 가능.
-//    신청완료(구매요청번호 등록, 미입고/부분입고/입고완료)·출고완료로 넘어간 건은 취소를 막는다.
+//    재고사용/구매필요(구매대기)/구매완료로 넘어간 건은 이미 절차가 진행된 것으로 보고 막는다.
+//  - Role이 자재담당자/관리자인 사용자: 재고확인중/재고사용/구매필요(구매대기) 건까지 취소 가능.
+//    구매완료(구매요청번호 등록, 구매완료/부분입고/입고완료)·출고완료로 넘어간 건은 취소를 막는다.
 function cancelPurchase_(body) {
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
@@ -1229,7 +1230,7 @@ function cancelPurchase_(body) {
     const info = computeInboundStatus_(row);
 
     if (isManager) {
-      if (info.status !== '재고확인중' && info.status !== '신청대기' && info.status !== '재고사용') {
+      if (info.status !== '재고확인중' && info.status !== '구매대기' && info.status !== '재고사용') {
         throw new Error('재고확인중, 구매필요 또는 재고사용 상태에서만 취소할 수 있습니다.');
       }
     } else if (isOwner) {
@@ -1281,7 +1282,7 @@ function updateStockUsage_(body) {
 
 // 입고확인 화면의 "입고" 버튼: 팝업으로 입력받은 수량을 그 구매요청 행 하나에 직접 누적한다.
 // (QR 스캔 입고(stockIn_)와 달리 여러 발주에 FIFO로 나눠 채우지 않고, 화면에 보이는 그 요청 건에만 반영한다.)
-// 신청완료(구매요청번호 등록) 상태 중 미입고/부분입고 건에서만 처리할 수 있다 — 재고확인중/신청대기/
+// 구매완료(구매요청번호 등록) 상태 중 구매완료/부분입고 건에서만 처리할 수 있다 — 재고확인중/구매대기/
 // 재고사용/입고완료/부분출고/출고완료는 모두 막는다(입고 버튼 활성화 조건과 동일하게 서버에서도 검증).
 function inboundByManager_(body) {
   const lock = LockService.getScriptLock();
@@ -1294,8 +1295,8 @@ function inboundByManager_(body) {
 
     const row = findPoRowByIndex_(site, body.rowIndex);
     const info = computeInboundStatus_(row);
-    if (info.status !== '미입고' && info.status !== '부분입고') {
-      throw new Error('신청완료(미입고/부분입고) 상태에서만 입고 처리할 수 있습니다.');
+    if (info.status !== '구매완료' && info.status !== '부분입고') {
+      throw new Error('구매완료(구매완료/부분입고) 상태에서만 입고 처리할 수 있습니다.');
     }
 
     const requested = Number(row['요청수량']) || 0;

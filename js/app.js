@@ -39,7 +39,10 @@
     orderOutHtml5QrCode: null,
     orderOutScanning: false,
     inboundRows: [],
+    inboundSummaryRows: [],
     inboundFilter: null,
+    inboundLineOrderFilter: null,
+    inboundViewMode: 'summary',
     inboundLoadedSite: null,
     downloadRows: { purchase: [], outbound: [], transaction: [] },
     downloadLoadedSite: null
@@ -2062,6 +2065,44 @@
         if (e.key === 'Enter') loadInboundCheck();
       });
     });
+    $$('.inbound-view-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const mode = btn.dataset.mode;
+        if (state.inboundViewMode === mode) return;
+        state.inboundViewMode = mode;
+        state.inboundLineOrderFilter = null;
+        updateInboundViewToggleUi();
+        renderInboundView();
+      });
+    });
+  }
+
+  // [요약]/[상세] 전환 버튼의 활성 표시만 갱신한다 (데이터는 그대로, 렌더링은 renderInboundView가 담당).
+  function updateInboundViewToggleUi() {
+    $$('.inbound-view-btn').forEach((btn) => {
+      btn.classList.toggle('is-active', btn.dataset.mode === state.inboundViewMode);
+    });
+  }
+
+  // 요약 표/상세 카드 목록 중 state.inboundViewMode에 해당하는 쪽만 보이게 전환한다 (내용은 건드리지 않음).
+  function setInboundViewVisibility() {
+    const isSummary = state.inboundViewMode === 'summary';
+    $('#inbound-summary-table').classList.toggle('hidden', !isSummary);
+    $('#inbound-summary').classList.toggle('hidden', isSummary);
+    $('#inbound-list').classList.toggle('hidden', isSummary);
+  }
+
+  // 현재 state.inboundViewMode에 맞춰 요약 표/상세 카드 목록 중 하나만 보이게 하고 그 내용을 그린다.
+  // 검색 결과(state.inboundRows/inboundSummaryRows)는 요약/상세 모두 fetchInboundRows()가 한 번에
+  // 채워두므로, 전환 버튼을 누를 때는 재조회 없이 이 함수만 다시 호출하면 된다.
+  function renderInboundView() {
+    setInboundViewVisibility();
+    if (state.inboundViewMode === 'summary') {
+      renderInboundSummaryTable();
+    } else {
+      renderInboundSummary();
+      renderInboundList();
+    }
   }
 
   // 라인 드롭다운은 사이트마다 목록이 달라서, 입고확인 화면에 들어갈 때마다(사이트가 바뀌었을
@@ -2080,6 +2121,7 @@
   async function loadInboundCheck() {
     if (!state.site) return;
     state.inboundFilter = null;
+    state.inboundLineOrderFilter = null;
     await fetchInboundRows();
   }
 
@@ -2103,10 +2145,16 @@
       $('#inbound-material-input').value = '';
       state.inboundLoadedSite = state.site;
       state.inboundRows = [];
+      state.inboundSummaryRows = [];
       state.inboundFilter = null;
+      state.inboundLineOrderFilter = null;
+      state.inboundViewMode = 'summary';
+      updateInboundViewToggleUi();
       $('#inbound-summary').classList.add('hidden');
       $('#inbound-summary').innerHTML = '';
+      $('#inbound-summary-table').innerHTML = `<div class="empty-state">검색 버튼을 눌러 조회하세요.</div>`;
       $('#inbound-list').innerHTML = `<div class="empty-state">검색 버튼을 눌러 조회하세요.</div>`;
+      setInboundViewVisibility();
     }
     populateInboundZoneOptions();
     fillInboundNameByRole();
@@ -2124,15 +2172,19 @@
     const zone = $('#inbound-zone-select').value;
     const materialQuery = $('#inbound-material-input').value.trim();
     const listEl = $('#inbound-list');
+    const tableEl = $('#inbound-summary-table');
     listEl.innerHTML = `<div class="empty-state">불러오는 중...</div>`;
+    tableEl.innerHTML = `<div class="empty-state">불러오는 중...</div>`;
     $('#inbound-summary').classList.add('hidden');
     try {
-      state.inboundRows = await Api.get('checkInbound', { site: state.site, name, startDate, endDate, zone, materialQuery });
-      renderInboundSummary();
-      renderInboundList();
+      const result = await Api.get('checkInbound', { site: state.site, name, startDate, endDate, zone, materialQuery });
+      state.inboundRows = result.detail || [];
+      state.inboundSummaryRows = result.summary || [];
+      renderInboundView();
     } catch (err) {
       state.inboundRows = [];
-      renderApiError_(listEl, err, fetchInboundRows);
+      state.inboundSummaryRows = [];
+      renderApiError_(state.inboundViewMode === 'summary' ? tableEl : listEl, err, fetchInboundRows);
     }
   }
 
@@ -2164,25 +2216,109 @@
       btn.addEventListener('click', () => {
         const key = btn.dataset.status;
         state.inboundFilter = state.inboundFilter === key ? null : key;
+        state.inboundLineOrderFilter = null;
         renderInboundSummary();
         renderInboundList();
       });
     });
   }
 
+  // 요약 표에서 라인구매번호를 클릭했을 때: 상세 보기로 전환하고 그 라인구매번호에 속한
+  // 자재 행만 보여준다(입고/출고 처리 참고용). 상태 필터(재고확인중/구매완료 등)는 이 필터와
+  // 동시에 적용하면 혼란스러우므로 초기화한다.
+  function onInboundLineOrderClick(e) {
+    const no = e.currentTarget.dataset.lineOrderNo;
+    if (!no) return;
+    state.inboundViewMode = 'detail';
+    state.inboundLineOrderFilter = no;
+    state.inboundFilter = null;
+    updateInboundViewToggleUi();
+    renderInboundView();
+  }
+
   function renderInboundList() {
     const listEl = $('#inbound-list');
-    const rows = state.inboundFilter
-      ? state.inboundRows.filter((r) => r.category === state.inboundFilter)
-      : state.inboundRows;
+    const rows = state.inboundLineOrderFilter
+      ? state.inboundRows.filter((r) => r.lineOrderNo === state.inboundLineOrderFilter)
+      : (state.inboundFilter
+        ? state.inboundRows.filter((r) => r.category === state.inboundFilter)
+        : state.inboundRows);
+
+    const filterBannerHtml = state.inboundLineOrderFilter ? `
+      <div class="inbound-line-filter-banner">
+        <span>라인구매번호 <strong>${escapeHtml(state.inboundLineOrderFilter)}</strong> 건만 표시 중</span>
+        <button type="button" class="btn btn-small btn-secondary" id="inbound-line-filter-clear">전체 보기</button>
+      </div>
+    ` : '';
 
     if (!rows.length) {
-      listEl.innerHTML = `<div class="empty-state">${state.inboundRows.length ? '해당 상태의 요청이 없습니다.' : '검색 결과가 없습니다.'}</div>`;
+      const emptyMsg = !state.inboundRows.length
+        ? '검색 결과가 없습니다.'
+        : (state.inboundLineOrderFilter ? '해당 라인구매번호의 요청이 없습니다.' : '해당 상태의 요청이 없습니다.');
+      listEl.innerHTML = filterBannerHtml + `<div class="empty-state">${emptyMsg}</div>`;
+      bindInboundLineFilterClear();
       return;
     }
 
-    listEl.innerHTML = rows.map((r) => renderInboundCard(r)).join('');
+    listEl.innerHTML = filterBannerHtml + rows.map((r) => renderInboundCard(r)).join('');
     bindInboundCardActions(listEl);
+    bindInboundLineFilterClear();
+  }
+
+  function bindInboundLineFilterClear() {
+    const btn = $('#inbound-line-filter-clear');
+    if (btn) btn.addEventListener('click', () => {
+      state.inboundLineOrderFilter = null;
+      renderInboundList();
+    });
+  }
+
+  // 요약 보기: 자재 1건 = 1행, 가로 스크롤 가능한 표. 라인구매번호를 클릭하면 상세 보기로
+  // 전환되어 그 건의 자재만 보여준다(onInboundLineOrderClick).
+  function renderInboundSummaryTable() {
+    const wrap = $('#inbound-summary-table');
+    const rows = state.inboundSummaryRows || [];
+    if (!rows.length) {
+      wrap.innerHTML = `<div class="empty-state">검색 결과가 없습니다.</div>`;
+      return;
+    }
+
+    wrap.innerHTML = `
+      <div class="inbound-summary-table-scroll">
+        <table class="inbound-summary-table-el">
+          <thead>
+            <tr>
+              <th>라인구매번호</th>
+              <th>구매요청번호</th>
+              <th>자재코드</th>
+              <th>품명</th>
+              <th>규격</th>
+              <th>요청수량</th>
+              <th>특이사항1</th>
+              <th>특이사항2</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map((r, i) => `
+              <tr class="${i % 2 === 0 ? 'row-even' : 'row-odd'}">
+                <td>${r.lineOrderNo
+                  ? `<button type="button" class="inbound-line-link" data-line-order-no="${escapeHtml(r.lineOrderNo)}">${escapeHtml(r.lineOrderNo)}</button>`
+                  : '-'}</td>
+                <td>${escapeHtml(r.purchaseReqNo) || '-'}</td>
+                <td>${escapeHtml(r.itemId)}</td>
+                <td>${escapeHtml(r.itemName)}</td>
+                <td>${escapeHtml(r.spec)}</td>
+                <td>${Number(r.requestedQty || 0).toLocaleString()}</td>
+                <td>${escapeHtml(r.note1)}</td>
+                <td>${escapeHtml(r.note2)}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+
+    $$('.inbound-line-link', wrap).forEach((btn) => btn.addEventListener('click', onInboundLineOrderClick));
   }
 
   // 카드(들)에 담긴 관리 버튼에 이벤트를 연결한다. 목록 전체를 새로 그릴 때뿐 아니라
@@ -2336,7 +2472,9 @@
       return;
     }
 
-    const stillVisible = !state.inboundFilter || updatedRow.category === state.inboundFilter;
+    const stillVisible = state.inboundLineOrderFilter
+      ? updatedRow.lineOrderNo === state.inboundLineOrderFilter
+      : (!state.inboundFilter || updatedRow.category === state.inboundFilter);
     if (!stillVisible) {
       cardEl.remove();
       if (!listEl.querySelector('.inbound-card')) renderInboundList();

@@ -329,7 +329,13 @@
 
     <!-- 입고확인 -->
     <section id="view-inbound" class="view hidden">
-      <div class="view-header"><h2>입고확인</h2></div>
+      <div class="view-header">
+        <h2>입고확인</h2>
+        <div class="inbound-view-toggle">
+          <button type="button" class="inbound-view-btn is-active" data-mode="summary">요약</button>
+          <button type="button" class="inbound-view-btn" data-mode="detail">상세</button>
+        </div>
+      </div>
       <div class="inbound-search">
         <input type="text" id="inbound-search-input" class="input" placeholder="신청자 이름으로 검색 (예: 홍)" />
         <button id="inbound-search-btn" class="btn btn-secondary">검색</button>
@@ -344,8 +350,13 @@
       <select id="inbound-zone-select" class="select"></select>
       <label class="field-label">자재명 (선택)</label>
       <input type="text" id="inbound-material-input" class="input" placeholder="자재코드 / BQMS / 품명으로 검색" />
+      <div id="inbound-summary-table" class="inbound-summary-table-wrap">
+        <div class="empty-state">검색 버튼을 눌러 조회하세요.</div>
+      </div>
       <div id="inbound-summary" class="inbound-summary hidden"></div>
-      <div id="inbound-list" class="list"></div>
+      <div id="inbound-list" class="list hidden">
+        <div class="empty-state">검색 버튼을 눌러 조회하세요.</div>
+      </div>
     </section>
 
     <!-- 이력 -->

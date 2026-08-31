@@ -650,6 +650,11 @@ function toDateOnly_(value) {
 //         많아, 한글 검색어는 사용자재 시트의 한글 별칭 목록을 거쳐야 매칭되기 때문)
 //    대소문자 구분 없음.
 //  - 모두 없음: 필터 없이 전체 데이터 중 최근 요청 100건
+// 반환값은 { summary, detail } 객체다. detail은 관리 버튼(재고사용/입고/출고완료/취소)이
+// 필요로 하는 필드를 모두 담은 기존 행 목록이고, summary는 입고확인 화면 "요약 보기"
+// 표에 필요한 8개 필드(라인구매번호/구매요청번호/자재코드/품명/규격/요청수량/특이사항1/2)만
+// 추려 자재 1건 = 1행으로 만든 가벼운 목록이다 — 둘 다 같은 조회 결과에서 파생되므로
+// 행 순서/건수는 항상 같다.
 function checkInbound_(site, name, startDate, endDate, zone, materialQuery) {
   assertSite_(site);
   const q = (name || '').toString().trim();
@@ -690,7 +695,18 @@ function checkInbound_(site, name, startDate, endDate, zone, materialQuery) {
 
   const stockMap = buildStockMap_(site);
   const pendingMap = buildPendingInboundMap_(allRows);
-  return rows.sort(poSortComparator_).map(r => poRowToInboundView_(site, r, stockMap, pendingMap));
+  const detail = rows.sort(poSortComparator_).map(r => poRowToInboundView_(site, r, stockMap, pendingMap));
+  const summary = detail.map(r => ({
+    lineOrderNo: r.lineOrderNo,
+    purchaseReqNo: r.purchaseReqNo,
+    itemId: r.itemId,
+    itemName: r.itemName,
+    spec: r.spec,
+    requestedQty: r.requestedQty,
+    note1: r.note1,
+    note2: r.note2
+  }));
+  return { summary, detail };
 }
 
 // 문자열을 완성형 한글(NFC)로 정규화한다. 엑셀/CSV로 가져온 데이터나 일부 IME 입력은
@@ -818,7 +834,9 @@ function poRowToInboundView_(site, po, stockMap, pendingMap) {
     outboundPartial: isOutboundPartialRow_(po),
     note: po['비고'] || '',
     note1: po['특이사항1'] || '',
-    note2: po['특이사항2'] || ''
+    note2: po['특이사항2'] || '',
+    lineOrderNo: po['라인구매번호'] || '',
+    purchaseReqNo: po['구매요청번호'] || ''
   };
 }
 

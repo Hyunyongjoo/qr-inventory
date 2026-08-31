@@ -2529,14 +2529,18 @@
   }
 
   // "입고" 버튼: 수량 입력 팝업을 띄우고, 확인 시 그 요청 건에 직접 입고수량을 누적한다.
+  // 입력 가능한 최대 수량은 요청수량-누적입고수량(잔여수량)으로 제한해 초과 입력 시 잔여수량이
+  // 마이너스가 되는 것을 막는다. 확인 버튼은 요청이 끝날 때까지 비활성화해 중복 클릭(연타)으로
+  // 같은 건에 두 번 요청이 나가 두 번째 요청이 이미 바뀐 상태 때문에 실패하는 것을 막는다.
   function openInboundReceiveModal(row) {
+    const maxQty = Math.max(0, Number(row.remainingQty) || 0);
     const html = `
       <div class="modal-sheet">
         <h3>입고 처리</h3>
         <p class="muted">${escapeHtml(row.itemName)} (${escapeHtml(row.itemId)})</p>
         <p class="muted">요청수량 ${Number(row.requestedQty).toLocaleString()} · 잔여수량 ${Number(row.remainingQty).toLocaleString()}</p>
         <label class="field-label">입고 수량</label>
-        <input type="number" id="inbound-receive-qty" class="input" min="1" step="1" inputmode="numeric" placeholder="수량" />
+        <input type="number" id="inbound-receive-qty" class="input" min="1" max="${maxQty}" step="1" inputmode="numeric" placeholder="수량" />
         <div class="modal-actions">
           <button class="btn btn-secondary" id="inbound-receive-cancel">취소</button>
           <button class="btn btn-primary" id="inbound-receive-confirm">확인</button>
@@ -2544,13 +2548,32 @@
       </div>
     `;
     openModal(html);
+    const qtyInput = $('#inbound-receive-qty');
+    const confirmBtn = $('#inbound-receive-confirm');
+    let submitting = false;
     $('#inbound-receive-cancel').addEventListener('click', closeModal);
-    $('#inbound-receive-confirm').addEventListener('click', async () => {
-      const qty = Number($('#inbound-receive-qty').value);
+    qtyInput.addEventListener('input', () => {
+      if (maxQty <= 0) return;
+      const val = Number(qtyInput.value);
+      if (val > maxQty) {
+        qtyInput.value = maxQty;
+        toast(`최대 ${maxQty.toLocaleString()}개까지 입고 가능합니다.`, 'error');
+      }
+    });
+    confirmBtn.addEventListener('click', async () => {
+      if (submitting) return;
+      let qty = Number(qtyInput.value);
       if (!qty || qty <= 0) {
         toast('올바른 수량을 입력하세요.', 'error');
         return;
       }
+      if (maxQty > 0 && qty > maxQty) {
+        qty = maxQty;
+        qtyInput.value = maxQty;
+        toast(`최대 ${maxQty.toLocaleString()}개까지 입고 가능합니다.`, 'error');
+      }
+      submitting = true;
+      confirmBtn.disabled = true;
       try {
         await Api.post('inboundByManager', { site: state.site, rowIndex: row.rowIndex, quantity: qty, pin: state.user.pin });
         toast('입고 처리되었습니다.', 'success');
@@ -2558,6 +2581,9 @@
         await fetchInboundRows();
       } catch (err) {
         toast(err.message || '입고 처리 중 오류가 발생했습니다.', 'error');
+      } finally {
+        submitting = false;
+        confirmBtn.disabled = false;
       }
     });
   }

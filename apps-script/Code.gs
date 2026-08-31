@@ -1308,7 +1308,7 @@ function inboundByManager_(body) {
   try {
     const site = assertSite_(body.site);
     assertManagerRole_(body.pin);
-    const qty = Number(body.quantity);
+    let qty = Number(body.quantity);
     if (!qty || qty <= 0) throw new Error('입고 수량은 0보다 커야 합니다.');
 
     const row = findPoRowByIndex_(site, body.rowIndex);
@@ -1319,8 +1319,12 @@ function inboundByManager_(body) {
 
     const requested = Number(row['요청수량']) || 0;
     const before = Number(row['누적입고수량']) || 0;
+    const maxQty = Math.max(0, requested - before);
+    if (qty > maxQty) qty = maxQty;
+    if (qty <= 0) throw new Error('입고 가능한 수량이 없습니다.');
+
     const cumulative = before + qty;
-    const remaining = requested - cumulative;
+    const remaining = Math.max(0, requested - cumulative);
     const status = cumulative <= 0 ? '미입고' : (cumulative < requested ? '부분입고' : '입고완료');
 
     updateRow_(sheet_(poInSheetName_(site)), row._row, {

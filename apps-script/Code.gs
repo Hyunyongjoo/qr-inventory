@@ -652,7 +652,7 @@ function toDateOnly_(value) {
 //  - 모두 없음: 필터 없이 전체 데이터 중 최근 요청 100건
 // 반환값은 { summary, detail } 객체다. detail은 관리 버튼(재고사용/입고/출고완료/취소)이
 // 필요로 하는 필드를 모두 담은 기존 행 목록이고, summary는 입고확인 화면 "요약 보기"
-// 표에 필요한 8개 필드(라인구매번호/구매요청번호/자재코드/품명/규격/요청수량/특이사항1/2)만
+// 표에 필요한 9개 필드(라인구매번호/구매요청번호/라인/자재코드/품명/규격/요청수량/특이사항1/2)만
 // 추려 자재 1건 = 1행으로 만든 가벼운 목록이다 — 둘 다 같은 조회 결과에서 파생되므로
 // 행 순서/건수는 항상 같다.
 function checkInbound_(site, name, startDate, endDate, zone, materialQuery) {
@@ -699,6 +699,7 @@ function checkInbound_(site, name, startDate, endDate, zone, materialQuery) {
   const summary = detail.map(r => ({
     lineOrderNo: r.lineOrderNo,
     purchaseReqNo: r.purchaseReqNo,
+    zone: r.zone,
     itemId: r.itemId,
     itemName: r.itemName,
     spec: r.spec,

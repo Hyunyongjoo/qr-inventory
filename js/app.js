@@ -42,6 +42,7 @@
     inboundSummaryRows: [],
     inboundFilter: null,
     inboundLineOrderFilter: null,
+    inboundPurchaseReqFilter: null,
     inboundViewMode: 'summary',
     inboundLoadedSite: null,
     downloadRows: { purchase: [], outbound: [], transaction: [] },
@@ -2071,6 +2072,7 @@
         if (state.inboundViewMode === mode) return;
         state.inboundViewMode = mode;
         state.inboundLineOrderFilter = null;
+        state.inboundPurchaseReqFilter = null;
         updateInboundViewToggleUi();
         renderInboundView();
       });
@@ -2122,6 +2124,7 @@
     if (!state.site) return;
     state.inboundFilter = null;
     state.inboundLineOrderFilter = null;
+    state.inboundPurchaseReqFilter = null;
     await fetchInboundRows();
   }
 
@@ -2148,6 +2151,7 @@
       state.inboundSummaryRows = [];
       state.inboundFilter = null;
       state.inboundLineOrderFilter = null;
+      state.inboundPurchaseReqFilter = null;
       state.inboundViewMode = 'summary';
       updateInboundViewToggleUi();
       $('#inbound-summary').classList.add('hidden');
@@ -2217,20 +2221,33 @@
         const key = btn.dataset.status;
         state.inboundFilter = state.inboundFilter === key ? null : key;
         state.inboundLineOrderFilter = null;
+        state.inboundPurchaseReqFilter = null;
         renderInboundSummary();
         renderInboundList();
       });
     });
   }
 
-  // 요약 표에서 라인구매번호를 클릭했을 때: 상세 보기로 전환하고 그 라인구매번호에 속한
-  // 자재 행만 보여준다(입고/출고 처리 참고용). 상태 필터(재고확인중/구매완료 등)는 이 필터와
-  // 동시에 적용하면 혼란스러우므로 초기화한다.
+  // 요약 표에서 라인구매번호/구매요청번호를 클릭했을 때 공통으로 쓴다: 상세 보기로 전환하고
+  // 그 번호에 속한 자재 행만 보여준다(입고/출고 처리 참고용). 상태 필터(재고확인중/구매완료 등)와
+  // 서로 다른 종류의 번호 필터는 동시에 적용하면 혼란스러우므로 모두 초기화한다.
   function onInboundLineOrderClick(e) {
     const no = e.currentTarget.dataset.lineOrderNo;
     if (!no) return;
     state.inboundViewMode = 'detail';
     state.inboundLineOrderFilter = no;
+    state.inboundPurchaseReqFilter = null;
+    state.inboundFilter = null;
+    updateInboundViewToggleUi();
+    renderInboundView();
+  }
+
+  function onInboundPurchaseReqClick(e) {
+    const no = e.currentTarget.dataset.purchaseReqNo;
+    if (!no) return;
+    state.inboundViewMode = 'detail';
+    state.inboundPurchaseReqFilter = no;
+    state.inboundLineOrderFilter = null;
     state.inboundFilter = null;
     updateInboundViewToggleUi();
     renderInboundView();
@@ -2238,15 +2255,24 @@
 
   function renderInboundList() {
     const listEl = $('#inbound-list');
-    const rows = state.inboundLineOrderFilter
-      ? state.inboundRows.filter((r) => r.lineOrderNo === state.inboundLineOrderFilter)
-      : (state.inboundFilter
-        ? state.inboundRows.filter((r) => r.category === state.inboundFilter)
-        : state.inboundRows);
+    let rows = state.inboundRows;
+    let filterLabel = '';
+    let filterValue = '';
+    if (state.inboundLineOrderFilter) {
+      rows = rows.filter((r) => r.lineOrderNo === state.inboundLineOrderFilter);
+      filterLabel = '라인구매번호';
+      filterValue = state.inboundLineOrderFilter;
+    } else if (state.inboundPurchaseReqFilter) {
+      rows = rows.filter((r) => r.purchaseReqNo === state.inboundPurchaseReqFilter);
+      filterLabel = '구매요청번호';
+      filterValue = state.inboundPurchaseReqFilter;
+    } else if (state.inboundFilter) {
+      rows = rows.filter((r) => r.category === state.inboundFilter);
+    }
 
-    const filterBannerHtml = state.inboundLineOrderFilter ? `
+    const filterBannerHtml = filterLabel ? `
       <div class="inbound-line-filter-banner">
-        <span>라인구매번호 <strong>${escapeHtml(state.inboundLineOrderFilter)}</strong> 건만 표시 중</span>
+        <span>${filterLabel} <strong>${escapeHtml(filterValue)}</strong> 건만 표시 중</span>
         <button type="button" class="btn btn-small btn-secondary" id="inbound-line-filter-clear">전체 보기</button>
       </div>
     ` : '';
@@ -2254,7 +2280,7 @@
     if (!rows.length) {
       const emptyMsg = !state.inboundRows.length
         ? '검색 결과가 없습니다.'
-        : (state.inboundLineOrderFilter ? '해당 라인구매번호의 요청이 없습니다.' : '해당 상태의 요청이 없습니다.');
+        : (filterLabel ? `해당 ${filterLabel}의 요청이 없습니다.` : '해당 상태의 요청이 없습니다.');
       listEl.innerHTML = filterBannerHtml + `<div class="empty-state">${emptyMsg}</div>`;
       bindInboundLineFilterClear();
       return;
@@ -2269,12 +2295,13 @@
     const btn = $('#inbound-line-filter-clear');
     if (btn) btn.addEventListener('click', () => {
       state.inboundLineOrderFilter = null;
+      state.inboundPurchaseReqFilter = null;
       renderInboundList();
     });
   }
 
-  // 요약 보기: 자재 1건 = 1행, 가로 스크롤 가능한 표. 라인구매번호를 클릭하면 상세 보기로
-  // 전환되어 그 건의 자재만 보여준다(onInboundLineOrderClick).
+  // 요약 보기: 자재 1건 = 1행, 가로 스크롤 가능한 표. 라인구매번호/구매요청번호를 클릭하면
+  // 상세 보기로 전환되어 그 건의 자재만 보여준다(onInboundLineOrderClick/onInboundPurchaseReqClick).
   function renderInboundSummaryTable() {
     const wrap = $('#inbound-summary-table');
     const rows = state.inboundSummaryRows || [];
@@ -2290,6 +2317,7 @@
             <tr>
               <th>라인구매번호</th>
               <th>구매요청번호</th>
+              <th>라인</th>
               <th>자재코드</th>
               <th>품명</th>
               <th>규격</th>
@@ -2304,7 +2332,10 @@
                 <td>${r.lineOrderNo
                   ? `<button type="button" class="inbound-line-link" data-line-order-no="${escapeHtml(r.lineOrderNo)}">${escapeHtml(r.lineOrderNo)}</button>`
                   : '-'}</td>
-                <td>${escapeHtml(r.purchaseReqNo) || '-'}</td>
+                <td>${r.purchaseReqNo
+                  ? `<button type="button" class="inbound-line-link" data-purchase-req-no="${escapeHtml(r.purchaseReqNo)}">${escapeHtml(r.purchaseReqNo)}</button>`
+                  : '-'}</td>
+                <td>${escapeHtml(r.zone)}</td>
                 <td>${escapeHtml(r.itemId)}</td>
                 <td>${escapeHtml(r.itemName)}</td>
                 <td>${escapeHtml(r.spec)}</td>
@@ -2318,7 +2349,8 @@
       </div>
     `;
 
-    $$('.inbound-line-link', wrap).forEach((btn) => btn.addEventListener('click', onInboundLineOrderClick));
+    $$('.inbound-line-link[data-line-order-no]', wrap).forEach((btn) => btn.addEventListener('click', onInboundLineOrderClick));
+    $$('.inbound-line-link[data-purchase-req-no]', wrap).forEach((btn) => btn.addEventListener('click', onInboundPurchaseReqClick));
   }
 
   // 카드(들)에 담긴 관리 버튼에 이벤트를 연결한다. 목록 전체를 새로 그릴 때뿐 아니라
@@ -2474,7 +2506,9 @@
 
     const stillVisible = state.inboundLineOrderFilter
       ? updatedRow.lineOrderNo === state.inboundLineOrderFilter
-      : (!state.inboundFilter || updatedRow.category === state.inboundFilter);
+      : (state.inboundPurchaseReqFilter
+        ? updatedRow.purchaseReqNo === state.inboundPurchaseReqFilter
+        : (!state.inboundFilter || updatedRow.category === state.inboundFilter));
     if (!stillVisible) {
       cardEl.remove();
       if (!listEl.querySelector('.inbound-card')) renderInboundList();

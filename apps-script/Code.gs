@@ -25,6 +25,10 @@ const ZONES = {
 const SITE_CODES = { '기흥': 'GH', '화성': 'HS', '평택': 'PT' };
 // 입고확인 화면의 재고사용/구매필요/입고/출고완료 버튼을 사용할 수 있는 Role (Users 시트 Role 컬럼 값).
 const MANAGER_ROLES = ['자재담당자', '관리자'];
+// 구매요청번호가 등록되어(구매완료 계열) 이후로 넘어간 상태에서는 재고사용/구매필요/구매보류
+// 3개 버튼을 모두 잠근다 — 입고확인 화면 버튼 활성화 조건과 동일한 목록(js/app.js의
+// STOCK_USAGE_LOCKED_STATUSES와 대응).
+const STOCK_USAGE_LOCKED_STATUSES = ['구매완료', '부분입고', '입고완료', '부분출고', '출고완료'];
 // 입고확인 화면에서 이름/날짜/라인 조건 없이(=전체 라인) 검색할 때 돌려주는 최대 건수.
 const INBOUND_CHECK_MAX_ROWS = 100;
 // sheet_()가 실행 중 같은 시트에 대해 매번 컬럼 마이그레이션을 반복하지 않도록 하는 캐시 (실행마다 초기화됨).
@@ -1294,7 +1298,10 @@ function updateStockUsage_(body) {
     if (value !== 'O' && value !== 'X' && value !== '보류') throw new Error('올바르지 않은 값입니다.');
 
     const row = findPoRowByIndex_(site, body.rowIndex);
-    if (isOutboundDoneRow_(row)) throw new Error('이미 출고완료된 요청은 수정할 수 없습니다.');
+    const info = computeInboundStatus_(row);
+    if (STOCK_USAGE_LOCKED_STATUSES.indexOf(info.status) !== -1) {
+      throw new Error('구매완료 이후에는 재고사용/구매필요/구매보류를 변경할 수 없습니다.');
+    }
 
     updateRow_(sheet_(poInSheetName_(site)), row._row, { '재고사용(O,X)': value });
     return poRowToInboundView_(site, findPoRowByIndex_(site, body.rowIndex));

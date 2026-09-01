@@ -2055,6 +2055,9 @@
   };
   // updateStockUsage 버튼(재고사용/구매필요/구매보류)의 표시 라벨과 낙관적 업데이트에 쓸 매핑.
   const INBOUND_STOCK_ACTION_LABELS = { O: '재고사용', X: '구매필요', '보류': '구매보류' };
+  // 구매요청번호가 등록되어(구매완료 계열) 이후로 넘어간 상태에서는 재고사용/구매필요/구매보류
+  // 3개 버튼을 모두 잠근다 — 서버(updateStockUsage_)도 같은 목록으로 한 번 더 검증한다.
+  const STOCK_USAGE_LOCKED_STATUSES = ['구매완료', '부분입고', '입고완료', '부분출고', '출고완료'];
 
   function canManageInbound() {
     return !!(state.user && (state.user.role === '자재담당자' || state.user.role === '관리자'));
@@ -2438,14 +2441,21 @@
     const editDateStr = r.status === '입고완료' ? r.lastInboundDate : r.lastOutboundDate;
     const isEditableToday = isEditableStatus && isTodayDateStr_(editDateStr);
 
-    // 재고사용/구매필요/구매보류는 서로 배타적인 토글이다: 이미 선택된 것은 비활성화(선택됨
-    // 표시)하고, 나머지는 활성 상태로 남겨 두어 언제든 다시 눌러 전환할 수 있게 한다.
-    // 구매보류 상태에서도 재고사용/구매필요 버튼은 그대로 활성화되어 있어, 실제 재고를
-    // 확인/입고받은 뒤 재고사용을 누르면 O로 전환되고 출고완료 버튼이 활성화된다.
+    // 재고사용/구매필요/구매보류 활성화 규칙:
+    //  - 구매완료 계열(STOCK_USAGE_LOCKED_STATUSES)로 넘어간 건은 이미 절차가 진행된 것으로 보고
+    //    3개 버튼 모두 잠근다.
+    //  - 재고확인중/구매대기(아직 확정 전)는 3개 버튼 모두 열어둔다 — 구매대기에서도 구매필요를
+    //    다시 눌러 값을 바꿀 수 있어야 하므로 이미 선택된 값이라고 잠그지 않는다.
+    //  - 재고사용/구매보류로 이미 전환된 건은 그 버튼 자신만 잠그고(선택됨 표시), 나머지 둘은
+    //    열어 두어 언제든 다시 전환할 수 있게 한다.
+    const stockActionsLocked = STOCK_USAGE_LOCKED_STATUSES.indexOf(r.status) !== -1;
+    const disableStockUsedBtn = stockActionsLocked || (r.status === '재고사용' && isStockUsed);
+    const disablePurchaseNeededBtn = stockActionsLocked;
+    const disableOnHoldBtn = stockActionsLocked || (r.status === '구매보류' && isOnHold);
     const managerActionsHtml = canManageInbound() ? `
-      <button type="button" class="btn btn-small btn-secondary inbound-stock-btn${isStockUsed ? ' is-selected' : ''}" data-row-index="${r.rowIndex}" data-value="O" ${(r.outboundDone || isStockUsed) ? 'disabled' : ''}>재고사용${isStockUsed ? ' ✓' : ''}</button>
-      <button type="button" class="btn btn-small btn-secondary inbound-stock-btn${isPurchaseNeeded ? ' is-selected' : ''}" data-row-index="${r.rowIndex}" data-value="X" ${(r.outboundDone || isPurchaseNeeded) ? 'disabled' : ''}>구매필요${isPurchaseNeeded ? ' ✓' : ''}</button>
-      <button type="button" class="btn btn-small btn-secondary inbound-stock-btn is-hold${isOnHold ? ' is-selected' : ''}" data-row-index="${r.rowIndex}" data-value="보류" ${(r.outboundDone || isOnHold) ? 'disabled' : ''}>구매보류${isOnHold ? ' ✓' : ''}</button>
+      <button type="button" class="btn btn-small btn-secondary inbound-stock-btn${isStockUsed ? ' is-selected' : ''}" data-row-index="${r.rowIndex}" data-value="O" ${disableStockUsedBtn ? 'disabled' : ''}>재고사용${isStockUsed ? ' ✓' : ''}</button>
+      <button type="button" class="btn btn-small btn-secondary inbound-stock-btn${isPurchaseNeeded ? ' is-selected' : ''}" data-row-index="${r.rowIndex}" data-value="X" ${disablePurchaseNeededBtn ? 'disabled' : ''}>구매필요${isPurchaseNeeded ? ' ✓' : ''}</button>
+      <button type="button" class="btn btn-small btn-secondary inbound-stock-btn is-hold${isOnHold ? ' is-selected' : ''}" data-row-index="${r.rowIndex}" data-value="보류" ${disableOnHoldBtn ? 'disabled' : ''}>구매보류${isOnHold ? ' ✓' : ''}</button>
       <button type="button" class="btn btn-small btn-secondary inbound-receive-btn" data-row-index="${r.rowIndex}" ${canReceive ? '' : 'disabled'}>입고</button>
       <button type="button" class="btn btn-small btn-primary inbound-outbound-btn" data-row-index="${r.rowIndex}" ${canShipOut ? '' : 'disabled'}>출고완료</button>
       ${isEditableStatus ? `<button type="button" class="btn btn-small btn-secondary inbound-edit-btn" data-row-index="${r.rowIndex}" ${isEditableToday ? '' : 'disabled'} title="${isEditableToday ? '' : '당일 건만 수정 가능합니다'}">수정</button>` : ''}

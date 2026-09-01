@@ -43,6 +43,7 @@
     inboundFilter: null,
     inboundLineOrderFilter: null,
     inboundPurchaseReqFilter: null,
+    inboundZoneFilter: null,
     inboundViewMode: 'summary',
     inboundLoadedSite: null,
     downloadRows: { purchase: [], outbound: [], transaction: [] },
@@ -2059,6 +2060,17 @@
     return !!(state.user && (state.user.role === '자재담당자' || state.user.role === '관리자'));
   }
 
+  // '최종입고일'/'최종출고일'(yyyy-MM-dd 문자열)이 오늘 날짜와 같은지 로컬 기준으로 확인한다.
+  // 입고완료/출고완료 건의 "수정" 버튼은 당일 건에서만 활성화한다(서버에서도 다시 검증).
+  function isTodayDateStr_(dateStr) {
+    if (!dateStr) return false;
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return String(dateStr).trim() === `${y}-${m}-${day}`;
+  }
+
   function bindInboundCheck() {
     $('#inbound-search-btn').addEventListener('click', loadInboundCheck);
     ['#inbound-search-input', '#inbound-date-start', '#inbound-date-end', '#inbound-material-input'].forEach((sel) => {
@@ -2073,6 +2085,7 @@
         state.inboundViewMode = mode;
         state.inboundLineOrderFilter = null;
         state.inboundPurchaseReqFilter = null;
+        state.inboundZoneFilter = null;
         updateInboundViewToggleUi();
         renderInboundView();
       });
@@ -2125,6 +2138,7 @@
     state.inboundFilter = null;
     state.inboundLineOrderFilter = null;
     state.inboundPurchaseReqFilter = null;
+    state.inboundZoneFilter = null;
     await fetchInboundRows();
   }
 
@@ -2152,6 +2166,7 @@
       state.inboundFilter = null;
       state.inboundLineOrderFilter = null;
       state.inboundPurchaseReqFilter = null;
+      state.inboundZoneFilter = null;
       state.inboundViewMode = 'summary';
       updateInboundViewToggleUi();
       $('#inbound-summary').classList.add('hidden');
@@ -2222,21 +2237,23 @@
         state.inboundFilter = state.inboundFilter === key ? null : key;
         state.inboundLineOrderFilter = null;
         state.inboundPurchaseReqFilter = null;
+        state.inboundZoneFilter = null;
         renderInboundSummary();
         renderInboundList();
       });
     });
   }
 
-  // 요약 표에서 라인구매번호/구매요청번호를 클릭했을 때 공통으로 쓴다: 상세 보기로 전환하고
-  // 그 번호에 속한 자재 행만 보여준다(입고/출고 처리 참고용). 상태 필터(재고확인중/구매완료 등)와
-  // 서로 다른 종류의 번호 필터는 동시에 적용하면 혼란스러우므로 모두 초기화한다.
+  // 요약 표에서 라인/라인구매번호/구매요청번호를 클릭했을 때 공통으로 쓴다: 상세 보기로 전환하고
+  // 그 값에 속한 자재 행만 보여준다(입고/출고 처리 참고용). 서로 다른 종류의 필터는 동시에
+  // 적용하면 혼란스러우므로 다른 필터와 상태 필터(재고확인중/구매완료 등)를 모두 초기화한다.
   function onInboundLineOrderClick(e) {
     const no = e.currentTarget.dataset.lineOrderNo;
     if (!no) return;
     state.inboundViewMode = 'detail';
     state.inboundLineOrderFilter = no;
     state.inboundPurchaseReqFilter = null;
+    state.inboundZoneFilter = null;
     state.inboundFilter = null;
     updateInboundViewToggleUi();
     renderInboundView();
@@ -2248,6 +2265,19 @@
     state.inboundViewMode = 'detail';
     state.inboundPurchaseReqFilter = no;
     state.inboundLineOrderFilter = null;
+    state.inboundZoneFilter = null;
+    state.inboundFilter = null;
+    updateInboundViewToggleUi();
+    renderInboundView();
+  }
+
+  function onInboundZoneClick(e) {
+    const zone = e.currentTarget.dataset.zone;
+    if (!zone) return;
+    state.inboundViewMode = 'detail';
+    state.inboundZoneFilter = zone;
+    state.inboundLineOrderFilter = null;
+    state.inboundPurchaseReqFilter = null;
     state.inboundFilter = null;
     updateInboundViewToggleUi();
     renderInboundView();
@@ -2266,6 +2296,10 @@
       rows = rows.filter((r) => r.purchaseReqNo === state.inboundPurchaseReqFilter);
       filterLabel = '구매요청번호';
       filterValue = state.inboundPurchaseReqFilter;
+    } else if (state.inboundZoneFilter) {
+      rows = rows.filter((r) => r.zone === state.inboundZoneFilter);
+      filterLabel = '라인';
+      filterValue = state.inboundZoneFilter;
     } else if (state.inboundFilter) {
       rows = rows.filter((r) => r.category === state.inboundFilter);
     }
@@ -2296,12 +2330,13 @@
     if (btn) btn.addEventListener('click', () => {
       state.inboundLineOrderFilter = null;
       state.inboundPurchaseReqFilter = null;
+      state.inboundZoneFilter = null;
       renderInboundList();
     });
   }
 
-  // 요약 보기: 자재 1건 = 1행, 가로 스크롤 가능한 표. 라인구매번호/구매요청번호를 클릭하면
-  // 상세 보기로 전환되어 그 건의 자재만 보여준다(onInboundLineOrderClick/onInboundPurchaseReqClick).
+  // 요약 보기: 자재 1건 = 1행, 가로 스크롤 가능한 표. 라인/라인구매번호/구매요청번호를 클릭하면
+  // 상세 보기로 전환되어 그 값에 속한 자재만 보여준다(onInboundZoneClick/onInboundLineOrderClick/onInboundPurchaseReqClick).
   function renderInboundSummaryTable() {
     const wrap = $('#inbound-summary-table');
     const rows = state.inboundSummaryRows || [];
@@ -2315,9 +2350,9 @@
         <table class="inbound-summary-table-el">
           <thead>
             <tr>
+              <th>라인</th>
               <th>라인구매번호</th>
               <th>구매요청번호</th>
-              <th>라인</th>
               <th>자재코드</th>
               <th>품명</th>
               <th>규격</th>
@@ -2329,13 +2364,15 @@
           <tbody>
             ${rows.map((r, i) => `
               <tr class="${i % 2 === 0 ? 'row-even' : 'row-odd'}">
+                <td>${r.zone
+                  ? `<button type="button" class="inbound-line-link" data-zone="${escapeHtml(r.zone)}">${escapeHtml(r.zone)}</button>`
+                  : '-'}</td>
                 <td>${r.lineOrderNo
                   ? `<button type="button" class="inbound-line-link" data-line-order-no="${escapeHtml(r.lineOrderNo)}">${escapeHtml(r.lineOrderNo)}</button>`
                   : '-'}</td>
                 <td>${r.purchaseReqNo
                   ? `<button type="button" class="inbound-line-link" data-purchase-req-no="${escapeHtml(r.purchaseReqNo)}">${escapeHtml(r.purchaseReqNo)}</button>`
                   : '-'}</td>
-                <td>${escapeHtml(r.zone)}</td>
                 <td>${escapeHtml(r.itemId)}</td>
                 <td>${escapeHtml(r.itemName)}</td>
                 <td>${escapeHtml(r.spec)}</td>
@@ -2349,6 +2386,7 @@
       </div>
     `;
 
+    $$('.inbound-line-link[data-zone]', wrap).forEach((btn) => btn.addEventListener('click', onInboundZoneClick));
     $$('.inbound-line-link[data-line-order-no]', wrap).forEach((btn) => btn.addEventListener('click', onInboundLineOrderClick));
     $$('.inbound-line-link[data-purchase-req-no]', wrap).forEach((btn) => btn.addEventListener('click', onInboundPurchaseReqClick));
   }
@@ -2360,6 +2398,7 @@
     $$('.inbound-receive-btn', container).forEach((btn) => btn.addEventListener('click', onInboundReceiveClick));
     $$('.inbound-outbound-btn', container).forEach((btn) => btn.addEventListener('click', onInboundOutboundClick));
     $$('.inbound-cancel-btn', container).forEach((btn) => btn.addEventListener('click', onInboundCancelClick));
+    $$('.inbound-edit-btn', container).forEach((btn) => btn.addEventListener('click', onInboundEditClick));
   }
 
   function statusBadgeClass(status) {
@@ -2393,6 +2432,12 @@
     const isInboundDone = r.requestedQty > 0 && r.cumulativeQty >= r.requestedQty;
     const canShipOut = !r.outboundDone && (stockUseUpper === 'O' || isInboundDone);
 
+    // "수정" 버튼: 입고완료/출고완료 건에만 표시하고, 그 건이 확정된 당일(최종입고일/최종출고일)에만
+    // 활성화한다. 입고완료 건은 입고수량을, 출고완료 건은 출고수량을 고친다(onInboundEditClick).
+    const isEditableStatus = r.status === '입고완료' || r.status === '출고완료';
+    const editDateStr = r.status === '입고완료' ? r.lastInboundDate : r.lastOutboundDate;
+    const isEditableToday = isEditableStatus && isTodayDateStr_(editDateStr);
+
     // 재고사용/구매필요/구매보류는 서로 배타적인 토글이다: 이미 선택된 것은 비활성화(선택됨
     // 표시)하고, 나머지는 활성 상태로 남겨 두어 언제든 다시 눌러 전환할 수 있게 한다.
     // 구매보류 상태에서도 재고사용/구매필요 버튼은 그대로 활성화되어 있어, 실제 재고를
@@ -2403,6 +2448,8 @@
       <button type="button" class="btn btn-small btn-secondary inbound-stock-btn is-hold${isOnHold ? ' is-selected' : ''}" data-row-index="${r.rowIndex}" data-value="보류" ${(r.outboundDone || isOnHold) ? 'disabled' : ''}>구매보류${isOnHold ? ' ✓' : ''}</button>
       <button type="button" class="btn btn-small btn-secondary inbound-receive-btn" data-row-index="${r.rowIndex}" ${canReceive ? '' : 'disabled'}>입고</button>
       <button type="button" class="btn btn-small btn-primary inbound-outbound-btn" data-row-index="${r.rowIndex}" ${canShipOut ? '' : 'disabled'}>출고완료</button>
+      ${isEditableStatus ? `<button type="button" class="btn btn-small btn-secondary inbound-edit-btn" data-row-index="${r.rowIndex}" ${isEditableToday ? '' : 'disabled'} title="${isEditableToday ? '' : '당일 건만 수정 가능합니다'}">수정</button>` : ''}
+      ${(isEditableStatus && !isEditableToday) ? `<span class="inbound-edit-hint muted">당일 건만 수정 가능합니다</span>` : ''}
     ` : '';
 
     const cancelHtml = canCancelInbound(r)
@@ -2508,7 +2555,9 @@
       ? updatedRow.lineOrderNo === state.inboundLineOrderFilter
       : (state.inboundPurchaseReqFilter
         ? updatedRow.purchaseReqNo === state.inboundPurchaseReqFilter
-        : (!state.inboundFilter || updatedRow.category === state.inboundFilter));
+        : (state.inboundZoneFilter
+          ? updatedRow.zone === state.inboundZoneFilter
+          : (!state.inboundFilter || updatedRow.category === state.inboundFilter)));
     if (!stillVisible) {
       cardEl.remove();
       if (!listEl.querySelector('.inbound-card')) renderInboundList();
@@ -2636,6 +2685,73 @@
         await fetchInboundRows();
       } catch (err) {
         toast(err.message || '출고완료 처리 중 오류가 발생했습니다.', 'error');
+      }
+    });
+  }
+
+  function onInboundEditClick(e) {
+    const rowIndex = Number(e.currentTarget.dataset.rowIndex);
+    const row = state.inboundRows.find((r) => r.rowIndex === rowIndex);
+    if (row) openInboundEditModal(row);
+  }
+
+  // "수정" 버튼: 입고완료 건은 입고수량(누적입고수량), 출고완료 건은 출고수량(누적출고수량)을
+  // 새 값으로 통째로 고친다(기존 값에 더하는 것이 아님). 요청수량을 넘지 않도록 자르고,
+  // 서버에서 입고여부/출고여부를 새 값 기준으로 다시 판정하고 재고 시트 현재고도 재계산한다.
+  function openInboundEditModal(row) {
+    const isInboundEdit = row.status === '입고완료';
+    const requested = Math.max(0, Number(row.requestedQty) || 0);
+    const currentQty = isInboundEdit ? Number(row.cumulativeQty) || 0 : Number(row.shippedQty) || 0;
+    const label = isInboundEdit ? '입고 수량' : '출고 수량';
+    const html = `
+      <div class="modal-sheet">
+        <h3>${isInboundEdit ? '입고수량 수정' : '출고수량 수정'}</h3>
+        <p class="muted">${escapeHtml(row.itemName)} (${escapeHtml(row.itemId)})</p>
+        <p class="muted">요청수량 ${requested.toLocaleString()}</p>
+        <label class="field-label">${label}</label>
+        <input type="number" id="inbound-edit-qty" class="input" min="0" max="${requested}" step="1" inputmode="numeric" value="${currentQty}" />
+        <div class="modal-actions">
+          <button class="btn btn-secondary" id="inbound-edit-cancel">취소</button>
+          <button class="btn btn-primary" id="inbound-edit-confirm">확인</button>
+        </div>
+      </div>
+    `;
+    openModal(html);
+    const qtyInput = $('#inbound-edit-qty');
+    const confirmBtn = $('#inbound-edit-confirm');
+    let submitting = false;
+    $('#inbound-edit-cancel').addEventListener('click', closeModal);
+    qtyInput.addEventListener('input', () => {
+      const val = Number(qtyInput.value);
+      if (val > requested) {
+        qtyInput.value = requested;
+        toast(`최대 ${requested.toLocaleString()}개까지 입력 가능합니다.`, 'error');
+      }
+    });
+    confirmBtn.addEventListener('click', async () => {
+      if (submitting) return;
+      let qty = Number(qtyInput.value);
+      if (qtyInput.value === '' || isNaN(qty) || qty < 0) {
+        toast('올바른 수량을 입력하세요.', 'error');
+        return;
+      }
+      if (qty > requested) {
+        qty = requested;
+        qtyInput.value = requested;
+        toast(`최대 ${requested.toLocaleString()}개까지 입력 가능합니다.`, 'error');
+      }
+      submitting = true;
+      confirmBtn.disabled = true;
+      try {
+        await Api.post('editInboundQty', { site: state.site, rowIndex: row.rowIndex, quantity: qty, pin: state.user.pin });
+        toast('수정되었습니다.', 'success');
+        closeModal();
+        await fetchInboundRows();
+      } catch (err) {
+        toast(err.message || '수정 중 오류가 발생했습니다.', 'error');
+      } finally {
+        submitting = false;
+        confirmBtn.disabled = false;
       }
     });
   }

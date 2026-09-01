@@ -652,8 +652,9 @@ html, body {
 .inbound-card-qty { display: flex; justify-content: space-between; gap: 4px; padding-top: 10px; border-top: 1px solid var(--border); }
 .iq-item { display: flex; flex-direction: column; align-items: center; gap: 2px; flex: 1; min-width: 0; }
 
-.inbound-card-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+.inbound-card-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 10px; }
 .inbound-card-actions .btn { flex: 0 0 auto; }
+.inbound-edit-hint { font-size: 12px; }
 .inbound-cancel-btn.is-blocked { background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); }
 .inbound-stock-btn.is-selected { border-color: var(--accent); color: var(--accent); background: var(--surface); font-weight: 700; opacity: 1; }
 .inbound-stock-btn.is-hold.is-selected { border-color: var(--brown); color: var(--brown); }

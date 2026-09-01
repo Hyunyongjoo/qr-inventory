@@ -144,6 +144,9 @@ function doPost(e) {
       case 'outboundComplete':
         result = outboundComplete_(body);
         break;
+      case 'editInboundQty':
+        result = editInboundQty_(body);
+        break;
       default:
         throw new Error('알 수 없는 action: ' + action);
     }
@@ -837,7 +840,9 @@ function poRowToInboundView_(site, po, stockMap, pendingMap) {
     note1: po['특이사항1'] || '',
     note2: po['특이사항2'] || '',
     lineOrderNo: po['라인구매번호'] || '',
-    purchaseReqNo: po['구매요청번호'] || ''
+    purchaseReqNo: po['구매요청번호'] || '',
+    lastInboundDate: po['최종입고일'] || '',
+    lastOutboundDate: po['최종출고일'] || ''
   };
 }
 
@@ -1408,6 +1413,67 @@ function outboundComplete_(body) {
     updatedView.shippedNow = actualQty;
     updatedView.requestedNow = qty;
     return updatedView;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// 입고확인 화면의 "수정" 버튼: 입고완료/출고완료로 이미 확정된 건의 수량을 당일에 한해 고친다.
+// 대상 컬럼은 현재 상태(computeInboundStatus_)로 판단한다 — 입고완료면 누적입고수량, 출고완료면
+// 누적출고수량. 두 상태는 서로 배타적으로만 표시되므로(출고완료가 입고완료보다 우선 판정됨)
+// 카드에 뜬 상태와 항상 일치한다. 입력값은 요청수량을 넘지 않게 자르고(잔여수량이 마이너스가
+// 되지 않도록), 저장 후 입고여부/출고여부를 새 수량 기준으로 다시 계산한다. 재고 시트 현재고
+// 반영 방식은 입고/출고가 서로 다르다(각 분기 주석 참고).
+function editInboundQty_(body) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const site = assertSite_(body.site);
+    assertManagerRole_(body.pin);
+    const row = findPoRowByIndex_(site, body.rowIndex);
+    const info = computeInboundStatus_(row);
+    const today = Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd');
+    const requested = Number(row['요청수량']) || 0;
+
+    let qty = Number(body.quantity);
+    if (body.quantity === '' || body.quantity == null || isNaN(qty) || qty < 0) {
+      throw new Error('올바른 수량을 입력하세요.');
+    }
+    if (qty > requested) qty = requested;
+    const item = assertItemExists_(row['자재코드']);
+
+    if (info.status === '입고완료') {
+      const lastDate = String(row['최종입고일'] || '').trim();
+      if (lastDate !== today) throw new Error('당일 건만 수정 가능합니다.');
+      const remaining = Math.max(0, requested - qty);
+      const status = qty <= 0 ? '미입고' : (qty < requested ? '부분입고' : '입고완료');
+      updateRow_(sheet_(poInSheetName_(site)), row._row, {
+        '누적입고수량': qty,
+        '잔여수량': remaining,
+        '입고여부': status
+      });
+      // 현재고 = 월초재고 + 모든 발주 행의 누적입고수량 합계이므로(calculateCurrentStock_),
+      // 이 행의 누적입고수량만 고치면 전체 재계산으로 정확히 반영된다.
+      recalculateStock_(site, row['자재코드'], item);
+    } else if (info.status === '출고완료') {
+      const lastDate = String(row['최종출고일'] || '').trim();
+      if (lastDate !== today) throw new Error('당일 건만 수정 가능합니다.');
+      const outboundStatus = qty <= 0 ? '' : (qty < requested ? '부분출고' : '출고완료');
+      const shippedBefore = Number(row['누적출고수량']) || 0;
+      updateRow_(sheet_(poInSheetName_(site)), row._row, {
+        '누적출고수량': qty,
+        '출고여부': outboundStatus
+      });
+      // 출고 현재고는 (출고완료 처리 때와 마찬가지로) 출고 이력 전체를 다시 합산하지 않고 직접
+      // 증감한다 — 출고 이력은 별도 출고 시트에 개별 거래로 남아 있어 이 행 하나의 수정으로
+      // 되돌릴 수 없으므로, 수정 전후 수량 차이(delta)만큼만 현재고에서 추가로 빼거나 되돌린다.
+      const delta = qty - shippedBefore;
+      decrementStockQuantity_(site, row['자재코드'], delta, item);
+    } else {
+      throw new Error('입고완료 또는 출고완료 상태에서만 수정할 수 있습니다.');
+    }
+
+    return poRowToInboundView_(site, findPoRowByIndex_(site, body.rowIndex));
   } finally {
     lock.releaseLock();
   }

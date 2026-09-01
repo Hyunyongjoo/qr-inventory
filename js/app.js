@@ -2461,31 +2461,41 @@
     const disableStockUsedBtn = stockActionsLocked || (r.status === '재고사용' && isStockUsed);
     const disablePurchaseNeededBtn = stockActionsLocked;
     const disableOnHoldBtn = stockActionsLocked || (r.status === '구매보류' && isOnHold);
-    const managerActionsHtml = canManageInbound() ? `
+    // 1행: 재고사용/구매필요/구매보류 (3버튼, 동일 너비). 2행: 수량변경/입고/출고/취소 (최대 4버튼,
+    // 동일 너비) — 수량변경·수정·취소는 상태별로 서로 배타적으로만 나타나므로(재고확인중/구매대기의
+    // 수량변경+취소 조합 제외) 실제로 2행에 동시에 보이는 버튼은 항상 4개를 넘지 않는다.
+    const stockButtonsHtml = canManageInbound() ? `
       <button type="button" class="btn btn-small btn-secondary inbound-stock-btn${isStockUsed ? ' is-selected' : ''}" data-row-index="${r.rowIndex}" data-value="O" ${disableStockUsedBtn ? 'disabled' : ''}>재고사용${isStockUsed ? ' ✓' : ''}</button>
       <button type="button" class="btn btn-small btn-secondary inbound-stock-btn${isPurchaseNeeded ? ' is-selected' : ''}" data-row-index="${r.rowIndex}" data-value="X" ${disablePurchaseNeededBtn ? 'disabled' : ''}>구매필요${isPurchaseNeeded ? ' ✓' : ''}</button>
       <button type="button" class="btn btn-small btn-secondary inbound-stock-btn is-hold${isOnHold ? ' is-selected' : ''}" data-row-index="${r.rowIndex}" data-value="보류" ${disableOnHoldBtn ? 'disabled' : ''}>구매보류${isOnHold ? ' ✓' : ''}</button>
+    ` : '';
+
+    const qtyEditHtml = canEditRequestedQty(r)
+      ? `<button type="button" class="btn btn-small btn-secondary inbound-qty-edit-btn" data-row-index="${r.rowIndex}">수량변경</button>`
+      : '';
+
+    const receiveShipEditHtml = canManageInbound() ? `
       <button type="button" class="btn btn-small btn-secondary inbound-receive-btn" data-row-index="${r.rowIndex}" ${canReceive ? '' : 'disabled'}>입고</button>
-      <button type="button" class="btn btn-small btn-primary inbound-outbound-btn" data-row-index="${r.rowIndex}" ${canShipOut ? '' : 'disabled'}>출고완료</button>
+      <button type="button" class="btn btn-small btn-primary inbound-outbound-btn" data-row-index="${r.rowIndex}" ${canShipOut ? '' : 'disabled'}>출고</button>
       ${isEditableStatus ? `<button type="button" class="btn btn-small btn-secondary inbound-edit-btn" data-row-index="${r.rowIndex}" ${isEditableToday ? '' : 'disabled'} title="${isEditableToday ? '' : '당일 건만 수정 가능합니다'}">수정</button>` : ''}
-      ${(isEditableStatus && !isEditableToday) ? `<span class="inbound-edit-hint muted">당일 건만 수정 가능합니다</span>` : ''}
     ` : '';
 
     const cancelHtml = canCancelInbound(r)
       ? `<button type="button" class="btn btn-small inbound-cancel-btn btn-danger" data-row-index="${r.rowIndex}">취소</button>`
       : '';
 
-    const qtyEditHtml = canEditRequestedQty(r)
-      ? `<button type="button" class="btn btn-small btn-secondary inbound-qty-edit-btn" data-row-index="${r.rowIndex}">수량 변경</button>`
+    const editHintHtml = (isEditableStatus && !isEditableToday)
+      ? `<div class="inbound-edit-hint muted">당일 건만 수정 가능합니다</div>`
       : '';
 
-    const actionsHtml = (managerActionsHtml || cancelHtml || qtyEditHtml) ? `
-      <div class="inbound-card-actions">
-        ${managerActionsHtml}
-        ${qtyEditHtml}
-        ${cancelHtml}
-      </div>
-    ` : '';
+    const row1Html = stockButtonsHtml
+      ? `<div class="inbound-card-actions inbound-card-actions-row1">${stockButtonsHtml}</div>`
+      : '';
+    const row2Html = (qtyEditHtml || receiveShipEditHtml || cancelHtml)
+      ? `<div class="inbound-card-actions inbound-card-actions-row2">${qtyEditHtml}${receiveShipEditHtml}${cancelHtml}</div>`
+      : '';
+
+    const actionsHtml = (row1Html || row2Html) ? `${row1Html}${row2Html}${editHintHtml}` : '';
 
     return `
       <div class="card inbound-card" data-row-index="${r.rowIndex}">

@@ -652,9 +652,13 @@ html, body {
 .inbound-card-qty { display: flex; justify-content: space-between; gap: 4px; padding-top: 10px; border-top: 1px solid var(--border); }
 .iq-item { display: flex; flex-direction: column; align-items: center; gap: 2px; flex: 1; min-width: 0; }
 
-.inbound-card-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 10px; }
-.inbound-card-actions .btn { flex: 0 0 auto; }
-.inbound-edit-hint { font-size: 12px; }
+/* 1행(재고사용/구매필요/구매보류)과 2행(수량변경/입고/출고/취소·수정)은 각각 그 행 안에서만
+   버튼 너비를 동일하게 맞춘다(행마다 컬럼 수가 다르므로 행 간 절대 너비까지는 맞추지 않음). */
+.inbound-card-actions { display: grid; gap: 8px; margin-top: 10px; }
+.inbound-card-actions-row1 { grid-template-columns: repeat(3, 1fr); }
+.inbound-card-actions-row2 { grid-template-columns: repeat(4, 1fr); }
+.inbound-card-actions .btn { width: 100%; padding-left: 4px; padding-right: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center; }
+.inbound-edit-hint { font-size: 12px; margin-top: 8px; text-align: right; }
 .inbound-cancel-btn.is-blocked { background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); }
 .inbound-stock-btn.is-selected { border-color: var(--accent); color: var(--accent); background: var(--surface); font-weight: 700; opacity: 1; }
 .inbound-stock-btn.is-hold.is-selected { border-color: var(--brown); color: var(--brown); }

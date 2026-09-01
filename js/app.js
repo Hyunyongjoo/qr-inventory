@@ -2402,6 +2402,7 @@
     $$('.inbound-outbound-btn', container).forEach((btn) => btn.addEventListener('click', onInboundOutboundClick));
     $$('.inbound-cancel-btn', container).forEach((btn) => btn.addEventListener('click', onInboundCancelClick));
     $$('.inbound-edit-btn', container).forEach((btn) => btn.addEventListener('click', onInboundEditClick));
+    $$('.inbound-qty-edit-btn', container).forEach((btn) => btn.addEventListener('click', onInboundQtyEditClick));
   }
 
   function statusBadgeClass(status) {
@@ -2418,6 +2419,14 @@
     }
     const isOwner = !!(state.user && r.requester && String(state.user.name).trim() === String(r.requester).trim());
     return isOwner && r.status === '재고확인중';
+  }
+
+  // "수량 변경" 버튼: 아직 구매요청번호가 등록되지 않은(재고확인중/구매대기) 요청에만 표시하고,
+  // 신청자 본인 또는 자재담당자/관리자에게만 보여준다.
+  function canEditRequestedQty(r) {
+    if (r.status !== '재고확인중' && r.status !== '구매대기') return false;
+    const isOwner = !!(state.user && r.requester && String(state.user.name).trim() === String(r.requester).trim());
+    return isOwner || canManageInbound();
   }
 
   function renderInboundCard(r) {
@@ -2466,9 +2475,14 @@
       ? `<button type="button" class="btn btn-small inbound-cancel-btn btn-danger" data-row-index="${r.rowIndex}">취소</button>`
       : '';
 
-    const actionsHtml = (managerActionsHtml || cancelHtml) ? `
+    const qtyEditHtml = canEditRequestedQty(r)
+      ? `<button type="button" class="btn btn-small btn-secondary inbound-qty-edit-btn" data-row-index="${r.rowIndex}">수량 변경</button>`
+      : '';
+
+    const actionsHtml = (managerActionsHtml || cancelHtml || qtyEditHtml) ? `
       <div class="inbound-card-actions">
         ${managerActionsHtml}
+        ${qtyEditHtml}
         ${cancelHtml}
       </div>
     ` : '';
@@ -2766,8 +2780,9 @@
     });
   }
 
-  // 낙관적 업데이트: 클릭 즉시 취소 상태로 화면을 갱신하고 백그라운드에서 Sheet에 반영한다.
-  // 실패하면 클릭 전 원래 행 데이터로 되돌리고 오류 메시지를 띄운다.
+  // 취소된 요청은 checkInbound_ 조회 결과에서 아예 빠지므로(요약/상세 공통), 화면에서도 "취소"
+  // 배지로 바꿔 보여주는 대신 목록에서 즉시 제거한다(낙관적 업데이트). 실패하면 서버에서 다시
+  // 불러와 실제 상태로 되돌린다.
   async function onInboundCancelClick(e) {
     const rowIndex = Number(e.currentTarget.dataset.rowIndex);
     if (!confirm('구매 요청을 취소하시겠습니까?')) return;
@@ -2775,16 +2790,78 @@
     const original = state.inboundRows.find((r) => r.rowIndex === rowIndex);
     if (!original) return;
 
-    updateInboundRowInPlace(Object.assign({}, original, { stockUse: '취소', status: '취소', category: '취소' }));
+    removeInboundRowFromView_(rowIndex);
 
     try {
-      const updatedRow = await Api.post('cancelPurchase', { site: state.site, rowIndex, pin: state.user.pin });
+      await Api.post('cancelPurchase', { site: state.site, rowIndex, pin: state.user.pin });
       toast('구매 요청이 취소되었습니다.', 'success');
-      updateInboundRowInPlace(updatedRow);
     } catch (err) {
-      updateInboundRowInPlace(original);
       toast(err.message || '취소 처리 중 오류가 발생했습니다.', 'error');
+      await fetchInboundRows();
     }
+  }
+
+  // 목록/요약에서 한 건을 rowIndex로 찾아 제거하고 다시 그린다. 취소된 요청처럼 조회 결과에서
+  // 아예 빠져야 하는 건에 쓴다(카드를 다른 상태로 바꿔 보여주는 updateInboundRowInPlace와 다름).
+  function removeInboundRowFromView_(rowIndex) {
+    state.inboundRows = state.inboundRows.filter((r) => r.rowIndex !== rowIndex);
+    state.inboundSummaryRows = state.inboundSummaryRows.filter((r) => r.rowIndex !== rowIndex);
+    renderInboundSummary();
+    if (state.inboundViewMode === 'summary') {
+      renderInboundSummaryTable();
+    } else {
+      renderInboundList();
+    }
+  }
+
+  function onInboundQtyEditClick(e) {
+    const rowIndex = Number(e.currentTarget.dataset.rowIndex);
+    const row = state.inboundRows.find((r) => r.rowIndex === rowIndex);
+    if (row) openInboundQtyEditModal(row);
+  }
+
+  // "수량 변경" 버튼: 요청수량 값 자체를 고친다(재고확인중/구매대기 건에서만 표시됨).
+  // 확인 시 서버에 반영하고, 취소를 누르면 아무것도 바뀌지 않는다.
+  function openInboundQtyEditModal(row) {
+    const currentQty = Number(row.requestedQty) || 0;
+    const html = `
+      <div class="modal-sheet">
+        <h3>수량 변경</h3>
+        <p class="muted">${escapeHtml(row.itemName)} (${escapeHtml(row.itemId)})</p>
+        <label class="field-label">요청수량</label>
+        <input type="number" id="inbound-qty-edit-input" class="input" min="1" step="1" inputmode="numeric" value="${currentQty}" />
+        <div class="modal-actions">
+          <button class="btn btn-secondary" id="inbound-qty-edit-cancel">취소</button>
+          <button class="btn btn-primary" id="inbound-qty-edit-confirm">확인</button>
+        </div>
+      </div>
+    `;
+    openModal(html);
+    const qtyInput = $('#inbound-qty-edit-input');
+    const confirmBtn = $('#inbound-qty-edit-confirm');
+    let submitting = false;
+    $('#inbound-qty-edit-cancel').addEventListener('click', closeModal);
+    confirmBtn.addEventListener('click', async () => {
+      if (submitting) return;
+      const qty = Number(qtyInput.value);
+      if (!qty || qty <= 0) {
+        toast('올바른 수량을 입력하세요.', 'error');
+        return;
+      }
+      submitting = true;
+      confirmBtn.disabled = true;
+      try {
+        await Api.post('updateRequestedQty', { site: state.site, rowIndex: row.rowIndex, quantity: qty, pin: state.user.pin });
+        toast('요청수량이 변경되었습니다.', 'success');
+        closeModal();
+        await fetchInboundRows();
+      } catch (err) {
+        toast(err.message || '수량 변경 중 오류가 발생했습니다.', 'error');
+      } finally {
+        submitting = false;
+        confirmBtn.disabled = false;
+      }
+    });
   }
 
   // ------------------------- 이력 -------------------------

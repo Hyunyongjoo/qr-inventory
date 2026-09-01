@@ -136,6 +136,9 @@ function doPost(e) {
       case 'cancelPurchase':
         result = cancelPurchase_(body);
         break;
+      case 'updateRequestedQty':
+        result = updateRequestedQty_(body);
+        break;
       case 'stockOutByOrder':
         result = stockOutByOrder_(body);
         break;
@@ -657,9 +660,11 @@ function toDateOnly_(value) {
 //         많아, 한글 검색어는 사용자재 시트의 한글 별칭 목록을 거쳐야 매칭되기 때문)
 //    대소문자 구분 없음.
 //  - 모두 없음: 필터 없이 전체 데이터 중 최근 요청 100건
+// 재고사용(O,X)이 '취소'인 행은 시트 데이터는 그대로 두고 이 조회 결과(요약/상세 모두, 따라서
+// 화면 상단 건수 표시도)에서만 제외한다.
 // 반환값은 { summary, detail } 객체다. detail은 관리 버튼(재고사용/입고/출고완료/취소)이
 // 필요로 하는 필드를 모두 담은 기존 행 목록이고, summary는 입고확인 화면 "요약 보기"
-// 표에 필요한 9개 필드(라인구매번호/구매요청번호/라인/자재코드/품명/규격/요청수량/특이사항1/2)만
+// 표에 필요한 필드(rowIndex + 라인구매번호/구매요청번호/라인/자재코드/품명/규격/요청수량/특이사항1/2)만
 // 추려 자재 1건 = 1행으로 만든 가벼운 목록이다 — 둘 다 같은 조회 결과에서 파생되므로
 // 행 순서/건수는 항상 같다.
 function checkInbound_(site, name, startDate, endDate, zone, materialQuery) {
@@ -672,7 +677,9 @@ function checkInbound_(site, name, startDate, endDate, zone, materialQuery) {
   const hasFilter = !!(q || zoneQ || start || end || materialQ);
 
   const allRows = readAll_(sheet_(poInSheetName_(site)));
-  let rows = allRows;
+  // 취소된 요청(재고사용(O,X)=취소)은 시트 데이터는 그대로 두고, 이 화면의 조회 결과(요약/상세
+  // 모두)에서만 제외한다 — pendingMap 등 다른 계산에 쓰이는 allRows는 건드리지 않는다.
+  let rows = allRows.filter(r => !isCancelledRow_(r));
   if (q) rows = rows.filter(r => String(r['신청자'] || '').includes(q));
   if (zoneQ) rows = rows.filter(r => String(r['라인'] || '').trim() === zoneQ);
   if (start || end) {
@@ -704,6 +711,7 @@ function checkInbound_(site, name, startDate, endDate, zone, materialQuery) {
   const pendingMap = buildPendingInboundMap_(allRows);
   const detail = rows.sort(poSortComparator_).map(r => poRowToInboundView_(site, r, stockMap, pendingMap));
   const summary = detail.map(r => ({
+    rowIndex: r.rowIndex,
     lineOrderNo: r.lineOrderNo,
     purchaseReqNo: r.purchaseReqNo,
     zone: r.zone,
@@ -1269,6 +1277,38 @@ function cancelPurchase_(body) {
     }
 
     updateRow_(sheet_(poInSheetName_(site)), row._row, { '재고사용(O,X)': '취소' });
+    return poRowToInboundView_(site, findPoRowByIndex_(site, body.rowIndex));
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// 입고확인 화면의 "수량 변경" 버튼: 구매요청번호가 아직 등록되지 않아 실제 구매/입고가
+// 시작되지 않은(재고확인중/구매대기) 요청에 한해 요청수량 자체를 고친다. 신청자 본인 또는
+// 자재담당자/관리자만 바꿀 수 있다(cancelPurchase_와 동일한 권한 패턴).
+function updateRequestedQty_(body) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const site = assertSite_(body.site);
+    const row = findPoRowByIndex_(site, body.rowIndex);
+    const user = handleLogin_(body.pin);
+
+    const isOwner = String(row['신청자'] || '').trim() === String(user.name || '').trim();
+    const isManager = MANAGER_ROLES.indexOf(user.role) !== -1;
+    if (!isOwner && !isManager) {
+      throw new Error('수량 변경 권한이 없습니다. 신청자 본인 또는 자재담당자/관리자만 변경할 수 있습니다.');
+    }
+
+    const info = computeInboundStatus_(row);
+    if (info.status !== '재고확인중' && info.status !== '구매대기') {
+      throw new Error('재고확인중 또는 구매대기 상태에서만 수량을 변경할 수 있습니다.');
+    }
+
+    const qty = Number(body.quantity);
+    if (!qty || qty <= 0) throw new Error('올바른 수량을 입력하세요.');
+
+    updateRow_(sheet_(poInSheetName_(site)), row._row, { '요청수량': qty });
     return poRowToInboundView_(site, findPoRowByIndex_(site, body.rowIndex));
   } finally {
     lock.releaseLock();

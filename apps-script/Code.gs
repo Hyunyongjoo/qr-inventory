@@ -437,11 +437,12 @@ function listStock_(site, query) {
 
   let rows = stockRows
     .filter(s => Number(s['현재고']) !== 0)
+    .filter(s => !!itemMap[String(s['자재코드'])]) // Items 시트에 없는(삭제된) 자재는 목록에서 제외. 재고 시트 데이터 자체는 건드리지 않음.
     .map(s => {
-      const item = itemMap[String(s['자재코드'])] || {};
+      const item = itemMap[String(s['자재코드'])];
       return {
         ItemID: s['자재코드'],
-        ItemName: item.ItemName || '(삭제된 자재)',
+        ItemName: item.ItemName || '',
         Spec: item.Spec || '',
         Unit: item.Unit || '',
         Quantity: Number(s['현재고']) || 0,

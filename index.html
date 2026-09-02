@@ -365,13 +365,15 @@
 
     <!-- 이력 -->
     <section id="view-history" class="view hidden">
-      <div class="view-header"><h2>입출고 이력</h2></div>
-      <div class="history-filters">
-        <select id="history-type-filter" class="select">
-          <option value="">전체 유형</option>
-          <option value="IN">입고</option>
-          <option value="OUT">출고</option>
-        </select>
+      <div id="history-search-sticky" class="search-sticky">
+        <div class="view-header"><h2>입출고 이력</h2></div>
+        <div class="history-filters">
+          <select id="history-type-filter" class="select">
+            <option value="">전체 유형</option>
+            <option value="IN">입고</option>
+            <option value="OUT">출고</option>
+          </select>
+        </div>
       </div>
       <div id="history-list" class="list"></div>
     </section>

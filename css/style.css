@@ -238,10 +238,10 @@ html, body {
 }
 .photo-modal-img { max-width: 100%; max-height: 60vh; border-radius: var(--radius); }
 
-/* 구매요청 화면: 검색 결과를 스크롤해도 검색창(+전체선택 체크박스)은 상단에 고정된다.
-   #view-container의 좌우 padding(16px)만큼 음수 마진을 줘 화면 끝까지 배경을 채우고,
+/* 구매요청/재고 현황/자재 목록 화면 공용: 검색 결과를 스크롤해도 검색창(+제목/전체선택 체크박스 등)은
+   상단에 고정된다. #view-container의 좌우 padding(16px)만큼 음수 마진을 줘 화면 끝까지 배경을 채우고,
    같은 값을 padding으로 되돌려 자식 요소의 가로 위치는 그대로 유지한다. */
-.purchase-search-sticky {
+.search-sticky {
   position: sticky;
   top: 0;
   z-index: 15;
@@ -249,7 +249,7 @@ html, body {
   margin: 0 -16px;
   padding: 0 16px 4px;
 }
-.purchase-search-sticky .input { margin-bottom: 8px; }
+.search-sticky .input { margin-bottom: 8px; }
 
 .select-all-row {
   display: flex;

@@ -144,10 +144,12 @@
 
     <!-- 홈 / 재고 현황 -->
     <section id="view-home" class="view hidden">
-      <div class="view-header">
-        <h2>재고 현황</h2>
+      <div id="home-search-sticky" class="search-sticky">
+        <div class="view-header">
+          <h2>재고 현황</h2>
+        </div>
+        <input type="search" id="home-search" class="input" placeholder="자재명 또는 코드로 검색" />
       </div>
-      <input type="search" id="home-search" class="input" placeholder="자재명 또는 코드로 검색" />
       <div id="home-stock-list" class="list"></div>
     </section>
 
@@ -215,7 +217,7 @@
 
     <!-- 구매요청 -->
     <section id="view-purchase" class="view hidden">
-      <div id="purchase-search-sticky" class="purchase-search-sticky">
+      <div id="purchase-search-sticky" class="search-sticky">
         <div class="view-header">
           <h2>구매요청</h2>
           <button class="btn-link" id="purchase-back-btn">← 뒤로</button>
@@ -319,11 +321,13 @@
 
     <!-- 자재 -->
     <section id="view-items" class="view hidden">
-      <div class="view-header">
-        <h2>자재 목록</h2>
-        <button id="new-item-btn" class="btn btn-secondary btn-small">+ 신규 등록</button>
+      <div id="items-search-sticky" class="search-sticky">
+        <div class="view-header">
+          <h2>자재 목록</h2>
+          <button id="new-item-btn" class="btn btn-secondary btn-small">+ 신규 등록</button>
+        </div>
+        <input type="search" id="items-search" class="input" placeholder="자재명, 코드, 분류로 검색" />
       </div>
-      <input type="search" id="items-search" class="input" placeholder="자재명, 코드, 분류로 검색" />
       <div id="items-list" class="list"></div>
     </section>
 

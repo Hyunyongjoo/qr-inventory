@@ -273,11 +273,20 @@ function isSetItemName_(itemName) {
   return String(itemName || '').trim().indexOf('***') === 0;
 }
 
+// 세트명 비교용 정규화: 맨 앞의 "***"(별표 + 뒤따르는 공백)를 떼고 양끝 공백을 제거한다.
+// 사용자재 시트의 품명("*** 세트명")과 묶음자재 시트의 세트명은 둘 다 "***"를 붙여 두는 것이
+// 원칙이지만(화성 예시 참고), 엑셀 업로드 과정에서 한쪽만 "***"가 빠지는 경우가 있어
+// 매칭이 깨지지 않도록 양쪽 다 이 함수를 거쳐 비교한다.
+function normalizeSetName_(s) {
+  return String(s == null ? '' : s).trim().replace(/^\*+\s*/, '').trim();
+}
+
 // 세트명으로 그 사이트의 묶음자재 시트에서 구성 자재 행들을 모두 찾는다.
+// "***" 접두사 유무와 무관하게 매칭되도록 normalizeSetName_로 정규화해 비교한다.
 function findBundleComponents_(site, setName) {
   const rows = readAll_(sheet_(bundledMaterialsSheetName_(site)));
-  const name = String(setName).trim();
-  return rows.filter(r => String(r['세트명'] || '').trim() === name);
+  const name = normalizeSetName_(setName);
+  return rows.filter(r => normalizeSetName_(r['세트명']) === name);
 }
 
 function headers_(sheet) {

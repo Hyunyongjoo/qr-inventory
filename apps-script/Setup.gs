@@ -64,6 +64,10 @@ function setupSpreadsheet() {
   // 화성_사용자재 시트에 세트 항목(*** 세트 오링 TRITON(V1)/(V2)) 자동 등록 (이미 있으면 건너뜀)
   seedHwaseongSetUsedMaterials_(ss);
 
+  // 평택_사용자재 시트에 세트 항목(*** TRITON PRE-WET BODY 부분MODULE) 자동 등록 (이미 있으면 건너뜀).
+  // 평택_묶음자재 구성표 데이터는 스프레드시트에 직접 업로드해 관리한다.
+  seedPyeongtaekSetUsedMaterials_(ss);
+
   // 매월 1일 00시에 현재고 값을 월초재고로 복사하는 트리거 (이미 설치되어 있으면 건너뜀)
   ensureMonthlyStockRolloverTrigger_();
 
@@ -132,6 +136,27 @@ function seedHwaseongSetUsedMaterials_(ss) {
   setNames.forEach(name => {
     if (existingNames.indexOf(name) !== -1) return;
     sheet.appendRow(['', '', name, 'SET', '화성 공용', '세트구성', '']);
+  });
+}
+
+// 평택_사용자재 시트에 세트(*** TRITON DUAL/SINGLE PRE-WET BODY 부분MODULE) 항목을 등록해,
+// 구매요청 화면의 자재 검색에서 세트를 선택할 수 있게 한다. 세트를 선택해 구매요청하면
+// Code.gs의 submitPurchase_가 평택_묶음자재 시트에서 같은 세트명의 구성 자재를 찾아
+// 하위 품목별로 나눠 구매발주및입고 시트에 자동 등록한다. 이미 같은 품명이 등록돼 있으면 건너뛴다.
+function seedPyeongtaekSetUsedMaterials_(ss) {
+  const sheet = ss.getSheetByName('평택_사용자재');
+  if (!sheet) return;
+
+  const setNames = [
+    '*** TRITON DUAL PRE-WET BODY 부분MODULE#A',
+    '*** TRITON DUAL PRE-WET BODY 부분MODULE#B',
+    '*** TRITON SINGLE PRE-WET BODY 부분MODULE'
+  ];
+  const existingNames = readAll_(sheet).map(r => String(r['품명'] || '').trim());
+
+  setNames.forEach(name => {
+    if (existingNames.indexOf(name) !== -1) return;
+    sheet.appendRow(['', '', name, 'SET', '평택 공용', '세트구성', '']);
   });
 }
 

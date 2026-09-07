@@ -31,6 +31,10 @@ const MANAGER_ROLES = ['자재담당자', '관리자'];
 const STOCK_USAGE_LOCKED_STATUSES = ['구매완료', '부분입고', '입고완료', '부분출고', '출고완료'];
 // 입고확인 화면에서 이름/날짜/라인 조건 없이(=전체 라인) 검색할 때 돌려주는 최대 건수.
 const INBOUND_CHECK_MAX_ROWS = 100;
+// 사이트간 이관 원장 시트명 (Setup.gs에서 생성). 사이트별로 나누지 않고 한 시트에서 관리한다.
+const TRANSFER_SHEET_NAME = '사이트이관';
+// 사이트이관 시트 '상태' 컬럼 값. 요청 → 승인/거절, 승인 → 반납.
+const TRANSFER_STATUS = { REQUESTED: '요청', APPROVED: '승인', REJECTED: '거절', RETURNED: '반납' };
 // sheet_()가 실행 중 같은 시트에 대해 매번 컬럼 마이그레이션을 반복하지 않도록 하는 캐시 (실행마다 초기화됨).
 const ensuredColumnsCache_ = {};
 
@@ -100,6 +104,12 @@ function doGet(e) {
       case 'getTransactionDownload':
         result = getTransactionDownload_(e.parameter.site || '', e.parameter.startDate || '', e.parameter.endDate || '', e.parameter.zone || '');
         break;
+      case 'transferList':
+        result = getTransferList_(e.parameter.site || '');
+        break;
+      case 'getTransferDownload':
+        result = getTransferDownload_(e.parameter.startDate || '', e.parameter.endDate || '', e.parameter.supplySite || '');
+        break;
       default:
         throw new Error('알 수 없는 action: ' + action);
     }
@@ -153,6 +163,18 @@ function doPost(e) {
         break;
       case 'editInboundQty':
         result = editInboundQty_(body);
+        break;
+      case 'requestTransfer':
+        result = requestTransfer_(body);
+        break;
+      case 'approveTransfer':
+        result = approveTransfer_(body);
+        break;
+      case 'rejectTransfer':
+        result = rejectTransfer_(body);
+        break;
+      case 'returnTransfer':
+        result = returnTransfer_(body);
         break;
       default:
         throw new Error('알 수 없는 action: ' + action);
@@ -527,6 +549,16 @@ function recalculateStock_(site, itemId, item) {
 function decrementStockQuantity_(site, itemId, qty, item) {
   const current = getStockQty_(site, itemId);
   const newQty = current - qty;
+  setStockQuantity_(site, itemId, newQty, item);
+  return newQty;
+}
+
+// decrementStockQuantity_의 반대: 현재고에 qty만큼 직접 더한다(현재고 = 현재고 + qty).
+// 사이트간 이관 승인/반납에서 상대 사이트 재고를 늘릴 때 사용한다. 재고 시트에 그 자재 행이
+// 없으면 setStockQuantity_가 새 행을 추가한다. 락 안에서만 호출한다.
+function incrementStockQuantity_(site, itemId, qty, item) {
+  const current = getStockQty_(site, itemId);
+  const newQty = current + qty;
   setStockQuantity_(site, itemId, newQty, item);
   return newQty;
 }
@@ -1973,6 +2005,299 @@ function getTransactionDownload_(site, startDate, endDate, zone) {
     zone: r['라인'] || '',
     floor: r['층'] || ''
   }));
+}
+
+// ------------------------- 사이트간 이관(Transfer) -------------------------
+
+// 이관번호 생성: TR{연도 끝 두자리}-{월일 4자리}-{당일 순번 4자리} (예: TR26-0901-0001).
+// 순번은 사이트이관 시트에서 오늘 날짜 접두사를 가진 이관번호 중 최댓값 + 1이다.
+function generateTransferNo_() {
+  const now = new Date();
+  const prefix = 'TR' + Utilities.formatDate(now, 'Asia/Seoul', 'yy') +
+    '-' + Utilities.formatDate(now, 'Asia/Seoul', 'MMdd') + '-';
+  const rows = readAll_(sheet_(TRANSFER_SHEET_NAME));
+  let max = 0;
+  rows.forEach(r => {
+    const val = String(r['이관번호'] || '');
+    if (val.indexOf(prefix) === 0) {
+      const seq = parseInt(val.slice(prefix.length), 10);
+      if (!isNaN(seq)) max = Math.max(max, seq);
+    }
+  });
+  return prefix + ('0000' + (max + 1)).slice(-4);
+}
+
+// 사이트이관 시트의 날짜 컬럼을 화면 표시용 'yyyy-MM-dd' 문자열로 정규화한다.
+// 값이 비어있으면 빈 문자열, 날짜로 해석 불가하면 원본 문자열을 그대로 돌려준다.
+function fmtTransferDate_(v) {
+  if (!v) return '';
+  const d = v instanceof Date ? v : new Date(v);
+  if (isNaN(d.getTime())) return String(v);
+  return Utilities.formatDate(d, 'Asia/Seoul', 'yyyy-MM-dd');
+}
+
+// rowIndex(시트 행 번호)로 사이트이관 시트의 행 하나를 찾는다. 승인/거절/반납 버튼이 공통으로 사용한다.
+function findTransferRowByIndex_(rowIndex) {
+  const sheet = sheet_(TRANSFER_SHEET_NAME);
+  const idx = Number(rowIndex);
+  if (!idx || idx < 2 || idx > sheet.getLastRow()) throw new Error('이관 요청을 찾을 수 없습니다.');
+  const row = readAll_(sheet).find(r => r._row === idx);
+  if (!row) throw new Error('이관 요청을 찾을 수 없습니다.');
+  return row;
+}
+
+function transferRowToView_(r) {
+  return {
+    rowIndex: r._row,
+    transferNo: r['이관번호'] || '',
+    requestDate: fmtTransferDate_(r['요청일']),
+    reqSite: String(r['요청사이트'] || '').trim(),
+    supplySite: String(r['공급사이트'] || '').trim(),
+    itemId: r['자재코드'] || '',
+    itemName: r['자재명'] || '',
+    spec: r['규격'] || '',
+    unit: r['단위'] || '',
+    quantity: Number(r['출고수량']) || 0,
+    returnDate: fmtTransferDate_(r['반납예정일']),
+    status: String(r['상태'] || '').trim(),
+    approvedDate: fmtTransferDate_(r['승인일']),
+    returnedDate: fmtTransferDate_(r['반납일'])
+  };
+}
+
+// 이관 요청(빌리는 사이트): 장바구니에 담긴 자재마다 사이트이관 시트에 '요청' 상태로 새 행을 등록한다.
+// 한 번의 제출은 하나의 이관번호를 공유하고, 승인/거절/반납은 행 단위로 개별 처리된다.
+function requestTransfer_(body) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const reqSite = assertSite_(body.site);
+    const supplySite = assertSite_(body.supplySite);
+    if (reqSite === supplySite) throw new Error('요청사이트와 공급사이트가 같을 수 없습니다.');
+    handleLogin_(body.pin);
+
+    const items = Array.isArray(body.items) ? body.items : [];
+    if (!items.length) throw new Error('이관 요청할 자재가 없습니다.');
+
+    const returnDate = body.returnDate || '';
+    const today = Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd');
+    const sheet = sheet_(TRANSFER_SHEET_NAME);
+    const transferNo = generateTransferNo_();
+    let count = 0;
+
+    items.forEach(it => {
+      const itemId = String(it.itemId || '').trim();
+      const qty = Number(it.quantity);
+      if (!itemId || !qty || qty <= 0) return;
+
+      let item;
+      try {
+        item = assertItemExists_(itemId);
+      } catch (err) {
+        item = { ItemID: itemId, ItemName: it.itemName || '', Spec: it.spec || '', Unit: '' };
+      }
+
+      appendRow_(sheet, {
+        '이관번호': transferNo,
+        '요청일': today,
+        '요청사이트': reqSite,
+        '공급사이트': supplySite,
+        '자재코드': itemId,
+        '자재명': item.ItemName || it.itemName || '',
+        '규격': item.Spec || it.spec || '',
+        '단위': item.Unit || '',
+        '출고수량': qty,
+        '반납예정일': returnDate,
+        '상태': TRANSFER_STATUS.REQUESTED,
+        '승인일': '',
+        '반납일': ''
+      });
+      count++;
+    });
+
+    if (!count) throw new Error('등록할 수 있는 자재가 없습니다 (자재코드/수량을 확인하세요).');
+    return { count, transferNo };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// 이관 목록 조회. 현재 사이트 기준으로 세 갈래로 나눠 돌려준다:
+//  - incoming: 현재 사이트가 공급사이트이고 상태가 '요청'인 건 (승인/거절 대상)
+//  - approvedOutgoing: 현재 사이트가 공급사이트이고 상태가 '승인' 또는 '반납'인 건 (승인된 건 목록)
+//  - returnable: 현재 사이트가 요청사이트이고 상태가 '승인'인 건 (반납 대상)
+function getTransferList_(site) {
+  assertSite_(site);
+  const rows = readAll_(sheet_(TRANSFER_SHEET_NAME));
+  const asSupply = rows.filter(r => String(r['공급사이트'] || '').trim() === site);
+  const asRequest = rows.filter(r => String(r['요청사이트'] || '').trim() === site);
+  return {
+    incoming: asSupply
+      .filter(r => String(r['상태'] || '').trim() === TRANSFER_STATUS.REQUESTED)
+      .map(transferRowToView_),
+    approvedOutgoing: asSupply
+      .filter(r => {
+        const s = String(r['상태'] || '').trim();
+        return s === TRANSFER_STATUS.APPROVED || s === TRANSFER_STATUS.RETURNED;
+      })
+      .map(transferRowToView_),
+    returnable: asRequest
+      .filter(r => String(r['상태'] || '').trim() === TRANSFER_STATUS.APPROVED)
+      .map(transferRowToView_)
+  };
+}
+
+// 이관 승인(공급사이트 담당자, 관리자/자재담당자만): 공급사이트 재고를 출고수량만큼 줄이고
+// 요청사이트 재고를 그만큼 늘린 뒤, 상태를 '승인'으로 바꾸고 승인일을 오늘로 기록한다.
+// 재고 증감은 이력 재계산(recalculateStock_) 대상이 아니므로 직접 반영한다
+// (입고확인 화면의 "출고완료" 버튼이 decrementStockQuantity_로 재고를 직접 줄이는 것과 동일한 방식).
+function approveTransfer_(body) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const site = assertSite_(body.site);
+    assertManagerRole_(body.pin);
+    const sheet = sheet_(TRANSFER_SHEET_NAME);
+    const row = findTransferRowByIndex_(body.rowIndex);
+
+    if (String(row['공급사이트'] || '').trim() !== site) {
+      throw new Error('이 사이트로 들어온 이관 요청이 아닙니다.');
+    }
+    if (String(row['상태'] || '').trim() !== TRANSFER_STATUS.REQUESTED) {
+      throw new Error('요청 상태의 건만 승인할 수 있습니다.');
+    }
+
+    const supplySite = site;
+    const reqSite = assertSite_(String(row['요청사이트'] || '').trim());
+    const itemId = String(row['자재코드'] || '').trim();
+    const qty = Number(row['출고수량']) || 0;
+    if (!itemId || qty <= 0) throw new Error('자재코드/출고수량이 올바르지 않습니다.');
+
+    let item;
+    try {
+      item = assertItemExists_(itemId);
+    } catch (err) {
+      item = { ItemID: itemId, ItemName: row['자재명'] || '', Spec: row['규격'] || '', Unit: row['단위'] || '' };
+    }
+
+    const supplyStock = getStockQty_(supplySite, itemId);
+    if (supplyStock < qty) {
+      throw new Error(`공급사이트 재고가 부족합니다. (현재고 ${supplyStock}, 이관수량 ${qty})`);
+    }
+
+    decrementStockQuantity_(supplySite, itemId, qty, item);
+    incrementStockQuantity_(reqSite, itemId, qty, item);
+
+    updateRow_(sheet, row._row, {
+      '상태': TRANSFER_STATUS.APPROVED,
+      '승인일': Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd')
+    });
+    return getTransferList_(site);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// 이관 거절(공급사이트 담당자, 관리자/자재담당자만): 재고 변화 없이 상태만 '거절'로 바꾼다.
+function rejectTransfer_(body) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const site = assertSite_(body.site);
+    assertManagerRole_(body.pin);
+    const sheet = sheet_(TRANSFER_SHEET_NAME);
+    const row = findTransferRowByIndex_(body.rowIndex);
+
+    if (String(row['공급사이트'] || '').trim() !== site) {
+      throw new Error('이 사이트로 들어온 이관 요청이 아닙니다.');
+    }
+    if (String(row['상태'] || '').trim() !== TRANSFER_STATUS.REQUESTED) {
+      throw new Error('요청 상태의 건만 거절할 수 있습니다.');
+    }
+
+    updateRow_(sheet, row._row, { '상태': TRANSFER_STATUS.REJECTED });
+    return getTransferList_(site);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// 반납(빌린 사이트): 승인된 이관 건을 반납 처리한다. 입력한 반납수량만큼
+// 요청사이트(빌린 곳) 재고를 줄이고 공급사이트(빌려준 곳) 재고를 늘린 뒤,
+// 상태를 '반납'으로 바꾸고 반납일을 오늘로 기록한다. 반납수량이 비어있으면 이관수량 전체로 본다.
+function returnTransfer_(body) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const site = assertSite_(body.site);
+    handleLogin_(body.pin);
+    const sheet = sheet_(TRANSFER_SHEET_NAME);
+    const row = findTransferRowByIndex_(body.rowIndex);
+
+    if (String(row['요청사이트'] || '').trim() !== site) {
+      throw new Error('이 사이트에서 빌린 이관 건이 아닙니다.');
+    }
+    if (String(row['상태'] || '').trim() !== TRANSFER_STATUS.APPROVED) {
+      throw new Error('승인된 건만 반납할 수 있습니다.');
+    }
+
+    const reqSite = site;
+    const supplySite = assertSite_(String(row['공급사이트'] || '').trim());
+    const itemId = String(row['자재코드'] || '').trim();
+    const approvedQty = Number(row['출고수량']) || 0;
+    let qty = Number(body.quantity);
+    if (!qty || qty <= 0) qty = approvedQty;
+    if (qty > approvedQty) qty = approvedQty;
+    if (!itemId || qty <= 0) throw new Error('자재코드/반납수량이 올바르지 않습니다.');
+
+    let item;
+    try {
+      item = assertItemExists_(itemId);
+    } catch (err) {
+      item = { ItemID: itemId, ItemName: row['자재명'] || '', Spec: row['규격'] || '', Unit: row['단위'] || '' };
+    }
+
+    const borrowerStock = getStockQty_(reqSite, itemId);
+    if (borrowerStock < qty) {
+      throw new Error(`반납할 재고가 부족합니다. (현재고 ${borrowerStock}, 반납수량 ${qty})`);
+    }
+
+    decrementStockQuantity_(reqSite, itemId, qty, item);
+    incrementStockQuantity_(supplySite, itemId, qty, item);
+
+    updateRow_(sheet, row._row, {
+      '상태': TRANSFER_STATUS.RETURNED,
+      '반납일': Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd')
+    });
+    return getTransferList_(site);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// 이관 다운로드: 승인된 건(상태='승인')만 대상으로, 공급사이트/승인일 범위 조건에 맞는 행을
+// 자재코드별로 합산해 1행으로 만든다. 반환 필드는 엑셀 컬럼(자재코드/자재명/규격/단위/출고수량)에 대응한다.
+function getTransferDownload_(startDate, endDate, supplySite) {
+  const supply = (supplySite || '').toString().trim();
+  let rows = readAll_(sheet_(TRANSFER_SHEET_NAME));
+  rows = rows.filter(r => String(r['상태'] || '').trim() === TRANSFER_STATUS.APPROVED);
+  if (supply) rows = rows.filter(r => String(r['공급사이트'] || '').trim() === supply);
+  rows = filterByDateRange_(rows, '승인일', startDate, endDate);
+
+  const merged = {};
+  rows.forEach(r => {
+    const itemId = String(r['자재코드'] || '').trim();
+    if (!itemId) return;
+    if (!merged[itemId]) {
+      merged[itemId] = {
+        itemId, itemName: r['자재명'] || '', spec: r['규격'] || '',
+        unit: r['단위'] || '', qty: 0
+      };
+    }
+    merged[itemId].qty += Number(r['출고수량']) || 0;
+  });
+
+  return Object.keys(merged).map(itemId => merged[itemId]);
 }
 
 // ------------------------- 유지보수(Keep-alive) -------------------------

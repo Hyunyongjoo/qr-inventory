@@ -333,6 +333,7 @@ html, body {
 .action-btn-in { border-color: var(--success); color: var(--success); }
 .action-btn-out { border-color: var(--danger); color: var(--danger); }
 .action-btn-return { border-color: var(--warn); color: var(--warn); }
+.action-btn-transfer { border-color: var(--purple); color: var(--purple); }
 
 /* ---------- 스캔 ---------- */
 .scan-context { margin-top: -8px; margin-bottom: 12px; font-weight: 600; }
@@ -353,8 +354,8 @@ html, body {
   word-break: break-all;
 }
 .scan-debug-row:empty { display: none; }
-#scan-reader-wrap, #return-reader-wrap { margin-bottom: 14px; }
-#qr-reader, #return-qr-reader {
+#scan-reader-wrap, #return-reader-wrap, #transfer-reader-wrap { margin-bottom: 14px; }
+#qr-reader, #return-qr-reader, #transfer-qr-reader {
   width: 100%;
   min-height: 300px;
   border-radius: var(--radius);
@@ -362,7 +363,7 @@ html, body {
   margin-bottom: 10px;
   background: #000;
 }
-#qr-reader video, #return-qr-reader video {
+#qr-reader video, #return-qr-reader video, #transfer-qr-reader video {
   width: 100% !important;
   height: 100% !important;
   object-fit: cover;
@@ -664,6 +665,29 @@ html, body {
 .inbound-stock-btn.is-hold.is-selected { border-color: var(--brown); color: var(--brown); }
 .iq-label { font-size: 10px; color: var(--text-muted); white-space: nowrap; }
 .iq-value { font-size: 14px; font-weight: 700; }
+
+/* ---------- 사이트간 이관 ---------- */
+.transfer-section-title {
+  font-size: 14px;
+  margin: 20px 0 10px;
+  color: var(--text-muted);
+}
+.transfer-section-title:first-of-type { margin-top: 4px; }
+.transfer-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+.transfer-card .inbound-card-actions { margin-top: 4px; }
+.transfer-download-block {
+  margin-top: 22px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.transfer-download-block .muted { margin: 8px 0 0; }
 
 /* ---------- 하단 내비게이션 ---------- */
 #bottom-nav {

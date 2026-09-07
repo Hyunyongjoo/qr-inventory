@@ -38,6 +38,13 @@
     orderOutItems: [],
     orderOutHtml5QrCode: null,
     orderOutScanning: false,
+    transferSupplySite: null,
+    currentTransferItem: null,
+    transferCart: [],
+    transferHtml5QrCode: null,
+    transferScanning: false,
+    transferScanBusy: false,
+    transferListData: { incoming: [], approvedOutgoing: [], returnable: [] },
     inboundRows: [],
     inboundSummaryRows: [],
     inboundFilter: null,
@@ -82,7 +89,7 @@
     // 새로 받아온 경우)에서 특정 화면의 요소를 찾지 못해 bindXxx() 하나가 실패하더라도,
     // 그 뒤에 이어지는 다른 화면 바인딩과 로그인 화면 진입까지는 막히지 않게 각각 감싸서 실행한다.
     [bindLogin, bindSite, bindNav, bindActions, bindLine, bindOutMode, bindOrderOut, bindHome, bindScan,
-      bindPurchase, bindReturn, bindItems, bindInboundCheck, bindHistory, bindDownload, bindLogout, bindHardRefresh,
+      bindPurchase, bindReturn, bindTransfer, bindItems, bindInboundCheck, bindHistory, bindDownload, bindLogout, bindHardRefresh,
       bindBackNavigation, bindPullToRefreshGuard
     ].forEach((bindFn) => {
       try {
@@ -273,6 +280,7 @@
     $('#action-in-btn').addEventListener('click', () => startTransactionFlow('IN'));
     $('#action-out-btn').addEventListener('click', () => startTransactionFlow('OUT'));
     $('#action-return-btn').addEventListener('click', () => startTransactionFlow('RETURN'));
+    $('#action-transfer-btn').addEventListener('click', () => startTransactionFlow('TRANSFER'));
   }
 
   function startTransactionFlow(type) {
@@ -283,6 +291,8 @@
       renderLineButtons();
     } else if (type === 'RETURN') {
       goToReturn();
+    } else if (type === 'TRANSFER') {
+      goToTransferMenu();
     } else {
       goToScan();
     }
@@ -388,6 +398,12 @@
       renderReturnCart();
     }
 
+    if (state.currentView === 'transfer-request' && name !== 'transfer-request' && state.transferCart.length > 0) {
+      if (!confirm(`담아둔 ${state.transferCart.length}건이 사라집니다. 이동하시겠습니까?`)) return false;
+      state.transferCart = [];
+      renderTransferCart();
+    }
+
     if (state.currentView === 'order-out' && name !== 'order-out' && state.orderOutItems.some((it) => it.checked)) {
       if (!confirm('확인한 출고 목록이 사라집니다. 이동하시겠습니까?')) return false;
       state.orderOutNo = '';
@@ -402,6 +418,7 @@
     if (name !== 'scan') stopScanning();
     if (name !== 'return') stopReturnScanning();
     if (name !== 'order-out') stopOrderOutScanning();
+    if (name !== 'transfer-request') stopTransferScanning();
 
     if (name === 'home') loadStock();
     if (name === 'items') loadItems();
@@ -914,7 +931,7 @@
 
     $('#scan-cart-section').classList.toggle('hidden', cart.length === 0);
     $('#cart-footer').classList.toggle('hidden', cart.length === 0);
-    $('#view-container').classList.toggle('has-cart-footer', cart.length > 0 || state.purchaseCart.length > 0 || state.returnCart.length > 0);
+    $('#view-container').classList.toggle('has-cart-footer', cart.length > 0 || state.purchaseCart.length > 0 || state.returnCart.length > 0 || state.transferCart.length > 0);
 
     const listEl = $('#cart-list');
     listEl.innerHTML = cart.map((c) => `
@@ -1306,7 +1323,7 @@
 
     $('#purchase-cart-section').classList.toggle('hidden', cart.length === 0);
     $('#purchase-cart-footer').classList.toggle('hidden', cart.length === 0);
-    $('#view-container').classList.toggle('has-cart-footer', cart.length > 0 || state.cart.length > 0 || state.returnCart.length > 0);
+    $('#view-container').classList.toggle('has-cart-footer', cart.length > 0 || state.cart.length > 0 || state.returnCart.length > 0 || state.transferCart.length > 0);
 
     const listEl = $('#purchase-cart-list');
     listEl.innerHTML = cart.map((c) => `
@@ -1628,7 +1645,7 @@
 
     $('#return-cart-section').classList.toggle('hidden', cart.length === 0);
     $('#return-cart-footer').classList.toggle('hidden', cart.length === 0);
-    $('#view-container').classList.toggle('has-cart-footer', cart.length > 0 || state.cart.length > 0 || state.purchaseCart.length > 0);
+    $('#view-container').classList.toggle('has-cart-footer', cart.length > 0 || state.cart.length > 0 || state.purchaseCart.length > 0 || state.transferCart.length > 0);
 
     const listEl = $('#return-cart-list');
     listEl.innerHTML = cart.map((c) => `
@@ -1781,7 +1798,7 @@
     $('#order-out-submit-count').textContent = checkedCount;
     $('#order-out-cart-footer').classList.toggle('hidden', checkedCount === 0);
     $('#view-container').classList.toggle('has-cart-footer',
-      checkedCount > 0 || state.cart.length > 0 || state.purchaseCart.length > 0 || state.returnCart.length > 0);
+      checkedCount > 0 || state.cart.length > 0 || state.purchaseCart.length > 0 || state.returnCart.length > 0 || state.transferCart.length > 0);
   }
 
   function showOrderOutScanError(message) {
@@ -1912,6 +1929,525 @@
     } finally {
       btn.disabled = false;
     }
+  }
+
+  // ------------------------- 사이트간 이관(Transfer) -------------------------
+
+  function bindTransfer() {
+    $('#transfer-menu-back-btn').addEventListener('click', () => switchView('actions'));
+    $('#transfer-request-btn').addEventListener('click', goToTransferRequest);
+    $('#transfer-confirm-btn').addEventListener('click', goToTransferConfirm);
+
+    $('#transfer-request-back-btn').addEventListener('click', () => switchView('transfer-menu'));
+    $('#transfer-scan-toggle-btn').addEventListener('click', toggleTransferScanning);
+    $('#transfer-manual-lookup-btn').addEventListener('click', () => {
+      const code = $('#transfer-manual-code-input').value.trim();
+      if (code) handleTransferScannedCode(code);
+    });
+    $('#transfer-search-input').addEventListener('input', debounce(searchTransferMaterials, 300));
+    $('#transfer-add-btn').addEventListener('click', addToTransferCart);
+    $('#transfer-cancel-btn').addEventListener('click', cancelTransferSelection);
+    $('#transfer-cart-clear-btn').addEventListener('click', () => {
+      if (!state.transferCart.length) return;
+      if (!confirm('담아둔 목록을 모두 삭제할까요?')) return;
+      state.transferCart = [];
+      renderTransferCart();
+    });
+    $('#transfer-submit-btn').addEventListener('click', submitTransferCart);
+
+    $('#transfer-confirm-back-btn').addEventListener('click', () => switchView('transfer-menu'));
+  }
+
+  function goToTransferMenu() {
+    switchView('transfer-menu');
+    $('#transfer-menu-context-label').textContent = `${state.site} · 이관`;
+  }
+
+  // ----- 이관 요청 (빌리는 사이트) -----
+
+  function goToTransferRequest() {
+    state.currentTransferItem = null;
+    state.transferCart = [];
+    state.transferSupplySite = null;
+    $('#transfer-result-card').classList.add('hidden');
+    $('#transfer-search-input').value = '';
+    $('#transfer-search-results').innerHTML = '';
+    $('#transfer-manual-code-input').value = '';
+    $('#transfer-return-date').value = '';
+    clearTransferScanError();
+    clearTransferLookupError();
+    populateTransferSupplyOptions();
+    switchView('transfer-request');
+    $('#transfer-request-context-label').textContent = `${state.site} · 이관 요청`;
+    renderTransferCart();
+  }
+
+  // 공급사이트 드롭다운은 현재 사이트를 제외한 나머지 사이트만 채운다.
+  function populateTransferSupplyOptions() {
+    const sel = $('#transfer-supply-select');
+    if (!sel) return;
+    const others = SITES.filter((s) => s !== state.site);
+    sel.innerHTML = `<option value="">공급사이트 선택</option>` +
+      others.map((s) => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('');
+  }
+
+  function toggleTransferScanning() {
+    if (state.transferScanning) stopTransferScanning();
+    else startTransferScanning();
+  }
+
+  function showTransferScanError(message) {
+    const el = $('#transfer-scan-error-text');
+    el.textContent = message;
+    el.classList.remove('hidden');
+  }
+  function clearTransferScanError() {
+    const el = $('#transfer-scan-error-text');
+    el.textContent = '';
+    el.classList.add('hidden');
+  }
+  function showTransferLookupError(message) {
+    const el = $('#transfer-lookup-error');
+    el.textContent = message;
+    el.classList.remove('hidden');
+  }
+  function clearTransferLookupError() {
+    const el = $('#transfer-lookup-error');
+    el.textContent = '';
+    el.classList.add('hidden');
+  }
+
+  // 반납(startReturnScanning)/입고 스캔과 동일한 방식: html5-qrcode로 카메라를 켜고 인식되면
+  // 원본 텍스트를 콜백으로 넘긴다. 조회 중이거나 결과 카드가 떠 있는 동안에는 새 스캔을 무시한다.
+  function startTransferScanning() {
+    clearTransferScanError();
+
+    if (typeof Html5Qrcode === 'undefined') {
+      showTransferScanError('QR 스캐너 라이브러리를 불러오지 못했습니다. 앱을 새로고침해 주세요.');
+      toast('QR 스캐너 라이브러리를 불러오지 못했습니다.', 'error');
+      return;
+    }
+
+    const isSecureContext = window.isSecureContext || ['localhost', '127.0.0.1'].includes(location.hostname);
+    if (!isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      showTransferScanError('카메라를 사용하려면 HTTPS 주소로 접속해야 합니다. 자재코드를 직접 입력해 주세요.');
+      toast('보안 연결(HTTPS)이 아니어서 카메라를 사용할 수 없습니다.', 'error');
+      return;
+    }
+
+    $('#transfer-qr-reader').classList.remove('hidden');
+
+    state.transferHtml5QrCode = new Html5Qrcode('transfer-qr-reader');
+    state.transferHtml5QrCode
+      .start(
+        { facingMode: 'environment' },
+        {
+          fps: 10,
+          qrbox: (viewfinderWidth, viewfinderHeight) => {
+            const edge = Math.floor(Math.min(viewfinderWidth, viewfinderHeight) * 0.7);
+            const size = Math.max(150, Math.min(edge, 300));
+            return { width: size, height: size };
+          }
+        },
+        (decodedText) => {
+          if (state.transferScanBusy || state.currentTransferItem) return;
+          handleTransferScannedCode(decodedText);
+        },
+        () => {}
+      )
+      .then(() => {
+        state.transferScanning = true;
+        $('#transfer-scan-toggle-btn').textContent = '스캔 중지';
+      })
+      .catch((err) => {
+        $('#transfer-qr-reader').classList.add('hidden');
+        state.transferScanning = false;
+        $('#transfer-scan-toggle-btn').textContent = '카메라 스캔 시작';
+        const message = String((err && err.message) || err || '');
+        let friendly = '카메라를 시작할 수 없습니다.';
+        if (/NotAllowedError|Permission/i.test(message)) {
+          friendly = '카메라 권한이 거부되었습니다. 브라우저 설정에서 카메라 접근을 허용해 주세요.';
+        } else if (/NotFoundError|no camera/i.test(message)) {
+          friendly = '사용 가능한 카메라를 찾을 수 없습니다.';
+        } else if (/NotReadableError/i.test(message)) {
+          friendly = '카메라가 다른 앱에서 사용 중입니다. 다른 앱을 종료한 후 다시 시도해 주세요.';
+        }
+        showTransferScanError(friendly + ' 자재코드를 직접 입력해도 됩니다.');
+        toast(friendly, 'error');
+      });
+  }
+
+  function stopTransferScanning() {
+    if (state.transferHtml5QrCode && state.transferScanning) {
+      state.transferHtml5QrCode.stop().then(() => state.transferHtml5QrCode.clear()).catch(() => {});
+    }
+    state.transferScanning = false;
+    $('#transfer-qr-reader').classList.add('hidden');
+    $('#transfer-scan-toggle-btn').textContent = '카메라 스캔 시작';
+  }
+
+  async function handleTransferScannedCode(rawCode) {
+    const code = String(rawCode || '').trim();
+    if (!code) return;
+    clearTransferLookupError();
+    if (DEBUG_QR) toast(`스캔된 코드: ${code}`, '');
+    state.transferScanBusy = true;
+    try {
+      const item = await Api.get('itemByCode', { code });
+      selectTransferMaterial(item);
+      $('#transfer-manual-code-input').value = '';
+    } catch (err) {
+      showTransferLookupError(err.message);
+      toast(err.message, 'error');
+    } finally {
+      state.transferScanBusy = false;
+    }
+  }
+
+  async function searchTransferMaterials() {
+    const q = $('#transfer-search-input').value.trim();
+    const resultsEl = $('#transfer-search-results');
+    if (!q) {
+      resultsEl.innerHTML = '';
+      return;
+    }
+    resultsEl.innerHTML = `<div class="empty-state">검색 중...</div>`;
+    try {
+      const rows = await Api.get('items', { q });
+      if (!rows.length) {
+        resultsEl.innerHTML = `<div class="empty-state">검색 결과가 없습니다.</div>`;
+        return;
+      }
+      resultsEl.innerHTML = rows.map((it, i) => `
+        <div class="item-row" data-idx="${i}">
+          <div class="row-main">
+            <span class="primary">${escapeHtml(it.ItemName)}</span>
+            <span class="secondary">${escapeHtml(it.ItemID)}${it.Spec ? ' · ' + escapeHtml(it.Spec) : ''}</span>
+          </div>
+        </div>
+      `).join('');
+      $$('.item-row', resultsEl).forEach((row, i) => {
+        row.addEventListener('click', () => selectTransferMaterial(rows[i]));
+      });
+    } catch (err) {
+      renderApiError_(resultsEl, err, searchTransferMaterials);
+    }
+  }
+
+  function selectTransferMaterial(item) {
+    state.currentTransferItem = item;
+    $('#transfer-result-card').classList.remove('hidden');
+    $('#transfer-item-code').textContent = item.ItemID;
+    $('#transfer-item-name').textContent = item.ItemName;
+    $('#transfer-item-spec').textContent = item.Spec || '-';
+    $('#transfer-quantity').value = '';
+    $('#transfer-search-results').innerHTML = '';
+  }
+
+  function cancelTransferSelection() {
+    state.currentTransferItem = null;
+    $('#transfer-result-card').classList.add('hidden');
+    $('#transfer-quantity').value = '';
+    $('#transfer-manual-code-input').value = '';
+  }
+
+  function addToTransferCart() {
+    if (!state.currentTransferItem) return;
+    const quantity = Number($('#transfer-quantity').value);
+    if (!quantity || quantity <= 0) {
+      toast('올바른 수량을 입력하세요.', 'error');
+      return;
+    }
+
+    const item = state.currentTransferItem;
+    state.transferCart.push({
+      uid: 't' + Date.now() + Math.floor(Math.random() * 1000),
+      itemId: item.ItemID,
+      itemName: item.ItemName,
+      spec: item.Spec,
+      quantity
+    });
+    renderTransferCart();
+    toast(`${item.ItemName} 담았습니다.`, 'success');
+
+    state.currentTransferItem = null;
+    $('#transfer-result-card').classList.add('hidden');
+    $('#transfer-search-input').value = '';
+    $('#transfer-search-results').innerHTML = '';
+    $('#transfer-manual-code-input').value = '';
+    $('#transfer-search-input').focus();
+  }
+
+  function renderTransferCart() {
+    const cart = state.transferCart;
+    $('#transfer-cart-count').textContent = cart.length;
+    $('#transfer-submit-count').textContent = cart.length;
+
+    $('#transfer-cart-section').classList.toggle('hidden', cart.length === 0);
+    $('#transfer-cart-footer').classList.toggle('hidden', cart.length === 0);
+    $('#view-container').classList.toggle('has-cart-footer',
+      cart.length > 0 || state.cart.length > 0 || state.purchaseCart.length > 0 || state.returnCart.length > 0);
+
+    const listEl = $('#transfer-cart-list');
+    listEl.innerHTML = cart.map((c) => `
+      <div class="cart-row" data-uid="${c.uid}">
+        <div class="row-main">
+          <span class="primary">${escapeHtml(c.itemName)}${c.spec ? ' / ' + escapeHtml(c.spec) : ''}</span>
+          <span class="secondary">${escapeHtml(c.itemId)} · 수량 ${Number(c.quantity).toLocaleString()}</span>
+        </div>
+        <button class="cart-delete-btn" data-uid="${c.uid}" aria-label="삭제">🗑️</button>
+      </div>
+    `).join('');
+    $$('.cart-delete-btn', listEl).forEach((btn) => {
+      btn.addEventListener('click', () => removeFromTransferCart(btn.dataset.uid));
+    });
+  }
+
+  function removeFromTransferCart(uid) {
+    state.transferCart = state.transferCart.filter((c) => c.uid !== uid);
+    renderTransferCart();
+  }
+
+  async function submitTransferCart() {
+    if (!state.transferCart.length) return;
+    const supplySite = $('#transfer-supply-select').value;
+    if (!supplySite) { toast('공급사이트를 선택하세요.', 'error'); return; }
+    if (supplySite === state.site) { toast('현재 사이트는 공급사이트로 선택할 수 없습니다.', 'error'); return; }
+    const returnDate = $('#transfer-return-date').value;
+    if (!returnDate) { toast('반납예정일을 입력하세요.', 'error'); return; }
+
+    const btn = $('#transfer-submit-btn');
+    btn.disabled = true;
+    try {
+      const payload = {
+        site: state.site,
+        supplySite,
+        pin: state.user.pin,
+        returnDate,
+        items: state.transferCart.map((c) => ({
+          itemId: c.itemId, itemName: c.itemName, spec: c.spec, quantity: c.quantity
+        }))
+      };
+      const result = await Api.postWithQueue('requestTransfer', payload);
+      if (result.queued) {
+        toast('오프라인 상태입니다. 온라인 복귀 시 자동으로 등록됩니다.', '');
+      } else {
+        const no = result.data && result.data.transferNo ? ` (${result.data.transferNo})` : '';
+        toast(`이관 요청 ${state.transferCart.length}건이 등록되었습니다.${no}`, 'success');
+      }
+      state.transferCart = [];
+      $('#transfer-return-date').value = '';
+      renderTransferCart();
+      updateOfflineBadge();
+    } catch (err) {
+      toast(err.message || '이관 요청 처리 중 오류가 발생했습니다.', 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // ----- 이관 요청 확인 (공급사이트 담당자 + 반납) -----
+
+  function goToTransferConfirm() {
+    switchView('transfer-confirm');
+    $('#transfer-confirm-context-label').textContent = `${state.site} · 이관 요청 확인`;
+    loadTransferList();
+  }
+
+  async function loadTransferList() {
+    if (!state.site) return;
+    const incomingEl = $('#transfer-incoming-list');
+    incomingEl.innerHTML = `<div class="empty-state">불러오는 중...</div>`;
+    $('#transfer-approved-list').innerHTML = '';
+    $('#transfer-returnable-list').innerHTML = '';
+    try {
+      const data = await Api.get('transferList', { site: state.site });
+      state.transferListData = data || { incoming: [], approvedOutgoing: [], returnable: [] };
+      renderTransferConfirm();
+    } catch (err) {
+      renderApiError_(incomingEl, err, loadTransferList);
+    }
+  }
+
+  // 승인/거절은 관리자·자재담당자만(canManageInbound 재사용). 반납은 빌린 사이트의 누구나 가능.
+  function renderTransferConfirm() {
+    const data = state.transferListData || {};
+    const incoming = data.incoming || [];
+    const approvedOutgoing = data.approvedOutgoing || [];
+    const returnable = data.returnable || [];
+    const canManage = canManageInbound();
+
+    $('#transfer-incoming-list').innerHTML = incoming.length
+      ? incoming.map((r) => `
+        <div class="card transfer-card" data-row-index="${r.rowIndex}">
+          <div class="inbound-card-top">
+            <div class="row-main">
+              <span class="primary">${escapeHtml(r.itemName)}</span>
+              <span class="secondary">${escapeHtml(r.itemId)}${r.spec ? ' · ' + escapeHtml(r.spec) : ''}</span>
+            </div>
+            <span class="po-status-tag po-status-waiting">요청</span>
+          </div>
+          <div class="transfer-card-meta">
+            <span>이관번호 ${escapeHtml(r.transferNo)}</span>
+            <span>· 요청사이트 ${escapeHtml(r.reqSite)}</span>
+            <span>· 수량 ${Number(r.quantity).toLocaleString()}${r.unit ? ' ' + escapeHtml(r.unit) : ''}</span>
+            ${r.returnDate ? `<span>· 반납예정 ${escapeHtml(r.returnDate)}</span>` : ''}
+          </div>
+          ${canManage ? `
+            <div class="inbound-card-actions" style="grid-template-columns: repeat(2, 1fr);">
+              <button type="button" class="btn btn-small btn-primary transfer-approve-btn" data-row-index="${r.rowIndex}">승인</button>
+              <button type="button" class="btn btn-small btn-danger transfer-reject-btn" data-row-index="${r.rowIndex}">거절</button>
+            </div>
+          ` : `<div class="muted">승인 / 거절은 관리자·자재담당자만 가능합니다.</div>`}
+        </div>
+      `).join('')
+      : `<div class="empty-state">들어온 이관 요청이 없습니다.</div>`;
+
+    $('#transfer-approved-list').innerHTML = approvedOutgoing.length
+      ? approvedOutgoing.map((r) => {
+        const returned = r.status === '반납';
+        return `
+        <div class="card transfer-card">
+          <div class="inbound-card-top">
+            <div class="row-main">
+              <span class="primary">${escapeHtml(r.itemName)}</span>
+              <span class="secondary">${escapeHtml(r.itemId)}${r.spec ? ' · ' + escapeHtml(r.spec) : ''}</span>
+            </div>
+            <span class="po-status-tag ${returned ? 'po-status-done' : 'po-status-applied'}">${returned ? '반납완료' : '승인'}</span>
+          </div>
+          <div class="transfer-card-meta">
+            <span>이관번호 ${escapeHtml(r.transferNo)}</span>
+            <span>· 요청사이트 ${escapeHtml(r.reqSite)}</span>
+            <span>· 수량 ${Number(r.quantity).toLocaleString()}</span>
+            ${r.approvedDate ? `<span>· 승인일 ${escapeHtml(r.approvedDate)}</span>` : ''}
+            ${r.returnDate ? `<span>· 반납예정 ${escapeHtml(r.returnDate)}</span>` : ''}
+            ${returned && r.returnedDate ? `<span>· 반납일 ${escapeHtml(r.returnedDate)}</span>` : ''}
+          </div>
+        </div>
+      `;
+      }).join('')
+      : `<div class="empty-state">승인된 건이 없습니다.</div>`;
+
+    $('#transfer-returnable-list').innerHTML = returnable.length
+      ? returnable.map((r) => `
+        <div class="card transfer-card" data-row-index="${r.rowIndex}">
+          <div class="inbound-card-top">
+            <div class="row-main">
+              <span class="primary">${escapeHtml(r.itemName)}</span>
+              <span class="secondary">${escapeHtml(r.itemId)}${r.spec ? ' · ' + escapeHtml(r.spec) : ''}</span>
+            </div>
+            <span class="po-status-tag po-status-applied">승인</span>
+          </div>
+          <div class="transfer-card-meta">
+            <span>이관번호 ${escapeHtml(r.transferNo)}</span>
+            <span>· 공급사이트 ${escapeHtml(r.supplySite)}</span>
+            <span>· 수량 ${Number(r.quantity).toLocaleString()}</span>
+            ${r.returnDate ? `<span>· 반납예정 ${escapeHtml(r.returnDate)}</span>` : ''}
+          </div>
+          <div class="inbound-card-actions" style="grid-template-columns: 1fr;">
+            <button type="button" class="btn btn-small btn-primary transfer-return-btn" data-row-index="${r.rowIndex}">반납</button>
+          </div>
+        </div>
+      `).join('')
+      : `<div class="empty-state">반납할 이관 건이 없습니다.</div>`;
+
+    $$('.transfer-approve-btn').forEach((b) => b.addEventListener('click', onTransferApprove));
+    $$('.transfer-reject-btn').forEach((b) => b.addEventListener('click', onTransferReject));
+    $$('.transfer-return-btn').forEach((b) => b.addEventListener('click', onTransferReturn));
+  }
+
+  async function onTransferApprove(e) {
+    const rowIndex = Number(e.currentTarget.dataset.rowIndex);
+    if (!confirm('이관 요청을 승인하시겠습니까? 공급사이트 재고가 줄고 요청사이트 재고가 늘어납니다.')) return;
+    e.currentTarget.disabled = true;
+    try {
+      const data = await Api.post('approveTransfer', { site: state.site, rowIndex, pin: state.user.pin });
+      state.transferListData = data;
+      renderTransferConfirm();
+      toast('승인되었습니다.', 'success');
+    } catch (err) {
+      toast(err.message || '승인 중 오류가 발생했습니다.', 'error');
+      loadTransferList();
+    }
+  }
+
+  async function onTransferReject(e) {
+    const rowIndex = Number(e.currentTarget.dataset.rowIndex);
+    if (!confirm('이관 요청을 거절하시겠습니까?')) return;
+    e.currentTarget.disabled = true;
+    try {
+      const data = await Api.post('rejectTransfer', { site: state.site, rowIndex, pin: state.user.pin });
+      state.transferListData = data;
+      renderTransferConfirm();
+      toast('거절되었습니다.', 'success');
+    } catch (err) {
+      toast(err.message || '거절 중 오류가 발생했습니다.', 'error');
+      loadTransferList();
+    }
+  }
+
+  function onTransferReturn(e) {
+    const rowIndex = Number(e.currentTarget.dataset.rowIndex);
+    const row = (state.transferListData.returnable || []).find((r) => r.rowIndex === rowIndex);
+    if (row) openTransferReturnModal(row);
+  }
+
+  // "반납" 버튼: 반납 수량 입력 팝업. 확인 시 요청사이트(빌린 곳) 재고가 줄고 공급사이트 재고가
+  // 늘어난다. 기본값은 이관수량 전체이며, 이관수량을 넘겨 입력할 수 없다.
+  function openTransferReturnModal(row) {
+    const maxQty = Math.max(0, Number(row.quantity) || 0);
+    const html = `
+      <div class="modal-sheet">
+        <h3>반납 처리</h3>
+        <p class="muted">${escapeHtml(row.itemName)} (${escapeHtml(row.itemId)})</p>
+        <p class="muted">이관번호 ${escapeHtml(row.transferNo)} · 공급사이트 ${escapeHtml(row.supplySite)} · 이관수량 ${maxQty.toLocaleString()}</p>
+        <label class="field-label">반납 수량</label>
+        <input type="number" id="transfer-return-qty" class="input" min="1" max="${maxQty}" step="1" inputmode="numeric" value="${maxQty}" />
+        <div class="modal-actions">
+          <button class="btn btn-secondary" id="transfer-return-cancel">취소</button>
+          <button class="btn btn-primary" id="transfer-return-confirm">확인</button>
+        </div>
+      </div>
+    `;
+    openModal(html);
+    const qtyInput = $('#transfer-return-qty');
+    const confirmBtn = $('#transfer-return-confirm');
+    let submitting = false;
+    $('#transfer-return-cancel').addEventListener('click', closeModal);
+    qtyInput.addEventListener('input', () => {
+      const val = Number(qtyInput.value);
+      if (val > maxQty) {
+        qtyInput.value = maxQty;
+        toast(`최대 ${maxQty.toLocaleString()}개까지 반납 가능합니다.`, 'error');
+      }
+    });
+    confirmBtn.addEventListener('click', async () => {
+      if (submitting) return;
+      let qty = Number(qtyInput.value);
+      if (!qty || qty <= 0) {
+        toast('올바른 수량을 입력하세요.', 'error');
+        return;
+      }
+      if (qty > maxQty) {
+        qty = maxQty;
+        qtyInput.value = maxQty;
+        toast(`최대 ${maxQty.toLocaleString()}개까지 반납 가능합니다.`, 'error');
+      }
+      submitting = true;
+      confirmBtn.disabled = true;
+      try {
+        const data = await Api.post('returnTransfer', { site: state.site, rowIndex: row.rowIndex, quantity: qty, pin: state.user.pin });
+        state.transferListData = data;
+        renderTransferConfirm();
+        toast('반납 처리되었습니다.', 'success');
+        closeModal();
+      } catch (err) {
+        toast(err.message || '반납 처리 중 오류가 발생했습니다.', 'error');
+      } finally {
+        submitting = false;
+        confirmBtn.disabled = false;
+      }
+    });
   }
 
   // ------------------------- 자재 목록 -------------------------
@@ -2923,6 +3459,7 @@
     $('#download-purchase-btn').addEventListener('click', () => exportDownloadExcel('purchase'));
     $('#download-outbound-btn').addEventListener('click', () => exportDownloadExcel('outbound'));
     $('#download-transaction-btn').addEventListener('click', () => exportDownloadExcel('transaction'));
+    $('#download-transfer-btn').addEventListener('click', exportTransferDownload);
   }
 
   // 라인 드롭다운은 사이트마다 목록이 달라서, 다운로드 화면에 들어갈 때마다 현재 사이트 기준으로 다시 채운다.
@@ -2949,6 +3486,50 @@
       $('#download-buttons').classList.add('hidden');
     }
     populateDownloadZoneOptions();
+    populateDownloadTransferSupplyOptions();
+  }
+
+  // 이관 다운로드용 공급사이트 드롭다운 (전체 사이트 + "전체 공급사이트"). 현재 사이트와 무관하게
+  // 어느 사이트가 공급했는지로 필터하므로 3개 사이트 전부 선택 가능하다.
+  function populateDownloadTransferSupplyOptions() {
+    const sel = $('#download-transfer-supply-select');
+    if (!sel) return;
+    const current = sel.value;
+    sel.innerHTML = `<option value="">전체 공급사이트</option>` +
+      SITES.map((s) => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('');
+    sel.value = SITES.includes(current) ? current : '';
+  }
+
+  // 이관 다운로드: 위쪽 기간(승인일 기준) + 공급사이트 조건으로 승인된 이관 건만 조회해 바로 엑셀로 만든다.
+  // 파일명: 이관_YYYYMMDD_공급사이트.xlsx (오늘 날짜 기준, 공급사이트 미선택 시 "전체").
+  async function exportTransferDownload() {
+    const startDate = $('#download-date-start').value;
+    const endDate = $('#download-date-end').value;
+    const supplySite = $('#download-transfer-supply-select').value;
+    const btn = $('#download-transfer-btn');
+    btn.disabled = true;
+    try {
+      const rows = await Api.get('getTransferDownload', { startDate, endDate, supplySite });
+      if (!rows.length) {
+        toast('다운로드할 이관 데이터가 없습니다.', 'error');
+        return;
+      }
+      const columns = ['자재코드', '자재명', '규격', '단위', '출고수량'];
+      const aoa = [columns].concat(rows.map((r) => [r.itemId, r.itemName, r.spec, r.unit, r.qty]));
+      const ws = XLSX.utils.aoa_to_sheet(aoa);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, '이관');
+      const now = new Date();
+      const y = now.getFullYear();
+      const m = String(now.getMonth() + 1).padStart(2, '0');
+      const d = String(now.getDate()).padStart(2, '0');
+      const label = supplySite || '전체';
+      XLSX.writeFile(wb, `이관_${y}${m}${d}_${label}.xlsx`);
+    } catch (err) {
+      toast(err.message || '이관 다운로드 중 오류가 발생했습니다.', 'error');
+    } finally {
+      btn.disabled = false;
+    }
   }
 
   // 검색 버튼: 구매/출고/거래명세서 세 가지 다운로드 데이터를 한 번에 조회해 두었다가,

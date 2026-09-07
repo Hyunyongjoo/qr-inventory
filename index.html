@@ -90,6 +90,10 @@
           <span class="action-icon">↩️</span>
           <span class="action-label">반납</span>
         </button>
+        <button class="action-btn action-btn-transfer" id="action-transfer-btn">
+          <span class="action-icon">🔀</span>
+          <span class="action-label">이관</span>
+        </button>
       </div>
     </section>
 
@@ -319,6 +323,91 @@
       </div>
     </section>
 
+    <!-- 이관 메뉴 (이관 요청 / 이관 요청 확인 분기) -->
+    <section id="view-transfer-menu" class="view hidden">
+      <div class="view-header">
+        <h2>이관</h2>
+        <button class="btn-link" id="transfer-menu-back-btn">← 뒤로</button>
+      </div>
+      <div class="scan-context muted" id="transfer-menu-context-label"></div>
+      <div class="site-grid">
+        <button class="site-btn" id="transfer-request-btn">이관 요청</button>
+        <button class="site-btn" id="transfer-confirm-btn">이관 요청 확인</button>
+      </div>
+    </section>
+
+    <!-- 이관 요청 (빌리는 사이트) -->
+    <section id="view-transfer-request" class="view hidden">
+      <div class="view-header">
+        <h2>이관 요청</h2>
+        <button class="btn-link" id="transfer-request-back-btn">← 뒤로</button>
+      </div>
+      <div class="scan-context muted" id="transfer-request-context-label"></div>
+
+      <label class="field-label">공급사이트 (빌릴 곳)</label>
+      <select id="transfer-supply-select" class="select"></select>
+
+      <div id="transfer-reader-wrap">
+        <div id="transfer-qr-reader" class="hidden"></div>
+        <div id="transfer-scan-error-text" class="scan-error-text hidden"></div>
+        <button id="transfer-scan-toggle-btn" class="btn btn-primary btn-block">카메라 스캔 시작</button>
+      </div>
+
+      <div class="manual-entry">
+        <input type="text" id="transfer-manual-code-input" class="input" placeholder="또는 자재코드 직접 입력 (예: IT-000001)" />
+        <button id="transfer-manual-lookup-btn" class="btn btn-secondary">조회</button>
+      </div>
+
+      <div id="transfer-lookup-error" class="scan-error-text hidden"></div>
+
+      <input type="text" id="transfer-search-input" class="input" placeholder="자재코드 또는 자재명으로 검색" />
+      <div id="transfer-search-results" class="list"></div>
+
+      <div id="transfer-result-card" class="card hidden">
+        <div class="item-info-in">
+          <div class="info-row"><span class="info-label">자재코드</span><span id="transfer-item-code"></span></div>
+          <div class="info-row"><span class="info-label">품명</span><span id="transfer-item-name"></span></div>
+          <div class="info-row"><span class="info-label">규격</span><span id="transfer-item-spec"></span></div>
+        </div>
+
+        <label class="field-label">수량</label>
+        <input type="number" id="transfer-quantity" class="input" min="1" step="1" placeholder="수량 입력" inputmode="numeric" />
+
+        <div class="scan-actions">
+          <button id="transfer-cancel-btn" class="btn btn-secondary">취소</button>
+          <button id="transfer-add-btn" class="btn btn-primary">추가</button>
+        </div>
+      </div>
+
+      <div id="transfer-cart-section" class="cart-section hidden">
+        <div class="cart-header">
+          <h3>담은 목록 (<span id="transfer-cart-count">0</span>)</h3>
+          <button class="btn-link" id="transfer-cart-clear-btn">전체 삭제</button>
+        </div>
+        <div id="transfer-cart-list" class="list"></div>
+        <label class="field-label">반납예정일</label>
+        <input type="date" id="transfer-return-date" class="input" />
+      </div>
+    </section>
+
+    <!-- 이관 요청 확인 (공급사이트 담당자 + 반납) -->
+    <section id="view-transfer-confirm" class="view hidden">
+      <div class="view-header">
+        <h2>이관 요청 확인</h2>
+        <button class="btn-link" id="transfer-confirm-back-btn">← 뒤로</button>
+      </div>
+      <div class="scan-context muted" id="transfer-confirm-context-label"></div>
+
+      <h3 class="transfer-section-title">들어온 이관 요청</h3>
+      <div id="transfer-incoming-list" class="list"></div>
+
+      <h3 class="transfer-section-title">승인된 건</h3>
+      <div id="transfer-approved-list" class="list"></div>
+
+      <h3 class="transfer-section-title">반납 (우리가 빌린 자재)</h3>
+      <div id="transfer-returnable-list" class="list"></div>
+    </section>
+
     <!-- 자재 -->
     <section id="view-items" class="view hidden">
       <div id="items-search-sticky" class="search-sticky">
@@ -401,6 +490,14 @@
         <button id="download-outbound-btn" class="btn btn-primary btn-block">출고 다운로드</button>
         <button id="download-transaction-btn" class="btn btn-primary btn-block">거래명세서 다운로드</button>
       </div>
+
+      <div class="transfer-download-block">
+        <h3 class="transfer-section-title">이관 다운로드</h3>
+        <label class="field-label">공급사이트 (선택)</label>
+        <select id="download-transfer-supply-select" class="select"></select>
+        <button id="download-transfer-btn" class="btn btn-primary btn-block">이관 다운로드</button>
+        <p class="muted">위 기간(승인일 기준) + 공급사이트 조건으로 승인된 이관 건만 받습니다.</p>
+      </div>
     </section>
 
   </main>
@@ -429,6 +526,12 @@
   <div id="return-cart-footer" class="cart-footer hidden">
     <button id="return-submit-btn" class="btn btn-primary btn-block">
       반납 완료 (<span id="return-submit-count">0</span>건)
+    </button>
+  </div>
+
+  <div id="transfer-cart-footer" class="cart-footer hidden">
+    <button id="transfer-submit-btn" class="btn btn-primary btn-block">
+      이관 요청 완료 (<span id="transfer-submit-count">0</span>건)
     </button>
   </div>
 

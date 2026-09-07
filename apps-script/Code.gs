@@ -107,6 +107,9 @@ function doGet(e) {
       case 'transferList':
         result = getTransferList_(e.parameter.site || '');
         break;
+      case 'getSupplySiteStock':
+        result = getSupplySiteStock_(e.parameter.site || '', e.parameter.query || '');
+        break;
       case 'getTransferDownload':
         result = getTransferDownload_(e.parameter.startDate || '', e.parameter.endDate || '', e.parameter.supplySite || '');
         break;
@@ -2120,6 +2123,41 @@ function requestTransfer_(body) {
   } finally {
     lock.releaseLock();
   }
+}
+
+// 이관 요청 화면 전용: 공급사이트 재고 시트에서 현재고 > 0 인 항목만 반환한다.
+// query가 있으면 자재코드/자재명(품명)에 부분 일치하는 항목만 남긴다(대소문자 무시).
+// 자재명/규격/단위는 Items 시트에서 보충하되, Items에 없는(삭제된) 자재는 재고 시트에 적힌 값으로 표시한다.
+function getSupplySiteStock_(site, query) {
+  assertSite_(site);
+  const items = readAll_(sheet_('Items'));
+  const itemMap = {};
+  items.forEach(it => (itemMap[String(it.ItemID)] = it));
+
+  const stockRows = readAll_(sheet_(stockSheetName_(site)));
+  const q = (query || '').toString().trim().toLowerCase();
+
+  let rows = stockRows
+    .filter(s => (Number(s['현재고']) || 0) > 0)
+    .map(s => {
+      const item = itemMap[String(s['자재코드'])];
+      return {
+        itemId: s['자재코드'],
+        itemName: (item && item.ItemName) || s['자재명'] || '',
+        spec: (item && item.Spec) || s['규격'] || '',
+        unit: (item && item.Unit) || '',
+        quantity: Number(s['현재고']) || 0
+      };
+    });
+
+  if (q) {
+    rows = rows.filter(r =>
+      String(r.itemName).toLowerCase().includes(q) ||
+      String(r.itemId).toLowerCase().includes(q));
+  }
+
+  rows.sort((a, b) => String(a.itemName).localeCompare(String(b.itemName)));
+  return rows;
 }
 
 // 이관 목록 조회. 현재 사이트 기준으로 세 갈래로 나눠 돌려준다:

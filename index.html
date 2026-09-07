@@ -350,17 +350,17 @@
       <div id="transfer-reader-wrap">
         <div id="transfer-qr-reader" class="hidden"></div>
         <div id="transfer-scan-error-text" class="scan-error-text hidden"></div>
-        <button id="transfer-scan-toggle-btn" class="btn btn-primary btn-block">카메라 스캔 시작</button>
+        <button id="transfer-scan-toggle-btn" class="btn btn-secondary btn-block">QR 스캔</button>
       </div>
 
+      <label class="field-label">자재 검색 (선택)</label>
       <div class="manual-entry">
-        <input type="text" id="transfer-manual-code-input" class="input" placeholder="또는 자재코드 직접 입력 (예: IT-000001)" />
-        <button id="transfer-manual-lookup-btn" class="btn btn-secondary">조회</button>
+        <input type="text" id="transfer-search-input" class="input" placeholder="자재코드 / 품명 (비워두면 전체 재고)" />
+        <button id="transfer-search-btn" class="btn btn-secondary">조회</button>
       </div>
 
       <div id="transfer-lookup-error" class="scan-error-text hidden"></div>
 
-      <input type="text" id="transfer-search-input" class="input" placeholder="자재코드 또는 자재명으로 검색" />
       <div id="transfer-search-results" class="list"></div>
 
       <div id="transfer-result-card" class="card hidden">
@@ -368,6 +368,7 @@
           <div class="info-row"><span class="info-label">자재코드</span><span id="transfer-item-code"></span></div>
           <div class="info-row"><span class="info-label">품명</span><span id="transfer-item-name"></span></div>
           <div class="info-row"><span class="info-label">규격</span><span id="transfer-item-spec"></span></div>
+          <div class="info-row"><span class="info-label">현재고</span><span id="transfer-item-stock"></span></div>
         </div>
 
         <label class="field-label">수량</label>

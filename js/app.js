@@ -40,6 +40,7 @@
     orderOutScanning: false,
     transferSupplySite: null,
     currentTransferItem: null,
+    transferStockRows: [],
     transferCart: [],
     transferHtml5QrCode: null,
     transferScanning: false,
@@ -1939,12 +1940,21 @@
     $('#transfer-confirm-btn').addEventListener('click', goToTransferConfirm);
 
     $('#transfer-request-back-btn').addEventListener('click', () => switchView('transfer-menu'));
+    $('#transfer-supply-select').addEventListener('change', onTransferSupplyChange);
     $('#transfer-scan-toggle-btn').addEventListener('click', toggleTransferScanning);
-    $('#transfer-manual-lookup-btn').addEventListener('click', () => {
-      const code = $('#transfer-manual-code-input').value.trim();
-      if (code) handleTransferScannedCode(code);
+    $('#transfer-search-btn').addEventListener('click', loadTransferStock);
+    $('#transfer-search-input').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') loadTransferStock();
     });
-    $('#transfer-search-input').addEventListener('input', debounce(searchTransferMaterials, 300));
+    $('#transfer-quantity').addEventListener('input', () => {
+      const item = state.currentTransferItem;
+      if (!item || item.stock == null) return;
+      const v = Number($('#transfer-quantity').value);
+      if (v > item.stock) {
+        $('#transfer-quantity').value = item.stock;
+        toast(`현재고 ${Number(item.stock).toLocaleString()}개까지 가능합니다.`, 'error');
+      }
+    });
     $('#transfer-add-btn').addEventListener('click', addToTransferCart);
     $('#transfer-cancel-btn').addEventListener('click', cancelTransferSelection);
     $('#transfer-cart-clear-btn').addEventListener('click', () => {
@@ -1958,6 +1968,15 @@
     $('#transfer-confirm-back-btn').addEventListener('click', () => switchView('transfer-menu'));
   }
 
+  // 공급사이트를 바꾸면 이전 사이트 기준으로 조회했던 재고 목록/선택은 무효이므로 비운다.
+  function onTransferSupplyChange() {
+    state.currentTransferItem = null;
+    state.transferStockRows = [];
+    $('#transfer-result-card').classList.add('hidden');
+    $('#transfer-search-results').innerHTML = '';
+    clearTransferLookupError();
+  }
+
   function goToTransferMenu() {
     switchView('transfer-menu');
     $('#transfer-menu-context-label').textContent = `${state.site} · 이관`;
@@ -1968,11 +1987,11 @@
   function goToTransferRequest() {
     state.currentTransferItem = null;
     state.transferCart = [];
+    state.transferStockRows = [];
     state.transferSupplySite = null;
     $('#transfer-result-card').classList.add('hidden');
     $('#transfer-search-input').value = '';
     $('#transfer-search-results').innerHTML = '';
-    $('#transfer-manual-code-input').value = '';
     $('#transfer-return-date').value = '';
     clearTransferScanError();
     clearTransferLookupError();
@@ -2062,7 +2081,7 @@
       .catch((err) => {
         $('#transfer-qr-reader').classList.add('hidden');
         state.transferScanning = false;
-        $('#transfer-scan-toggle-btn').textContent = '카메라 스캔 시작';
+        $('#transfer-scan-toggle-btn').textContent = 'QR 스캔';
         const message = String((err && err.message) || err || '');
         let friendly = '카메라를 시작할 수 없습니다.';
         if (/NotAllowedError|Permission/i.test(message)) {
@@ -2083,19 +2102,30 @@
     }
     state.transferScanning = false;
     $('#transfer-qr-reader').classList.add('hidden');
-    $('#transfer-scan-toggle-btn').textContent = '카메라 스캔 시작';
+    $('#transfer-scan-toggle-btn').textContent = 'QR 스캔';
   }
 
+  // QR 스캔: 스캔한 코드를 검색어로 넣고 공급사이트 재고를 조회한다. 정확히 일치하는 자재가
+  // 목록에 있으면 곧바로 선택 카드를 띄운다(연속 스캔은 결과 카드가 떠 있는 동안 무시됨).
   async function handleTransferScannedCode(rawCode) {
     const code = String(rawCode || '').trim();
     if (!code) return;
+    const supplySite = $('#transfer-supply-select').value;
+    if (!supplySite) { toast('공급사이트를 먼저 선택하세요.', 'error'); return; }
     clearTransferLookupError();
     if (DEBUG_QR) toast(`스캔된 코드: ${code}`, '');
     state.transferScanBusy = true;
     try {
-      const item = await Api.get('itemByCode', { code });
-      selectTransferMaterial(item);
-      $('#transfer-manual-code-input').value = '';
+      $('#transfer-search-input').value = code;
+      const rows = await Api.get('getSupplySiteStock', { site: supplySite, query: code });
+      state.transferStockRows = rows;
+      renderTransferStockList(rows, code);
+      const exact = rows.find((r) => String(r.itemId).trim() === code);
+      if (exact) {
+        selectTransferStock(exact);
+      } else if (!rows.length) {
+        showTransferLookupError(`공급사이트(${supplySite})에 재고가 있는 "${code}" 자재가 없습니다.`);
+      }
     } catch (err) {
       showTransferLookupError(err.message);
       toast(err.message, 'error');
@@ -2104,78 +2134,98 @@
     }
   }
 
-  async function searchTransferMaterials() {
+  // "조회" 버튼 / Enter: 공급사이트 재고를 조회한다. 검색어가 있으면 해당 자재만, 없으면
+  // 현재고가 있는 전체 재고를 표시한다(현재고 0 이하 항목은 서버에서 제외됨).
+  async function loadTransferStock() {
+    const supplySite = $('#transfer-supply-select').value;
+    if (!supplySite) { toast('공급사이트를 먼저 선택하세요.', 'error'); return; }
     const q = $('#transfer-search-input').value.trim();
     const resultsEl = $('#transfer-search-results');
-    if (!q) {
-      resultsEl.innerHTML = '';
-      return;
-    }
-    resultsEl.innerHTML = `<div class="empty-state">검색 중...</div>`;
+    clearTransferLookupError();
+    state.currentTransferItem = null;
+    $('#transfer-result-card').classList.add('hidden');
+    resultsEl.innerHTML = `<div class="empty-state">조회 중...</div>`;
     try {
-      const rows = await Api.get('items', { q });
-      if (!rows.length) {
-        resultsEl.innerHTML = `<div class="empty-state">검색 결과가 없습니다.</div>`;
-        return;
-      }
-      resultsEl.innerHTML = rows.map((it, i) => `
-        <div class="item-row" data-idx="${i}">
-          <div class="row-main">
-            <span class="primary">${escapeHtml(it.ItemName)}</span>
-            <span class="secondary">${escapeHtml(it.ItemID)}${it.Spec ? ' · ' + escapeHtml(it.Spec) : ''}</span>
-          </div>
-        </div>
-      `).join('');
-      $$('.item-row', resultsEl).forEach((row, i) => {
-        row.addEventListener('click', () => selectTransferMaterial(rows[i]));
-      });
+      const rows = await Api.get('getSupplySiteStock', { site: supplySite, query: q });
+      state.transferStockRows = rows;
+      renderTransferStockList(rows, q);
     } catch (err) {
-      renderApiError_(resultsEl, err, searchTransferMaterials);
+      state.transferStockRows = [];
+      renderApiError_(resultsEl, err, loadTransferStock);
     }
   }
 
-  function selectTransferMaterial(item) {
-    state.currentTransferItem = item;
+  function renderTransferStockList(rows, q) {
+    const resultsEl = $('#transfer-search-results');
+    if (!rows.length) {
+      resultsEl.innerHTML = `<div class="empty-state">${q ? '검색 결과가 없습니다.' : '재고가 있는 자재가 없습니다.'}</div>`;
+      return;
+    }
+    resultsEl.innerHTML = rows.map((r, i) => `
+      <div class="stock-row transfer-stock-row" data-idx="${i}">
+        <div class="row-main">
+          <span class="primary">${escapeHtml(r.itemName)}</span>
+          <span class="secondary">${escapeHtml(r.itemId)}${r.spec ? ' · ' + escapeHtml(r.spec) : ''}</span>
+        </div>
+        <div class="row-qty">${Number(r.quantity).toLocaleString()} <span class="secondary">${escapeHtml(r.unit || '')}</span></div>
+      </div>
+    `).join('');
+    $$('.transfer-stock-row', resultsEl).forEach((el, i) => {
+      el.addEventListener('click', () => selectTransferStock(rows[i]));
+    });
+  }
+
+  function selectTransferStock(row) {
+    const stock = Number(row.quantity) || 0;
+    state.currentTransferItem = {
+      itemId: row.itemId,
+      itemName: row.itemName,
+      spec: row.spec,
+      unit: row.unit || '',
+      stock
+    };
     $('#transfer-result-card').classList.remove('hidden');
-    $('#transfer-item-code').textContent = item.ItemID;
-    $('#transfer-item-name').textContent = item.ItemName;
-    $('#transfer-item-spec').textContent = item.Spec || '-';
+    $('#transfer-item-code').textContent = row.itemId;
+    $('#transfer-item-name').textContent = row.itemName;
+    $('#transfer-item-spec').textContent = row.spec || '-';
+    $('#transfer-item-stock').textContent = `${stock.toLocaleString()}${row.unit ? ' ' + row.unit : ''}`;
     $('#transfer-quantity').value = '';
-    $('#transfer-search-results').innerHTML = '';
+    $('#transfer-quantity').max = stock;
   }
 
   function cancelTransferSelection() {
     state.currentTransferItem = null;
     $('#transfer-result-card').classList.add('hidden');
     $('#transfer-quantity').value = '';
-    $('#transfer-manual-code-input').value = '';
   }
 
   function addToTransferCart() {
     if (!state.currentTransferItem) return;
+    const item = state.currentTransferItem;
     const quantity = Number($('#transfer-quantity').value);
     if (!quantity || quantity <= 0) {
       toast('올바른 수량을 입력하세요.', 'error');
       return;
     }
+    if (item.stock != null && quantity > item.stock) {
+      toast(`현재고(${Number(item.stock).toLocaleString()})를 초과할 수 없습니다.`, 'error');
+      return;
+    }
 
-    const item = state.currentTransferItem;
     state.transferCart.push({
       uid: 't' + Date.now() + Math.floor(Math.random() * 1000),
-      itemId: item.ItemID,
-      itemName: item.ItemName,
-      spec: item.Spec,
+      itemId: item.itemId,
+      itemName: item.itemName,
+      spec: item.spec,
       quantity
     });
     renderTransferCart();
-    toast(`${item.ItemName} 담았습니다.`, 'success');
+    toast(`${item.itemName} 담았습니다.`, 'success');
 
+    // 목록은 그대로 두어 같은 조회 결과에서 다른 자재를 이어서 담을 수 있게 한다.
     state.currentTransferItem = null;
     $('#transfer-result-card').classList.add('hidden');
-    $('#transfer-search-input').value = '';
-    $('#transfer-search-results').innerHTML = '';
-    $('#transfer-manual-code-input').value = '';
-    $('#transfer-search-input').focus();
+    $('#transfer-quantity').value = '';
   }
 
   function renderTransferCart() {

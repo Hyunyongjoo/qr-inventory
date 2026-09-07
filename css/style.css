@@ -682,6 +682,9 @@ html, body {
   margin-bottom: 8px;
 }
 .transfer-card .inbound-card-actions { margin-top: 4px; }
+.transfer-stock-row { cursor: pointer; }
+.transfer-stock-row .row-main { flex: 1; min-width: 0; }
+.transfer-stock-row:active { border-color: var(--accent); }
 .transfer-download-block {
   margin-top: 22px;
   padding-top: 16px;

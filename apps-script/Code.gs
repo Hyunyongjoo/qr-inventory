@@ -610,6 +610,12 @@ function isOnHoldRow_(r) {
   return String(r['재고사용(O,X)'] || '').trim() === '보류';
 }
 
+// 라인 컬럼값이 "안전재고"인 행(안전재고구매로 등록된 구매요청). 입고확인 화면에서
+// 재고사용/구매필요/구매보류/출고 버튼은 막고, 입고/수량변경/취소만 허용한다.
+function isSafetyStockRow_(r) {
+  return String(r['라인'] || '').trim() === SAFETY_STOCK_ZONE;
+}
+
 // 누적출고수량이 요청수량 이상이면(=출고여부가 "출고완료"가 되는 조건) 이미 마감된 행으로 보고
 // 더 이상 입고/재출고 대상이 아니므로 제외한다. 별도 플래그 없이 수량 비교만으로 판단한다.
 function isOutboundDoneRow_(r) {
@@ -1427,6 +1433,9 @@ function updateStockUsage_(body) {
     if (value !== 'O' && value !== 'X' && value !== '보류') throw new Error('올바르지 않은 값입니다.');
 
     const row = findPoRowByIndex_(site, body.rowIndex);
+    if (isSafetyStockRow_(row)) {
+      throw new Error('안전재고 건은 재고사용/구매필요/구매보류를 변경할 수 없습니다.');
+    }
     const info = computeInboundStatus_(row);
     if (STOCK_USAGE_LOCKED_STATUSES.indexOf(info.status) !== -1) {
       throw new Error('구매완료 이후에는 재고사용/구매필요/구매보류를 변경할 수 없습니다.');
@@ -1443,6 +1452,8 @@ function updateStockUsage_(body) {
 // (QR 스캔 입고(stockIn_)와 달리 여러 발주에 FIFO로 나눠 채우지 않고, 화면에 보이는 그 요청 건에만 반영한다.)
 // 구매완료(구매요청번호 등록) 상태 중 구매완료/부분입고 건에서만 처리할 수 있다 — 재고확인중/구매대기/
 // 재고사용/입고완료/부분출고/출고완료는 모두 막는다(입고 버튼 활성화 조건과 동일하게 서버에서도 검증).
+// 예외: 안전재고 건(라인="안전재고")은 구매요청번호 없이 등록돼 계속 구매대기 상태이므로,
+// 구매대기 상태에서도 입고 처리를 허용한다.
 function inboundByManager_(body) {
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
@@ -1454,8 +1465,14 @@ function inboundByManager_(body) {
 
     const row = findPoRowByIndex_(site, body.rowIndex);
     const info = computeInboundStatus_(row);
-    if (info.status !== '구매완료' && info.status !== '부분입고') {
-      throw new Error('구매완료(구매완료/부분입고) 상태에서만 입고 처리할 수 있습니다.');
+    const isSafety = isSafetyStockRow_(row);
+    const allowed = isSafety
+      ? (info.status === '구매대기' || info.status === '구매완료' || info.status === '부분입고')
+      : (info.status === '구매완료' || info.status === '부분입고');
+    if (!allowed) {
+      throw new Error(isSafety
+        ? '안전재고 건은 구매대기/구매완료/부분입고 상태에서만 입고 처리할 수 있습니다.'
+        : '구매완료(구매완료/부분입고) 상태에서만 입고 처리할 수 있습니다.');
     }
 
     const requested = Number(row['요청수량']) || 0;
@@ -1496,6 +1513,7 @@ function outboundComplete_(body) {
     const worker = assertManagerRole_(body.pin);
     const row = findPoRowByIndex_(site, body.rowIndex);
 
+    if (isSafetyStockRow_(row)) throw new Error('안전재고 건은 이 화면에서 출고할 수 없습니다.');
     if (isOutboundDoneRow_(row)) throw new Error('이미 출고완료 처리된 요청입니다.');
 
     const stockUse = String(row['재고사용(O,X)'] || '').trim().toUpperCase();

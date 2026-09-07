@@ -3223,14 +3223,21 @@
     const isStockUsed = stockUseUpper === 'O';
     const isPurchaseNeeded = stockUseUpper === 'X';
     const isOnHold = stockUseTrim === '보류';
+    // 안전재고 건: 라인 컬럼값이 "안전재고"인 요청. 재고사용/구매필요/구매보류/출고 버튼은 비활성화하고
+    // 입고/수량변경/취소 버튼은 활성화한다(수량변경·취소는 안전재고 건이 구매대기 상태를 유지하므로
+    // 기존 조건으로도 이미 열려 있다).
+    const isSafetyStock = String(r.zone || '').trim() === SAFETY_STOCK_ZONE;
     // 입고 버튼은 구매완료(구매요청번호 등록) 상태 중 구매완료/부분입고일 때만 활성화한다.
     // 재고확인중/구매대기/구매보류/재고사용/입고완료/부분출고/출고완료는 모두 비활성화.
-    const canReceive = r.status === '구매완료' || r.status === '부분입고';
+    // 단, 안전재고 건은 구매요청번호 없이(구매대기 상태) 바로 입고하므로, 잔여수량이 남아 있으면 활성화한다.
+    const canReceive = isSafetyStock
+      ? (r.requestedQty - r.cumulativeQty) > 0 && !r.outboundDone
+      : (r.status === '구매완료' || r.status === '부분입고');
     // 출고 진행 상태(부분출고/출고완료)가 status 표시를 덮어쓸 수 있으므로, 출고완료 버튼 활성화
     // 여부는 status 문자열이 아니라 원본 입고 완료 여부(누적입고수량 >= 요청수량)로 판단한다.
-    // 재고사용(O)/입고완료/부분출고는 활성화하고, 출고완료(전량 출고됨)만 비활성화한다.
+    // 재고사용(O)/입고완료/부분출고는 활성화하고, 출고완료(전량 출고됨)와 안전재고 건은 비활성화한다.
     const isInboundDone = r.requestedQty > 0 && r.cumulativeQty >= r.requestedQty;
-    const canShipOut = !r.outboundDone && (stockUseUpper === 'O' || isInboundDone);
+    const canShipOut = !isSafetyStock && !r.outboundDone && (stockUseUpper === 'O' || isInboundDone);
 
     // "수정" 버튼: 입고완료/출고완료 건에만 표시하고, 그 건이 확정된 당일(최종입고일/최종출고일)에만
     // 활성화한다. 입고완료 건은 입고수량을, 출고완료 건은 출고수량을 고친다(onInboundEditClick).
@@ -3245,7 +3252,8 @@
     //    다시 눌러 값을 바꿀 수 있어야 하므로 이미 선택된 값이라고 잠그지 않는다.
     //  - 재고사용/구매보류로 이미 전환된 건은 그 버튼 자신만 잠그고(선택됨 표시), 나머지 둘은
     //    열어 두어 언제든 다시 전환할 수 있게 한다.
-    const stockActionsLocked = STOCK_USAGE_LOCKED_STATUSES.indexOf(r.status) !== -1;
+    // 안전재고 건은 재고사용/구매필요/구매보류 3개 버튼을 모두 잠근다.
+    const stockActionsLocked = isSafetyStock || STOCK_USAGE_LOCKED_STATUSES.indexOf(r.status) !== -1;
     const disableStockUsedBtn = stockActionsLocked || (r.status === '재고사용' && isStockUsed);
     const disablePurchaseNeededBtn = stockActionsLocked;
     const disableOnHoldBtn = stockActionsLocked || (r.status === '구매보류' && isOnHold);

@@ -178,11 +178,12 @@
       </div>
 
       <div class="manual-entry">
-        <input type="text" id="manual-code-input" class="input" placeholder="또는 자재코드 직접 입력 (예: IT-000001)" />
+        <input type="text" id="manual-code-input" class="input" placeholder="또는 자재코드 직접 입력 (앞자리 일부도 가능)" />
         <button id="manual-lookup-btn" class="btn btn-secondary">조회</button>
       </div>
 
       <div id="scan-lookup-error" class="scan-error-text hidden"></div>
+      <div id="manual-code-matches" class="list"></div>
 
       <div id="scan-result-card" class="card hidden">
         <div id="scan-item-title" class="card-title">
@@ -347,18 +348,15 @@
       <label class="field-label">공급사이트 (빌릴 곳)</label>
       <select id="transfer-supply-select" class="select"></select>
 
-      <div id="transfer-reader-wrap">
-        <div id="transfer-qr-reader" class="hidden"></div>
-        <div id="transfer-scan-error-text" class="scan-error-text hidden"></div>
-        <button id="transfer-scan-toggle-btn" class="btn btn-secondary btn-block">QR 스캔</button>
+      <label class="field-label">자재 검색 (선택 · QR 스캔 또는 자재코드/품명, 비워두면 전체 재고)</label>
+      <div class="manual-entry transfer-search-entry">
+        <input type="text" id="transfer-search-input" class="input" placeholder="자재코드 / 품명" />
+        <button id="transfer-scan-toggle-btn" class="btn btn-secondary">스캔</button>
+        <button id="transfer-search-btn" class="btn btn-primary">조회</button>
       </div>
 
-      <label class="field-label">자재 검색 (선택)</label>
-      <div class="manual-entry">
-        <input type="text" id="transfer-search-input" class="input" placeholder="자재코드 / 품명 (비워두면 전체 재고)" />
-        <button id="transfer-search-btn" class="btn btn-secondary">조회</button>
-      </div>
-
+      <div id="transfer-qr-reader" class="hidden"></div>
+      <div id="transfer-scan-error-text" class="scan-error-text hidden"></div>
       <div id="transfer-lookup-error" class="scan-error-text hidden"></div>
 
       <div id="transfer-search-results" class="list"></div>

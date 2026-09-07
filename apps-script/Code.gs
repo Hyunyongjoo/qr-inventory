@@ -31,6 +31,8 @@ const MANAGER_ROLES = ['자재담당자', '관리자'];
 const STOCK_USAGE_LOCKED_STATUSES = ['구매완료', '부분입고', '입고완료', '부분출고', '출고완료'];
 // 입고확인 화면에서 이름/날짜/라인 조건 없이(=전체 라인) 검색할 때 돌려주는 최대 건수.
 const INBOUND_CHECK_MAX_ROWS = 100;
+// 입출고 화면의 "자재코드 직접 입력" 부분 일치 검색이 한 번에 돌려주는 최대 건수.
+const SCAN_CODE_SEARCH_MAX = 30;
 // 사이트간 이관 원장 시트명 (Setup.gs에서 생성). 사이트별로 나누지 않고 한 시트에서 관리한다.
 const TRANSFER_SHEET_NAME = '사이트이관';
 // 사이트이관 시트 '상태' 컬럼 값. 요청 → 승인/거절, 승인 → 반납.
@@ -68,6 +70,9 @@ function doGet(e) {
         break;
       case 'scanLookupOut':
         result = scanLookupForStockOut_(e.parameter.site || '', e.parameter.code || '');
+        break;
+      case 'searchItemCodes':
+        result = searchItemCodesByPrefix_(e.parameter.code || '');
         break;
       case 'checkInbound':
         result = checkInbound_(e.parameter.site || '', e.parameter.name || '', e.parameter.startDate || '', e.parameter.endDate || '', e.parameter.zone || '', e.parameter.materialQuery || '');
@@ -634,6 +639,31 @@ function poRowToView_(po) {
     dueDate: po['필요일자'] || '',
     status: po['입고여부'] || (cumulative <= 0 ? '미입고' : (cumulative < requested ? '부분입고' : '입고완료'))
   };
+}
+
+// 입출고 화면의 "자재코드 직접 입력" 부분 일치 검색. 입력값이 ItemID의 앞부분과
+// 일치하는(대소문자 무시) 자재를 Items 시트에서 찾아 최대 SCAN_CODE_SEARCH_MAX건 반환한다.
+// 정확히 일치하는 자재가 있으면 그 한 건만 반환해(프런트가 바로 자재 정보를 띄우도록),
+// 앞자리가 같은 다른 자재가 더 있어도 목록으로 흩어지지 않게 한다.
+function searchItemCodesByPrefix_(code) {
+  const q = String(code || '').trim().toLowerCase();
+  if (!q) throw new Error('자재코드를 입력하세요.');
+  const items = readAll_(sheet_('Items'));
+  if (!items.length) {
+    throw new Error('Items 시트에 등록된 자재가 없습니다. 자재 데이터를 먼저 업로드하세요.');
+  }
+
+  const exact = items.find(it => String(it.ItemID).trim().toLowerCase() === q);
+  if (exact) return [scanCodeMatchView_(exact)];
+
+  return items
+    .filter(it => String(it.ItemID).trim().toLowerCase().indexOf(q) === 0)
+    .slice(0, SCAN_CODE_SEARCH_MAX)
+    .map(scanCodeMatchView_);
+}
+
+function scanCodeMatchView_(it) {
+  return { ItemID: it.ItemID, ItemName: it.ItemName || '', Spec: it.Spec || '', Unit: it.Unit || '' };
 }
 
 // 조회만 하고 시트는 변경하지 않음 (QR 스캔 직후 화면 표시용). 필요일자 오름차순 목록을 그대로 반환하며,

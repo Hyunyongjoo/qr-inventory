@@ -349,6 +349,7 @@
     $('#manual-code-input').value = '';
     clearScanError();
     clearLookupError();
+    clearManualCodeMatches();
     hidePoInfo();
     if (DEBUG_QR) {
       $('#scan-debug-raw').textContent = '';
@@ -555,9 +556,9 @@
 
   function bindScan() {
     $('#scan-toggle-btn').addEventListener('click', toggleScanning);
-    $('#manual-lookup-btn').addEventListener('click', () => {
-      const code = $('#manual-code-input').value.trim();
-      if (code) handleScannedCode(code);
+    $('#manual-lookup-btn').addEventListener('click', doManualCodeLookup);
+    $('#manual-code-input').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') doManualCodeLookup();
     });
     $('#scan-add-btn').addEventListener('click', addToCart);
     $('#scan-cancel-btn').addEventListener('click', cancelScan);
@@ -686,6 +687,73 @@
     el.classList.add('hidden');
   }
 
+  // 자재코드 직접 입력(수동 조회) 전용 부분 일치 검색. QR 스캔 경로(handleScannedCode)는
+  // 정확 일치 그대로 두고, "조회" 버튼/Enter로 들어온 입력만 앞자리 부분 일치로 찾는다.
+  //  - 0건  → "등록되지 않은 자재" 표시
+  //  - 1건  → 그 자재코드로 바로 자재 정보 조회(handleScannedCode)
+  //  - 2건+ → 목록으로 표시, 항목을 고르면 그 자재코드로 조회
+  async function doManualCodeLookup() {
+    const code = $('#manual-code-input').value.trim();
+    if (!code) return;
+    if (state.scanBusy) return;
+    clearLookupError();
+    clearManualCodeMatches();
+    state.scanBusy = true;
+    let matches;
+    try {
+      matches = await Api.get('searchItemCodes', { code });
+    } catch (err) {
+      state.scanBusy = false;
+      const msg = err.message || '조회 중 오류가 발생했습니다.';
+      showLookupError(msg);
+      toast(msg, 'error');
+      debugSetLookup('부분검색 실패: ' + msg);
+      return;
+    }
+    state.scanBusy = false;
+
+    if (!matches.length) {
+      showLookupError('등록되지 않은 자재입니다.');
+      debugSetLookup('부분검색 결과 없음: ' + code);
+      return;
+    }
+    if (matches.length === 1) {
+      handleScannedCode(matches[0].ItemID);
+      return;
+    }
+    renderManualCodeMatches(matches);
+    debugSetLookup(`부분검색 결과 ${matches.length}건 — 자재를 선택하세요`);
+  }
+
+  function renderManualCodeMatches(items) {
+    const el = $('#manual-code-matches');
+    if (!el) return;
+    if (!items || !items.length) {
+      el.innerHTML = '';
+      return;
+    }
+    el.innerHTML = items.map((it, i) => `
+      <div class="item-row manual-code-match" data-idx="${i}">
+        <div class="row-main">
+          <span class="primary">${escapeHtml(it.ItemName)}</span>
+          <span class="secondary">${escapeHtml(it.ItemID)}${it.Spec ? ' · ' + escapeHtml(it.Spec) : ''}</span>
+        </div>
+      </div>
+    `).join('');
+    $$('.manual-code-match', el).forEach((row, i) => {
+      row.addEventListener('click', () => {
+        clearManualCodeMatches();
+        $('#manual-code-input').value = items[i].ItemID;
+        handleScannedCode(items[i].ItemID);
+      });
+    });
+  }
+
+  function clearManualCodeMatches() {
+    const el = $('#manual-code-matches');
+    if (el) el.innerHTML = '';
+  }
+
   // ------------------------- 디버그 패널 (임시) -------------------------
 
   function debugPanelShow() {
@@ -723,6 +791,7 @@
 
   async function handleScannedCode(rawCode) {
     clearLookupError();
+    clearManualCodeMatches();
     const code = String(rawCode || '').trim();
     debugSetRaw(rawCode, code || '(빈 값)');
     if (DEBUG_QR) toast(`스캔된 코드: ${code || '(빈 값)'}`, '');
@@ -2076,12 +2145,12 @@
       )
       .then(() => {
         state.transferScanning = true;
-        $('#transfer-scan-toggle-btn').textContent = '스캔 중지';
+        $('#transfer-scan-toggle-btn').textContent = '중지';
       })
       .catch((err) => {
         $('#transfer-qr-reader').classList.add('hidden');
         state.transferScanning = false;
-        $('#transfer-scan-toggle-btn').textContent = 'QR 스캔';
+        $('#transfer-scan-toggle-btn').textContent = '스캔';
         const message = String((err && err.message) || err || '');
         let friendly = '카메라를 시작할 수 없습니다.';
         if (/NotAllowedError|Permission/i.test(message)) {
@@ -2102,7 +2171,7 @@
     }
     state.transferScanning = false;
     $('#transfer-qr-reader').classList.add('hidden');
-    $('#transfer-scan-toggle-btn').textContent = 'QR 스캔';
+    $('#transfer-scan-toggle-btn').textContent = '스캔';
   }
 
   // QR 스캔: 스캔한 코드를 검색어로 넣고 공급사이트 재고를 조회한다. 정확히 일치하는 자재가

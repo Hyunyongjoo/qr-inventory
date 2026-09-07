@@ -354,7 +354,7 @@ html, body {
   word-break: break-all;
 }
 .scan-debug-row:empty { display: none; }
-#scan-reader-wrap, #return-reader-wrap, #transfer-reader-wrap { margin-bottom: 14px; }
+#scan-reader-wrap, #return-reader-wrap { margin-bottom: 14px; }
 #qr-reader, #return-qr-reader, #transfer-qr-reader {
   width: 100%;
   min-height: 300px;
@@ -376,6 +376,13 @@ html, body {
 .manual-entry { display: flex; gap: 8px; align-items: flex-start; }
 .manual-entry .input { margin-bottom: 12px; }
 .manual-entry .btn { height: 47px; }
+/* 이관 요청: 검색창 + 스캔 + 조회 3개를 한 줄에 통합. 입력창이 남는 폭을 차지하고 버튼은 고정. */
+.transfer-search-entry .input { flex: 1; min-width: 0; }
+.transfer-search-entry .btn { flex-shrink: 0; padding-left: 14px; padding-right: 14px; white-space: nowrap; }
+/* 자재코드 부분 일치 검색 결과 목록 (입출고 화면) */
+#manual-code-matches:not(:empty) { margin-bottom: 14px; }
+.manual-code-match { cursor: pointer; }
+.manual-code-match:active { border-color: var(--accent); }
 
 /* ---------- 구매발주 FIFO 매칭 목록 ---------- */
 .po-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }

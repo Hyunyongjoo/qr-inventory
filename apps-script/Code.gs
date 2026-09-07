@@ -23,6 +23,10 @@ const ZONES = {
 };
 // 라인구매번호(예: GH26-0728-0001) 접두사로 쓰는 사이트 코드.
 const SITE_CODES = { '기흥': 'GH', '화성': 'HS', '평택': 'PT' };
+// 구매요청 시 라인 대신 지정할 수 있는 "안전재고구매" 표식. 이 값이 라인으로 들어오면
+// assertZone_ 검증을 건너뛰고(관리자/자재담당자만), 재고사용(O,X)에 기본값 'X'를 넣어
+// 등록 즉시 "구매대기" 상태가 되게 한다.
+const SAFETY_STOCK_ZONE = '안전재고';
 // 입고확인 화면의 재고사용/구매필요/입고/출고완료 버튼을 사용할 수 있는 Role (Users 시트 Role 컬럼 값).
 const MANAGER_ROLES = ['자재담당자', '관리자'];
 // 구매요청번호가 등록되어(구매완료 계열) 이후로 넘어간 상태에서는 재고사용/구매필요/구매보류
@@ -1184,7 +1188,17 @@ function submitPurchase_(body) {
   lock.waitLock(30000);
   try {
     const site = assertSite_(body.site);
-    const zone = assertZone_(site, body.zone);
+    // "안전재고구매": 라인 대신 SAFETY_STOCK_ZONE이 들어오면 라인 검증을 건너뛰고
+    // (관리자/자재담당자만 사용 가능), 아래에서 재고사용(O,X)에 'X'를 기본값으로 넣는다.
+    const isSafetyStock = String(body.zone || '').trim() === SAFETY_STOCK_ZONE || body.safetyStock === true;
+    let zone;
+    if (isSafetyStock) {
+      assertManagerRole_(body.pin);
+      zone = SAFETY_STOCK_ZONE;
+    } else {
+      zone = assertZone_(site, body.zone);
+    }
+    const stockUsageDefault = isSafetyStock ? 'X' : '';
     const worker = handleLogin_(body.pin);
     const items = Array.isArray(body.items) ? body.items : [];
     if (!items.length) throw new Error('담긴 자재가 없습니다.');
@@ -1231,7 +1245,7 @@ function submitPurchase_(body) {
             '필요일자': requiredDate,
             '요청수량': compQty,
             '현재고수량': stockMap[compItemId] !== undefined ? stockMap[compItemId] : 0,
-            '재고사용(O,X)': '',
+            '재고사용(O,X)': stockUsageDefault,
             '누적입고수량': '',
             '잔여수량': compQty,
             '입고여부': '미입고',
@@ -1262,7 +1276,7 @@ function submitPurchase_(body) {
         '필요일자': requiredDate,
         '요청수량': qty,
         '현재고수량': stockMap[itemId] !== undefined ? stockMap[itemId] : 0,
-        '재고사용(O,X)': '',
+        '재고사용(O,X)': stockUsageDefault,
         '누적입고수량': '',
         '잔여수량': qty,
         '입고여부': '미입고',

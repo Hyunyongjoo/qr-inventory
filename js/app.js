@@ -12,6 +12,8 @@
     '화성': ['11LINE', '15LINE', '16LINE', '17LINE', 'NRDLINE'],
     '평택': ['P1', 'P2', 'P3', 'P4', 'S5']
   };
+  // 구매 라인 선택 화면의 "안전재고구매" 버튼 값. 서버(Code.gs SAFETY_STOCK_ZONE)와 일치해야 한다.
+  const SAFETY_STOCK_ZONE = '안전재고';
 
   const state = {
     user: null,
@@ -41,6 +43,7 @@
     transferSupplySite: null,
     currentTransferItem: null,
     transferStockRows: [],
+    transferSelectedIdx: new Set(),
     transferCart: [],
     transferHtml5QrCode: null,
     transferScanning: false,
@@ -311,7 +314,12 @@
       : '출고할 라인을 선택하세요';
     const grid = $('#line-grid');
     const zones = ZONES[state.site] || [];
-    grid.innerHTML = zones.map((z) => `<button class="site-btn" data-zone="${escapeHtml(z)}">${escapeHtml(z)}</button>`).join('');
+    let html = zones.map((z) => `<button class="site-btn" data-zone="${escapeHtml(z)}">${escapeHtml(z)}</button>`).join('');
+    // 구매요청 흐름에서만, 관리자/자재담당자에게 "안전재고구매" 버튼을 라인 목록 끝에 추가한다.
+    if (state.scanType === 'PURCHASE' && canManageInbound()) {
+      html += `<button class="site-btn site-btn-safety" data-zone="${escapeHtml(SAFETY_STOCK_ZONE)}">안전재고구매</button>`;
+    }
+    grid.innerHTML = html;
     $$('.site-btn', grid).forEach((btn) => {
       btn.addEventListener('click', () => {
         state.scanZone = btn.dataset.zone;
@@ -1140,7 +1148,8 @@
     $('#purchase-note1').value = '';
     $('#purchase-note2').value = '';
     switchView('purchase');
-    $('#purchase-context-label').textContent = `${state.site} · ${state.scanZone} · 구매요청`;
+    const zoneLabel = state.scanZone === SAFETY_STOCK_ZONE ? '안전재고구매' : state.scanZone;
+    $('#purchase-context-label').textContent = `${state.site} · ${zoneLabel} · 구매요청`;
     renderPurchaseCart();
     renderPurchaseBulkUI();
   }
@@ -1448,6 +1457,7 @@
       const payload = {
         site: state.site,
         zone: state.scanZone,
+        safetyStock: state.scanZone === SAFETY_STOCK_ZONE,
         pin: state.user.pin,
         requiredDate: $('#purchase-required-date').value,
         note1: $('#purchase-note1').value.trim(),
@@ -2015,6 +2025,8 @@
     $('#transfer-search-input').addEventListener('keydown', (e) => {
       if (e.key === 'Enter') loadTransferStock();
     });
+    $('#transfer-select-all').addEventListener('change', (e) => toggleTransferSelectAll(e.target.checked));
+    $('#transfer-bulk-add-btn').addEventListener('click', openTransferBulkQuantityModal);
     $('#transfer-quantity').addEventListener('input', () => {
       const item = state.currentTransferItem;
       if (!item || item.stock == null) return;
@@ -2041,9 +2053,11 @@
   function onTransferSupplyChange() {
     state.currentTransferItem = null;
     state.transferStockRows = [];
+    state.transferSelectedIdx = new Set();
     $('#transfer-result-card').classList.add('hidden');
     $('#transfer-search-results').innerHTML = '';
     clearTransferLookupError();
+    renderTransferBulkUI();
   }
 
   function goToTransferMenu() {
@@ -2057,6 +2071,7 @@
     state.currentTransferItem = null;
     state.transferCart = [];
     state.transferStockRows = [];
+    state.transferSelectedIdx = new Set();
     state.transferSupplySite = null;
     $('#transfer-result-card').classList.add('hidden');
     $('#transfer-search-input').value = '';
@@ -2067,6 +2082,7 @@
     populateTransferSupplyOptions();
     switchView('transfer-request');
     $('#transfer-request-context-label').textContent = `${state.site} · 이관 요청`;
+    renderTransferBulkUI();
     renderTransferCart();
   }
 
@@ -2226,21 +2242,138 @@
 
   function renderTransferStockList(rows, q) {
     const resultsEl = $('#transfer-search-results');
+    state.transferSelectedIdx = new Set();
     if (!rows.length) {
       resultsEl.innerHTML = `<div class="empty-state">${q ? '검색 결과가 없습니다.' : '재고가 있는 자재가 없습니다.'}</div>`;
+      renderTransferBulkUI();
       return;
     }
     resultsEl.innerHTML = rows.map((r, i) => `
       <div class="stock-row transfer-stock-row" data-idx="${i}">
-        <div class="row-main">
+        <label class="item-checkbox-wrap">
+          <input type="checkbox" class="transfer-item-checkbox" data-idx="${i}" />
+        </label>
+        <div class="row-main transfer-stock-main" data-idx="${i}">
           <span class="primary">${escapeHtml(r.itemName)}</span>
           <span class="secondary">${escapeHtml(r.itemId)}${r.spec ? ' · ' + escapeHtml(r.spec) : ''}</span>
         </div>
         <div class="row-qty">${Number(r.quantity).toLocaleString()} <span class="secondary">${escapeHtml(r.unit || '')}</span></div>
       </div>
     `).join('');
-    $$('.transfer-stock-row', resultsEl).forEach((el, i) => {
+    $$('.transfer-stock-main', resultsEl).forEach((el, i) => {
       el.addEventListener('click', () => selectTransferStock(rows[i]));
+    });
+    $$('.transfer-item-checkbox', resultsEl).forEach((cb, i) => {
+      cb.addEventListener('click', (e) => e.stopPropagation());
+      cb.addEventListener('change', (e) => {
+        if (e.target.checked) state.transferSelectedIdx.add(i);
+        else state.transferSelectedIdx.delete(i);
+        renderTransferBulkUI();
+      });
+    });
+    renderTransferBulkUI();
+  }
+
+  // 전체선택 체크박스 + "N개 선택됨 · 담기" 버튼 상태를 현재 선택 개수에 맞춰 갱신한다
+  // (구매요청 화면의 renderPurchaseBulkUI와 같은 패턴).
+  function renderTransferBulkUI() {
+    const total = state.transferStockRows.length;
+    const selected = state.transferSelectedIdx.size;
+
+    $('#transfer-select-all-row').classList.toggle('hidden', total === 0);
+
+    const bulkBtn = $('#transfer-bulk-add-btn');
+    bulkBtn.disabled = selected === 0;
+    bulkBtn.textContent = selected > 0 ? `${selected}개 선택됨 · 담기` : '선택된 자재 없음';
+
+    const selectAllCb = $('#transfer-select-all');
+    selectAllCb.checked = total > 0 && selected === total;
+    selectAllCb.indeterminate = selected > 0 && selected < total;
+  }
+
+  function toggleTransferSelectAll(checked) {
+    state.transferSelectedIdx = checked
+      ? new Set(state.transferStockRows.map((_, i) => i))
+      : new Set();
+    $$('.transfer-item-checkbox', $('#transfer-search-results')).forEach((cb, i) => {
+      cb.checked = state.transferSelectedIdx.has(i);
+    });
+    renderTransferBulkUI();
+  }
+
+  // "담기" 버튼: 선택한 자재들의 수량을 한 번에 입력받는 팝업. 각 자재는 현재고를 초과할 수 없다.
+  // 확인하면 장바구니에 일괄 추가하고 선택을 초기화한다(재고 목록/조회 결과는 그대로 둔다).
+  function openTransferBulkQuantityModal() {
+    const items = state.transferStockRows
+      .map((r, i) => ({ ...r, idx: i }))
+      .filter((r) => state.transferSelectedIdx.has(r.idx));
+    if (!items.length) return;
+
+    const html = `
+      <div class="modal-sheet">
+        <h3>선택한 자재 수량 입력 (${items.length}개)</h3>
+        <div class="list">
+          ${items.map((r) => `
+            <div class="bulk-qty-row" data-idx="${r.idx}">
+              <div class="row-main">
+                <span class="primary">${escapeHtml(r.itemName)}</span>
+                <span class="secondary">${escapeHtml(r.itemId)}${r.spec ? ' · ' + escapeHtml(r.spec) : ''} · 현재고 ${Number(r.quantity).toLocaleString()}</span>
+              </div>
+              <input type="number" class="input bulk-qty-input" data-idx="${r.idx}" min="1" max="${Number(r.quantity) || 0}" step="1" placeholder="수량" inputmode="numeric" />
+            </div>
+          `).join('')}
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-secondary" id="transfer-bulk-qty-cancel">취소</button>
+          <button class="btn btn-primary" id="transfer-bulk-qty-confirm">확인</button>
+        </div>
+      </div>
+    `;
+    openModal(html);
+    $('#transfer-bulk-qty-cancel').addEventListener('click', closeModal);
+    $$('.bulk-qty-input').forEach((el) => {
+      el.addEventListener('input', () => {
+        const max = Number(el.max) || 0;
+        if (max > 0 && Number(el.value) > max) {
+          el.value = max;
+          toast(`현재고 ${max.toLocaleString()}개까지 가능합니다.`, 'error');
+        }
+      });
+    });
+    $('#transfer-bulk-qty-confirm').addEventListener('click', () => {
+      const picked = [];
+      for (const el of $$('.bulk-qty-input')) {
+        const idx = Number(el.dataset.idx);
+        const row = state.transferStockRows[idx];
+        const qty = Number(el.value);
+        const max = Number(row.quantity) || 0;
+        if (!qty || qty <= 0) {
+          toast(`${row.itemName}의 수량을 입력하세요.`, 'error');
+          return;
+        }
+        if (qty > max) {
+          toast(`${row.itemName}: 현재고(${max.toLocaleString()})를 초과할 수 없습니다.`, 'error');
+          return;
+        }
+        picked.push({ row, qty });
+      }
+
+      picked.forEach(({ row, qty }) => {
+        state.transferCart.push({
+          uid: 't' + Date.now() + Math.floor(Math.random() * 1000) + row.itemId,
+          itemId: row.itemId,
+          itemName: row.itemName,
+          spec: row.spec,
+          quantity: qty
+        });
+      });
+      renderTransferCart();
+      closeModal();
+      toast(`${picked.length}개 자재를 담았습니다.`, 'success');
+
+      state.transferSelectedIdx = new Set();
+      $$('.transfer-item-checkbox', $('#transfer-search-results')).forEach((cb) => (cb.checked = false));
+      renderTransferBulkUI();
     });
   }
 

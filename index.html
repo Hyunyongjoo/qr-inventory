@@ -339,20 +339,30 @@
 
     <!-- 이관 요청 (빌리는 사이트) -->
     <section id="view-transfer-request" class="view hidden">
-      <div class="view-header">
-        <h2>이관 요청</h2>
-        <button class="btn-link" id="transfer-request-back-btn">← 뒤로</button>
-      </div>
-      <div class="scan-context muted" id="transfer-request-context-label"></div>
+      <div id="transfer-search-sticky" class="search-sticky">
+        <div class="view-header">
+          <h2>이관 요청</h2>
+          <button class="btn-link" id="transfer-request-back-btn">← 뒤로</button>
+        </div>
+        <div class="scan-context muted" id="transfer-request-context-label"></div>
 
-      <label class="field-label">공급사이트 (빌릴 곳)</label>
-      <select id="transfer-supply-select" class="select"></select>
+        <label class="field-label">공급사이트 (빌릴 곳)</label>
+        <select id="transfer-supply-select" class="select"></select>
 
-      <label class="field-label">자재 검색 (선택 · QR 스캔 또는 자재코드/품명, 비워두면 전체 재고)</label>
-      <div class="manual-entry transfer-search-entry">
-        <input type="text" id="transfer-search-input" class="input" placeholder="자재코드 / 품명" />
-        <button id="transfer-scan-toggle-btn" class="btn btn-secondary">스캔</button>
-        <button id="transfer-search-btn" class="btn btn-primary">조회</button>
+        <label class="field-label">자재 검색 (선택 · QR 스캔 또는 자재코드/품명, 비워두면 전체 재고)</label>
+        <div class="manual-entry transfer-search-entry">
+          <input type="text" id="transfer-search-input" class="input" placeholder="자재코드 / 품명" />
+          <button id="transfer-scan-toggle-btn" class="btn btn-secondary">스캔</button>
+          <button id="transfer-search-btn" class="btn btn-primary">조회</button>
+        </div>
+
+        <div id="transfer-select-all-row" class="select-all-row hidden">
+          <label class="checkbox-label">
+            <input type="checkbox" id="transfer-select-all" />
+            전체 선택
+          </label>
+          <button id="transfer-bulk-add-btn" class="btn btn-primary btn-small" disabled>선택된 자재 없음</button>
+        </div>
       </div>
 
       <div id="transfer-qr-reader" class="hidden"></div>

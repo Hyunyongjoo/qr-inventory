@@ -306,6 +306,8 @@ html, body {
   font-weight: 700;
 }
 .site-btn:active { background: var(--surface-2); border-color: var(--accent); color: var(--accent); }
+.site-btn-safety { border-color: var(--warn); color: var(--warn); }
+.site-btn-safety:active { border-color: var(--warn); color: var(--warn); }
 
 /* ---------- 구매/입고/출고 선택 ---------- */
 .action-grid {
@@ -689,9 +691,10 @@ html, body {
   margin-bottom: 8px;
 }
 .transfer-card .inbound-card-actions { margin-top: 4px; }
-.transfer-stock-row { cursor: pointer; }
 .transfer-stock-row .row-main { flex: 1; min-width: 0; }
+.transfer-stock-main { cursor: pointer; }
 .transfer-stock-row:active { border-color: var(--accent); }
+#transfer-select-all-row { margin-top: 4px; }
 .transfer-download-block {
   margin-top: 22px;
   padding-top: 16px;

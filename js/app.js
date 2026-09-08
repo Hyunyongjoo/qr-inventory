@@ -228,6 +228,7 @@
     $('#bottom-nav').classList.remove('hidden');
     $('#view-login').classList.add('hidden');
     $('#worker-name').textContent = state.user.name + (state.user.role ? ` (${state.user.role})` : '');
+    $('#action-transfer-btn').classList.toggle('hidden', !canManageInbound());
 
     const savedSite = localStorage.getItem(SITE_KEY);
     state.site = SITES.includes(savedSite) ? savedSite : null;

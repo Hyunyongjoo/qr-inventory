@@ -3235,10 +3235,11 @@
       ? (r.requestedQty - r.cumulativeQty) > 0 && !r.outboundDone
       : (r.status === '구매완료' || r.status === '부분입고');
     // 출고 진행 상태(부분출고/출고완료)가 status 표시를 덮어쓸 수 있으므로, 출고완료 버튼 활성화
-    // 여부는 status 문자열이 아니라 원본 입고 완료 여부(누적입고수량 >= 요청수량)로 판단한다.
-    // 재고사용(O)/입고완료/부분출고는 활성화하고, 출고완료(전량 출고됨)와 안전재고 건은 비활성화한다.
-    const isInboundDone = r.requestedQty > 0 && r.cumulativeQty >= r.requestedQty;
-    const canShipOut = !isSafetyStock && !r.outboundDone && (stockUseUpper === 'O' || isInboundDone);
+    // 여부는 status 문자열이 아니라 원본 입고수량(누적입고수량 > 0)으로 판단한다 — 일부라도
+    // 입고되어 재고에 반영됐다면 그만큼은 출고할 수 있어야 한다.
+    // 재고사용(O)/부분입고/입고완료/부분출고는 활성화하고, 출고완료(전량 출고됨)와 안전재고 건은 비활성화한다.
+    const hasInboundQty = r.cumulativeQty > 0;
+    const canShipOut = !isSafetyStock && !r.outboundDone && (stockUseUpper === 'O' || hasInboundQty);
 
     // "수정" 버튼: 입고완료/출고완료 건에만 표시하고, 그 건이 확정된 당일(최종입고일/최종출고일)에만
     // 활성화한다. 입고완료 건은 입고수량을, 출고완료 건은 출고수량을 고친다(onInboundEditClick).

@@ -1519,9 +1519,8 @@ function outboundComplete_(body) {
     const stockUse = String(row['재고사용(O,X)'] || '').trim().toUpperCase();
     const requested = Number(row['요청수량']) || 0;
     const cumulativeIn = Number(row['누적입고수량']) || 0;
-    const isInboundDone = requested > 0 && cumulativeIn >= requested;
-    if (stockUse !== 'O' && !isInboundDone) {
-      throw new Error('재고사용 또는 입고완료 상태에서만 출고완료 처리할 수 있습니다.');
+    if (stockUse !== 'O' && cumulativeIn <= 0) {
+      throw new Error('재고사용 또는 입고(부분입고 포함) 상태에서만 출고완료 처리할 수 있습니다.');
     }
 
     const qty = Number(body.quantity);

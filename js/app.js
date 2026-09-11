@@ -2914,10 +2914,13 @@
 
   // 라인 드롭다운은 사이트마다 목록이 달라서, 입고확인 화면에 들어갈 때마다(사이트가 바뀌었을
   // 수 있으므로) 현재 사이트 기준으로 다시 채운다.
+  // 안전재고 옵션은 관리자/자재담당자에게만 보인다 — 전체 라인(빈 값) 선택 시에는 서버가
+  // 라인으로 필터링하지 않으므로 권한과 무관하게 안전재고 건이 이미 포함되어 있다.
   function populateInboundZoneOptions() {
     const sel = $('#inbound-zone-select');
     if (!sel) return;
-    const zones = ZONES[state.site] || [];
+    const zones = (ZONES[state.site] || []).slice();
+    if (canManageInbound()) zones.push(SAFETY_STOCK_ZONE);
     const current = sel.value;
     sel.innerHTML = `<option value="">전체 라인</option>` +
       zones.map((z) => `<option value="${escapeHtml(z)}">${escapeHtml(z)}</option>`).join('');

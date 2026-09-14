@@ -1620,6 +1620,7 @@ function editInboundQty_(body) {
     if (info.status === '입고완료') {
       const lastDate = String(row['최종입고일'] || '').trim();
       if (lastDate !== today) throw new Error('당일 건만 수정 가능합니다.');
+      const receivedBefore = Number(row['누적입고수량']) || 0;
       const remaining = Math.max(0, requested - qty);
       const status = qty <= 0 ? '미입고' : (qty < requested ? '부분입고' : '입고완료');
       updateRow_(sheet_(poInSheetName_(site)), row._row, {
@@ -1627,9 +1628,12 @@ function editInboundQty_(body) {
         '잔여수량': remaining,
         '입고여부': status
       });
-      // 현재고 = 월초재고 + 모든 발주 행의 누적입고수량 합계이므로(calculateCurrentStock_),
-      // 이 행의 누적입고수량만 고치면 전체 재계산으로 정확히 반영된다.
-      recalculateStock_(site, row['자재코드'], item);
+      // 입고 현재고는 (입고 처리 때와 마찬가지로) 발주/출고/반납 이력 전체를 다시 합산하지 않고
+      // 직접 증감한다 — recalculateStock_는 이관(승인/반납)으로 직접 증감된 재고량을 계산식에
+      // 포함하지 않아, 재계산을 돌리면 이관으로 반영됐던 수량이 사라진다. 수정 전후 수량 차이
+      // (delta)만큼만 현재고에 추가로 더하거나 뺀다.
+      const delta = qty - receivedBefore;
+      incrementStockQuantity_(site, row['자재코드'], delta, item);
     } else if (info.status === '출고완료') {
       const lastDate = String(row['최종출고일'] || '').trim();
       if (lastDate !== today) throw new Error('당일 건만 수정 가능합니다.');
@@ -1680,8 +1684,10 @@ function stockIn_(body) {
       appendAdhocReceiptRow_(site, item, fifoResult.unmatchedQty);
     }
 
-    // 구매발주및입고/출고 원본 데이터로부터 현재고를 다시 계산해 재고 시트에 반영한다.
-    const newQty = recalculateStock_(site, itemId, item);
+    // 재고 시트 현재고 += 입고수량 (입고확인 화면의 "입고"/"수정" 버튼과 동일한 방식).
+    // recalculateStock_(발주/출고/반납 이력 전체 재합산)는 이관(승인/반납)으로 직접 증감된
+    // 재고량을 계산식에 포함하지 않아, 재계산을 돌리면 이관으로 반영됐던 수량이 사라진다.
+    const newQty = incrementStockQuantity_(site, itemId, qty, item);
 
     return {
       newQuantity: newQty,

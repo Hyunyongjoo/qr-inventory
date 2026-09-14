@@ -3002,14 +3002,30 @@
     }
   }
 
+  // 라인/라인구매번호/구매요청번호로 필터링 중이면 그 범위에 속한 행만, 아니면 전체 행을 돌려준다.
+  // 상태별 건수(renderInboundSummary)와 상세 목록(renderInboundList)이 같은 기준으로 세도록 공용으로 쓴다.
+  function getInboundFilteredBaseRows_() {
+    let rows = state.inboundRows;
+    if (state.inboundLineOrderFilter) {
+      rows = rows.filter((r) => r.lineOrderNo === state.inboundLineOrderFilter);
+    } else if (state.inboundPurchaseReqFilter) {
+      rows = rows.filter((r) => r.purchaseReqNo === state.inboundPurchaseReqFilter);
+    } else if (state.inboundZoneFilter) {
+      rows = rows.filter((r) => r.zone === state.inboundZoneFilter);
+    }
+    return rows;
+  }
+
   function renderInboundSummary() {
     const summaryEl = $('#inbound-summary');
-    const rows = state.inboundRows;
-    if (!rows.length) {
+    if (!state.inboundRows.length) {
       summaryEl.classList.add('hidden');
       summaryEl.innerHTML = '';
       return;
     }
+    // 라인/라인구매번호/구매요청번호로 필터링된 상태라면 상태별 건수도 그 범위 안에서만 센다
+    // (예: "11LINE 건만 표시 중"일 때는 재고확인중/구매대기/구매완료 등도 11LINE 건수만 표시).
+    const rows = getInboundFilteredBaseRows_();
 
     const counts = {};
     INBOUND_STATUS_KEYS.forEach((k) => (counts[k] = 0));
@@ -3126,6 +3142,7 @@
       state.inboundLineOrderFilter = null;
       state.inboundPurchaseReqFilter = null;
       state.inboundZoneFilter = null;
+      renderInboundSummary();
       renderInboundList();
     });
   }

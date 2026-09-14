@@ -3481,8 +3481,8 @@
 
   // "출고완료" 버튼: 수량 입력 팝업을 띄우고, 확인 시 그 요청 건에만(다른 건은 건드리지 않고)
   // 입력한 수량만큼 누적출고수량을 더한다. 선입선출은 적용하지 않는다(QR 스캔 출고 전용 로직).
-  // 출고 가능 여부는 요청수량이 아니라 실제 재고수량 기준으로 판단한다: 재고수량 >= 출고수량이면
-  // 그대로, 재고수량 < 출고수량이면 재고수량만큼만 부분 출고된다(서버에서 최종 확정).
+  // 출고 수량은 실제 재고수량을 초과할 수 없다: 재고수량 < 출고수량이면 서버가 거부하고
+  // "재고 부족: 현재고 N개, 출고 요청 N개" 오류를 던진다(부분 출고로 조용히 줄이지 않음).
   function openInboundShipModal(row) {
     const remaining = Math.max(0, Number(row.remainingShipQty) || 0);
     const stockQty = Math.max(0, Number(row.stockQty) || 0);
@@ -3494,7 +3494,7 @@
         <p class="muted">요청수량 ${Number(row.requestedQty).toLocaleString()} · 재고수량 ${stockQty.toLocaleString()} · 출고수량 ${Number(row.shippedQty).toLocaleString()}</p>
         <p class="muted">출고 가능 수량 ${shippable.toLocaleString()}${shippable < remaining ? ' (재고 부족으로 일부만 출고 가능)' : ''}</p>
         <label class="field-label">출고 수량</label>
-        <input type="number" id="inbound-ship-qty" class="input" min="1" step="1" inputmode="numeric" placeholder="수량" />
+        <input type="number" id="inbound-ship-qty" class="input" min="1" max="${shippable || ''}" step="1" inputmode="numeric" placeholder="수량" />
         <div class="modal-actions">
           <button class="btn btn-secondary" id="inbound-ship-cancel">취소</button>
           <button class="btn btn-primary" id="inbound-ship-confirm">확인</button>
@@ -3510,13 +3510,8 @@
         return;
       }
       try {
-        const result = await Api.post('outboundComplete', { site: state.site, rowIndex: row.rowIndex, quantity: qty, pin: state.user.pin });
-        const shippedNow = Number(result.shippedNow ?? qty);
-        if (shippedNow < qty) {
-          toast(`재고 부족으로 ${shippedNow.toLocaleString()}개만 출고 처리되었습니다.`, 'success');
-        } else {
-          toast('출고완료 처리되었습니다.', 'success');
-        }
+        await Api.post('outboundComplete', { site: state.site, rowIndex: row.rowIndex, quantity: qty, pin: state.user.pin });
+        toast('출고완료 처리되었습니다.', 'success');
         closeModal();
         await fetchInboundRows();
       } catch (err) {

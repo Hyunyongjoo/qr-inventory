@@ -1559,25 +1559,24 @@ function outboundComplete_(body) {
       item = { ItemID: itemId, ItemName: row['자재명'] || '', Spec: row['규격'] || '', Unit: '' };
     }
 
+    // 출고수량은 현재 재고수량을 초과할 수 없다(stockOut_/stockOutByOrder_와 동일한 검증).
+    // 이전에는 재고수량보다 많이 입력해도 재고수량만큼 조용히 부분 출고 처리했는데, 담당자가
+    // 실제로 얼마나 출고됐는지 모른 채 넘어갈 수 있어 명시적으로 막고 재입력을 요구한다.
     const current = getStockQty_(site, itemId);
-    if (current <= 0) {
-      throw new Error(`재고가 없어 출고할 수 없습니다. (현재 재고 0${item.Unit || ''})`);
+    if (current < qty) {
+      throw new Error(`재고 부족: 현재고 ${current}${item.Unit || ''}, 출고 요청 ${qty}${item.Unit || ''}`);
     }
-
-    // 재고수량이 입력한 출고수량보다 적으면, 요청수량 전체가 아니라 실제 재고수량만큼만
-    // 부분 출고 처리한다(재고수량 >= 출고수량이면 그대로, 재고수량 < 출고수량이면 재고수량만큼).
-    const actualQty = Math.min(qty, current);
 
     logTransaction_(site, {
       itemId, itemName: item.ItemName, spec: item.Spec, unit: item.Unit,
-      zone: row['라인'] || '', quantity: actualQty, worker: worker.name,
+      zone: row['라인'] || '', quantity: qty, worker: worker.name,
       lineOrderNo: row['라인구매번호'] || ''
     });
 
-    decrementStockQuantity_(site, itemId, actualQty, item);
+    decrementStockQuantity_(site, itemId, qty, item);
 
     const shippedBefore = Number(row['누적출고수량']) || 0;
-    const shippedCumulative = shippedBefore + actualQty;
+    const shippedCumulative = shippedBefore + qty;
     const outboundStatus = shippedCumulative <= 0 ? '' : (shippedCumulative < requested ? '부분출고' : '출고완료');
 
     updateRow_(sheet_(poInSheetName_(site)), row._row, {
@@ -1587,7 +1586,7 @@ function outboundComplete_(body) {
     });
 
     const updatedView = poRowToInboundView_(site, findPoRowByIndex_(site, body.rowIndex));
-    updatedView.shippedNow = actualQty;
+    updatedView.shippedNow = qty;
     updatedView.requestedNow = qty;
     return updatedView;
   } finally {

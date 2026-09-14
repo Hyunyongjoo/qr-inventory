@@ -3042,13 +3042,12 @@
     }).join('');
     summaryEl.classList.remove('hidden');
 
+    // 라인/라인구매번호/구매요청번호 필터가 걸려 있어도 그대로 둔 채 상태 필터만 얹는다(교집합).
+    // 이 필터를 지우는 방법은 "전체 보기" 버튼 또는 요약/상세 전환("뒤로가기")뿐이다.
     $$('.inbound-summary-item', summaryEl).forEach((btn) => {
       btn.addEventListener('click', () => {
         const key = btn.dataset.status;
         state.inboundFilter = state.inboundFilter === key ? null : key;
-        state.inboundLineOrderFilter = null;
-        state.inboundPurchaseReqFilter = null;
-        state.inboundZoneFilter = null;
         renderInboundSummary();
         renderInboundList();
       });
@@ -3094,30 +3093,35 @@
     renderInboundView();
   }
 
+  // 라인/라인구매번호/구매요청번호 필터와 상태 필터는 서로 배타적이지 않고 교집합으로 적용된다
+  // (예: 11LINE 필터 + 구매완료 클릭 → 11LINE의 구매완료 건만). 필터를 지우는 방법은
+  // "전체 보기" 버튼 또는 요약/상세 전환("뒤로가기")뿐이다.
   function renderInboundList() {
     const listEl = $('#inbound-list');
-    let rows = state.inboundRows;
     let filterLabel = '';
     let filterValue = '';
     if (state.inboundLineOrderFilter) {
-      rows = rows.filter((r) => r.lineOrderNo === state.inboundLineOrderFilter);
       filterLabel = '라인구매번호';
       filterValue = state.inboundLineOrderFilter;
     } else if (state.inboundPurchaseReqFilter) {
-      rows = rows.filter((r) => r.purchaseReqNo === state.inboundPurchaseReqFilter);
       filterLabel = '구매요청번호';
       filterValue = state.inboundPurchaseReqFilter;
     } else if (state.inboundZoneFilter) {
-      rows = rows.filter((r) => r.zone === state.inboundZoneFilter);
       filterLabel = '라인';
       filterValue = state.inboundZoneFilter;
-    } else if (state.inboundFilter) {
+    }
+
+    let rows = getInboundFilteredBaseRows_();
+    if (state.inboundFilter) {
       rows = rows.filter((r) => r.category === state.inboundFilter);
     }
 
+    const bannerText = filterLabel
+      ? `${filterLabel} <strong>${escapeHtml(filterValue)}</strong>${state.inboundFilter ? ` · <strong>${escapeHtml(state.inboundFilter)}</strong>` : ''} 건만 표시 중`
+      : '';
     const filterBannerHtml = filterLabel ? `
       <div class="inbound-line-filter-banner">
-        <span>${filterLabel} <strong>${escapeHtml(filterValue)}</strong> 건만 표시 중</span>
+        <span>${bannerText}</span>
         <button type="button" class="btn btn-small btn-secondary" id="inbound-line-filter-clear">전체 보기</button>
       </div>
     ` : '';
@@ -3142,6 +3146,7 @@
       state.inboundLineOrderFilter = null;
       state.inboundPurchaseReqFilter = null;
       state.inboundZoneFilter = null;
+      state.inboundFilter = null;
       renderInboundSummary();
       renderInboundList();
     });
@@ -3404,13 +3409,12 @@
       return;
     }
 
-    const stillVisible = state.inboundLineOrderFilter
+    const matchesIdentityFilter = state.inboundLineOrderFilter
       ? updatedRow.lineOrderNo === state.inboundLineOrderFilter
       : (state.inboundPurchaseReqFilter
         ? updatedRow.purchaseReqNo === state.inboundPurchaseReqFilter
-        : (state.inboundZoneFilter
-          ? updatedRow.zone === state.inboundZoneFilter
-          : (!state.inboundFilter || updatedRow.category === state.inboundFilter)));
+        : (state.inboundZoneFilter ? updatedRow.zone === state.inboundZoneFilter : true));
+    const stillVisible = matchesIdentityFilter && (!state.inboundFilter || updatedRow.category === state.inboundFilter);
     if (!stillVisible) {
       cardEl.remove();
       if (!listEl.querySelector('.inbound-card')) renderInboundList();

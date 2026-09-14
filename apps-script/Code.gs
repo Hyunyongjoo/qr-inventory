@@ -1494,6 +1494,11 @@ function inboundByManager_(body) {
     if (qty > maxQty) qty = maxQty;
     if (qty <= 0) throw new Error('입고 가능한 수량이 없습니다.');
 
+    // 재고를 건드리기 전에 자재 존재 여부를 먼저 확인한다 — 이 순서가 바뀌면(발주 행 업데이트
+    // 후 존재 확인) 존재하지 않는 자재에서 예외가 났을 때 구매발주및입고 시트는 이미 갱신됐는데
+    // 재고 시트만 반영되지 않는 상태가 남는다.
+    const item = assertItemExists_(row['자재코드']);
+
     const cumulative = before + qty;
     const remaining = Math.max(0, requested - cumulative);
     const status = cumulative <= 0 ? '미입고' : (cumulative < requested ? '부분입고' : '입고완료');
@@ -1505,8 +1510,12 @@ function inboundByManager_(body) {
       '최종입고일': Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd')
     });
 
-    const item = assertItemExists_(row['자재코드']);
-    recalculateStock_(site, row['자재코드'], item);
+    // 재고 시트 현재고 += 입고수량 (최종업데이트일도 함께 갱신됨, setStockQuantity_ 참고).
+    // recalculateStock_(발주/출고/반납 이력 전체를 다시 합산)는 이관(승인/반납)으로 직접 증감된
+    // 재고량을 그 계산식에 포함하지 않아, 이 건에서 재계산을 돌리면 이관으로 반영됐던 수량이
+    // 사라져 버린다 — 그래서 출고완료(decrementStockQuantity_)/이관(increment/decrement
+    // StockQuantity_)과 동일하게 이번에 입고된 수량만큼만 직접 더한다.
+    incrementStockQuantity_(site, row['자재코드'], qty, item);
 
     return poRowToInboundView_(site, findPoRowByIndex_(site, body.rowIndex));
   } finally {

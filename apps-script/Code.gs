@@ -529,7 +529,9 @@ function setStockQuantity_(site, itemId, newQuantity, item) {
 function calculateCurrentStock_(site, itemId) {
   const stockRows = readAll_(sheet_(stockSheetName_(site)));
   const stockRow = stockRows.find(s => String(s['자재코드']) === String(itemId));
-  const monthStart = stockRow ? Number(stockRow['월초재고']) || 0 : 0;
+  // 월초재고 셀이 공란(빈 문자열)이거나 재고 행 자체가 없으면(null/undefined) Number()가 각각
+  // 0 또는 NaN이 되는데, 둘 다 falsy라 `|| 0`이 두 경우 모두 0으로 대체해 계산한다.
+  const monthStart = stockRow ? (Number(stockRow['월초재고']) || 0) : 0;
 
   const poRows = readAll_(sheet_(poInSheetName_(site)));
   const totalIn = poRows

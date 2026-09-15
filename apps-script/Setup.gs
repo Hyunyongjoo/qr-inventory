@@ -279,3 +279,69 @@ function setupTrigger() {
     .create();
   Logger.log('트리거 설정 완료');
 }
+
+/**
+ * 스프레드시트를 열 때마다 자동으로 실행되는 심플 트리거(함수명 고정, Apps Script가 직접 호출).
+ * 상단에 "자재관리 > 자재 동기화" 메뉴를 추가한다.
+ */
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu('자재관리')
+    .addItem('자재 동기화', 'syncMaterials_')
+    .addToUi();
+}
+
+/**
+ * "자재관리 > 자재 동기화" 메뉴가 호출하는 함수.
+ * 사이트(기흥/화성/평택)별 구매발주및입고 시트를 전체 스캔해서 각 행의 자재코드가
+ * Items 시트 / 그 사이트의 사용자재 시트에 없으면 자동으로 한 줄씩 추가한다(있으면 건너뜀 -
+ * 기존 값은 절대 덮어쓰지 않는다). 구매발주및입고 시트에는 단위 컬럼이 없으므로 Unit은
+ * 항상 기본값 'EA'로 채워진다.
+ */
+function syncMaterials_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const itemsSheet = ss.getSheetByName('Items');
+  if (!itemsSheet) throw new Error('Items 시트를 찾을 수 없습니다. Setup.gs의 setupSpreadsheet()를 먼저 실행하세요.');
+
+  const existingItemIds = new Set(
+    readAll_(itemsSheet).map(r => String(r['ItemID'] || '').trim()).filter(Boolean)
+  );
+  const today = Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd');
+
+  let itemsAdded = 0;
+  let usedMaterialsAdded = 0;
+
+  SITES.forEach(site => {
+    const poSheet = ss.getSheetByName(site + '_구매발주및입고');
+    if (!poSheet) return;
+
+    const usedSheet = ss.getSheetByName(site + '_사용자재');
+    const existingUsedCodes = usedSheet
+      ? new Set(readAll_(usedSheet).map(r => String(r['자재코드'] || '').trim()).filter(Boolean))
+      : null;
+
+    readAll_(poSheet).forEach(r => {
+      const itemId = String(r['자재코드'] || '').trim();
+      if (!itemId) return;
+      const itemName = String(r['자재명'] || '').trim();
+      const spec = String(r['규격'] || '').trim();
+      const unit = String(r['단위'] || '').trim() || 'EA';
+
+      if (!existingItemIds.has(itemId)) {
+        itemsSheet.appendRow([itemId, itemName, spec, unit, '', today, '★신규']);
+        existingItemIds.add(itemId);
+        itemsAdded++;
+      }
+
+      if (usedSheet && !existingUsedCodes.has(itemId)) {
+        usedSheet.appendRow([itemId, '', itemName, spec, '', '동기화추가', '']);
+        existingUsedCodes.add(itemId);
+        usedMaterialsAdded++;
+      }
+    });
+  });
+
+  const message = '동기화 완료: Items ' + itemsAdded + '개 추가, 사용자재 ' + usedMaterialsAdded + '개 추가';
+  Logger.log(message);
+  SpreadsheetApp.getUi().alert(message);
+}

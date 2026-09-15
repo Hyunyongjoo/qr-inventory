@@ -33,9 +33,9 @@ const MANAGER_ROLES = ['자재담당자', '관리자'];
 // 3개 버튼을 모두 잠근다 — 입고확인 화면 버튼 활성화 조건과 동일한 목록(js/app.js의
 // STOCK_USAGE_LOCKED_STATUSES와 대응).
 const STOCK_USAGE_LOCKED_STATUSES = ['구매완료', '부분입고', '입고완료', '부분출고', '출고완료'];
-// 입고확인 화면 검색 결과에서 상태(재고확인중/구매대기/구매완료/부분입고/입고완료/재고사용/
-// 구매보류/부분출고/출고완료)별로 각각 돌려주는 최대 건수(전체 합산 제한은 없음).
-const INBOUND_CHECK_MAX_ROWS = 100;
+// 입고확인 화면 검색 결과가 (필터링 후) 요청일자 최신순으로 한 번에 돌려주는 최대 건수.
+// 상태별 강제 배분은 하지 않는다 — 이 건수 안에서 상태가 자연스럽게 섞여 들어간다.
+const INBOUND_CHECK_MAX_ROWS = 200;
 // 입출고 화면의 "자재코드 직접 입력" 부분 일치 검색이 한 번에 돌려주는 최대 건수.
 const SCAN_CODE_SEARCH_MAX = 30;
 // 사이트간 이관 원장 시트명 (Setup.gs에서 생성). 사이트별로 나누지 않고 한 시트에서 관리한다.
@@ -737,7 +737,7 @@ function toDateOnly_(value) {
 // 입고확인 화면 전용: 신청자 이름(부분 일치) + 요청일자 범위 + 라인으로 그 사이트의 모든 발주(모든 자재)를 찾는다.
 // listOpenPurchaseOrders_와 달리 자재별이 아니라 신청자/날짜/라인 기준 조회이고, 입고완료 건도 포함한다.
 // 이름/시작일/종료일/라인은 모두 선택사항이며, 전부 비어 있으면(=전체 라인 + 조건 없음) 그 사이트의
-// 전체 데이터를 대상으로 하되 요청일자가 최근인 순으로 INBOUND_CHECK_MAX_ROWS건까지만 돌려준다.
+// 전체 데이터를 대상으로 한다.
 //  - 이름만: 이름으로만 필터
 //  - 이름 + 날짜 + 라인: 모두 AND 조건으로 필터
 //  - 라인만: 라인(정확히 일치)으로만 필터
@@ -748,8 +748,10 @@ function toDateOnly_(value) {
 //         많아, 한글 검색어는 사용자재 시트의 한글 별칭 목록을 거쳐야 매칭되기 때문)
 //    대소문자 구분 없음.
 //  - 모두 없음: 필터 없이 전체 데이터
-//    상태(재고확인중/구매대기/구매완료/부분입고/입고완료/재고사용/구매보류/부분출고/출고완료)별로
-//    각각 최근 요청 순 INBOUND_CHECK_MAX_ROWS건까지만 반환한다(전체 합산 제한은 없음).
+// 위 조건으로 필터링한 결과를 요청일자 최신순으로 정렬해 상위 INBOUND_CHECK_MAX_ROWS건만
+// 한 번에 반환한다. 상태(재고확인중/구매대기/구매완료/부분입고/입고완료/재고사용/구매보류/
+// 부분출고/출고완료)별로 따로 배분하거나 상태마다 별도 건수를 보장하지 않는다 — 상태별 건수
+// 표시와 상태 클릭 필터링은 이 결과를 그대로 받은 화면(js/app.js)에서 추가 조회 없이 계산한다.
 // 재고사용(O,X)이 '취소'인 행은 시트 데이터는 그대로 두고 이 조회 결과(요약/상세 모두, 따라서
 // 화면 상단 건수 표시도)에서만 제외한다.
 // 반환값은 { summary, detail } 객체다. detail은 관리 버튼(재고사용/입고/출고완료/취소)이
@@ -785,31 +787,17 @@ function checkInbound_(site, name, startDate, endDate, zone, materialQuery) {
     rows = rows.filter(r => materialMatchesQuery_(r, materialQ) || hangulItemIds.has(String(r['자재코드'] || '').trim()));
   }
 
-  // 상태별로 각각 최대 INBOUND_CHECK_MAX_ROWS건까지만 반환한다(전체 합산 제한은 없음).
-  // computeInboundStatus_는 po 필드만으로 계산되므로 stockMap/pendingMap 없이도 미리 구할 수 있다.
-  const byCategory = {};
-  rows.forEach(r => {
-    const category = computeInboundStatus_(r).category;
-    (byCategory[category] || (byCategory[category] = [])).push(r);
+  // 요청일자 최신순으로 정렬한 뒤 상위 INBOUND_CHECK_MAX_ROWS건만 남긴다(상태별 강제 배분 없음).
+  rows = rows.slice().sort((a, b) => {
+    const da = a['요청일자'] ? new Date(a['요청일자']).getTime() : 0;
+    const db = b['요청일자'] ? new Date(b['요청일자']).getTime() : 0;
+    return db - da;
   });
-  rows = Object.keys(byCategory).reduce((acc, key) => {
-    let group = byCategory[key];
-    if (group.length > INBOUND_CHECK_MAX_ROWS) {
-      group = group
-        .slice()
-        .sort((a, b) => {
-          const da = a['요청일자'] ? new Date(a['요청일자']).getTime() : 0;
-          const db = b['요청일자'] ? new Date(b['요청일자']).getTime() : 0;
-          return db - da;
-        })
-        .slice(0, INBOUND_CHECK_MAX_ROWS);
-    }
-    return acc.concat(group);
-  }, []);
+  if (rows.length > INBOUND_CHECK_MAX_ROWS) rows = rows.slice(0, INBOUND_CHECK_MAX_ROWS);
 
   const stockMap = buildStockMap_(site);
   const pendingMap = buildPendingInboundMap_(allRows);
-  const detail = rows.sort(poSortComparator_).map(r => poRowToInboundView_(site, r, stockMap, pendingMap));
+  const detail = rows.map(r => poRowToInboundView_(site, r, stockMap, pendingMap));
   const summary = detail.map(r => ({
     rowIndex: r.rowIndex,
     lineOrderNo: r.lineOrderNo,

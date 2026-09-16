@@ -174,7 +174,10 @@
       <div id="scan-reader-wrap">
         <div id="qr-reader" class="hidden"></div>
         <div id="scan-error-text" class="scan-error-text hidden"></div>
-        <button id="scan-toggle-btn" class="btn btn-primary btn-block">카메라 스캔 시작</button>
+        <div class="scan-btn-row">
+          <button id="ocr-scan-btn" class="btn btn-primary">OCR 스캔</button>
+          <button id="scan-toggle-btn" class="btn btn-primary">QR 스캔 시작</button>
+        </div>
       </div>
 
       <div class="manual-entry">
@@ -286,7 +289,10 @@
       <div id="return-reader-wrap">
         <div id="return-qr-reader" class="hidden"></div>
         <div id="return-scan-error-text" class="scan-error-text hidden"></div>
-        <button id="return-scan-toggle-btn" class="btn btn-primary btn-block">카메라 스캔 시작</button>
+        <div class="scan-btn-row">
+          <button id="return-ocr-scan-btn" class="btn btn-primary">OCR 스캔</button>
+          <button id="return-scan-toggle-btn" class="btn btn-primary">QR 스캔 시작</button>
+        </div>
       </div>
 
       <div class="manual-entry">
@@ -564,9 +570,48 @@
   </div>
 </div>
 
+<!-- OCR 카메라 화면 -->
+<div id="ocr-camera-overlay" class="ocr-camera-overlay hidden">
+  <div class="ocr-camera-header">
+    <span>자재코드를 빨간 선 안에 맞춰주세요</span>
+    <button id="ocr-camera-close-btn" class="ocr-camera-close" type="button">✕</button>
+  </div>
+  <div id="ocr-camera-viewport" class="ocr-camera-viewport">
+    <video id="ocr-camera-video" autoplay playsinline muted></video>
+    <div class="ocr-guide-line ocr-guide-line-top"></div>
+    <div class="ocr-guide-line ocr-guide-line-bottom"></div>
+  </div>
+  <div id="ocr-camera-error" class="scan-error-text hidden"></div>
+  <div class="ocr-camera-actions">
+    <button id="ocr-capture-btn" class="btn btn-primary btn-block">촬영</button>
+  </div>
+</div>
+
+<!-- OCR 인식 결과 확인 -->
+<div id="ocr-confirm-overlay" class="ocr-confirm-overlay hidden">
+  <div class="ocr-confirm-sheet">
+    <div class="ocr-confirm-label">인식된 자재코드</div>
+    <div id="ocr-confirm-code" class="ocr-confirm-code"></div>
+    <div class="ocr-confirm-actions">
+      <button id="ocr-confirm-ok-btn" class="btn ocr-btn-ok" type="button">확인</button>
+      <button id="ocr-confirm-retry-btn" class="btn ocr-btn-retry" type="button">재인식</button>
+      <button id="ocr-confirm-manual-btn" class="btn ocr-btn-manual" type="button">직접입력</button>
+    </div>
+  </div>
+</div>
+
+<!-- OCR 인식 중 -->
+<div id="ocr-processing-overlay" class="ocr-processing-overlay hidden">
+  <div class="spinner"></div>
+  <div>인식 중...</div>
+</div>
+
+<canvas id="ocr-capture-canvas" class="hidden"></canvas>
+
 <script src="lib/html5-qrcode.min.js"></script>
 <script src="lib/qrcode.min.js"></script>
 <script src="lib/xlsx.full.min.js"></script>
+<script src="lib/tesseract.min.js"></script>
 <script src="js/api.js"></script>
 <script src="js/app.js"></script>
 </body>

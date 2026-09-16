@@ -573,13 +573,14 @@
 <!-- OCR 카메라 화면 -->
 <div id="ocr-camera-overlay" class="ocr-camera-overlay hidden">
   <div class="ocr-camera-header">
-    <span>자재코드를 빨간 선 안에 맞춰주세요</span>
+    <span>자재코드 숫자 중간을 선에 맞춰주세요</span>
     <button id="ocr-camera-close-btn" class="ocr-camera-close" type="button">✕</button>
   </div>
   <div id="ocr-camera-viewport" class="ocr-camera-viewport">
     <video id="ocr-camera-video" autoplay playsinline muted></video>
-    <div class="ocr-guide-line ocr-guide-line-top"></div>
-    <div class="ocr-guide-line ocr-guide-line-bottom"></div>
+    <div class="ocr-guide-center-line"></div>
+    <div class="ocr-guide-tick ocr-guide-tick-left"></div>
+    <div class="ocr-guide-tick ocr-guide-tick-right"></div>
   </div>
   <div id="ocr-camera-error" class="scan-error-text hidden"></div>
   <div class="ocr-camera-actions">

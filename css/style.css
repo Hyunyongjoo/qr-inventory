@@ -559,15 +559,24 @@ html, body {
   object-fit: cover;
   display: block;
 }
-.ocr-guide-line {
-  position: absolute; left: 0; right: 0;
+.ocr-guide-center-line {
+  position: absolute; left: 8%; right: 8%; top: 50%;
   height: 3px;
   background: #ff3b30;
   box-shadow: 0 0 8px rgba(255,59,48,.9);
   pointer-events: none;
 }
-.ocr-guide-line-top { top: 40%; }
-.ocr-guide-line-bottom { top: 60%; }
+.ocr-guide-tick {
+  position: absolute; top: 50%;
+  width: 3px;
+  height: 26px;
+  background: #ff3b30;
+  box-shadow: 0 0 8px rgba(255,59,48,.9);
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+.ocr-guide-tick-left { left: 8%; }
+.ocr-guide-tick-right { right: 8%; }
 .ocr-camera-actions {
   padding: 16px;
   padding-bottom: max(16px, env(safe-area-inset-bottom));

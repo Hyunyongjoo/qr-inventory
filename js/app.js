@@ -3949,7 +3949,7 @@
   }
 
   // ------------------------- OCR 자재코드 스캔 -------------------------
-  // 화면 중앙의 빨간 가이드라인(위/아래) 안쪽 영역만 잘라내 Tesseract.js로 문자 인식을 돌리고,
+  // 화면 정중앙의 빨간 중심선을 기준으로 위아래 일정 영역만 잘라내 Tesseract.js로 문자 인식을 돌리고,
   // "XXXX-XXX-XXX" 형태의 자재코드 패턴만 뽑아낸다. 인식 결과는 QR 스캔과 동일하게
   // handleScannedCode(입고/출고)/handleReturnScannedCode(반납)로 넘겨 그대로 조회를 이어간다.
 
@@ -4022,8 +4022,8 @@
     $('#ocr-camera-overlay').classList.add('hidden');
   }
 
-  // 가이드라인이 표시된 컨테이너(object-fit: cover) 좌표를, 실제 영상(video) 픽셀 좌표로 환산한다.
-  // 가로는 전체 폭을 그대로 쓰고(자재코드가 좌우로 잘리지 않게), 세로만 가이드라인 사이 영역으로 자른다.
+  // 가이드 중심선이 표시된 컨테이너(object-fit: cover) 좌표를, 실제 영상(video) 픽셀 좌표로 환산한다.
+  // 가로는 전체 폭을 그대로 쓰고(자재코드가 좌우로 잘리지 않게), 세로만 중심선 기준 상하 영역으로 자른다.
   function computeOcrCropRect_(video, viewport) {
     const vw = video.videoWidth;
     const vh = video.videoHeight;

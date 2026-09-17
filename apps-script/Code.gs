@@ -1425,6 +1425,10 @@ function findPoRowByIndex_(site, rowIndex) {
 }
 
 // 입고확인 화면의 "재고사용"/"구매필요"/"구매보류" 버튼: 재고사용(O,X) 컬럼에 O, X 또는 보류를 표시한다.
+// 재고사용(O)으로 확정되면 구매요청번호 컬럼에 "재고사용"이라고 표시해, 실제 구매 없이 재고로
+// 충당했음을 구매발주및입고 시트에서 바로 알 수 있게 한다. 이후 구매필요/구매보류로 다시 바뀌면
+// (구매완료 이후에는 이 함수 자체가 막히므로, 그 전 단계에서 되돌리는 경우) 자동 입력했던 "재고사용"
+// 표시만 지워 실제 구매요청번호와 혼동되지 않게 한다.
 function updateStockUsage_(body) {
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
@@ -1444,7 +1448,13 @@ function updateStockUsage_(body) {
       throw new Error('구매완료 이후에는 재고사용/구매필요/구매보류를 변경할 수 없습니다.');
     }
 
-    updateRow_(sheet_(poInSheetName_(site)), row._row, { '재고사용(O,X)': value });
+    const updates = { '재고사용(O,X)': value };
+    if (value === 'O') {
+      updates['구매요청번호'] = '재고사용';
+    } else if (String(row['구매요청번호'] || '').trim() === '재고사용') {
+      updates['구매요청번호'] = '';
+    }
+    updateRow_(sheet_(poInSheetName_(site)), row._row, updates);
     return poRowToInboundView_(site, findPoRowByIndex_(site, body.rowIndex));
   } finally {
     lock.releaseLock();

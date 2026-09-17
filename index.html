@@ -581,11 +581,12 @@
     <div class="ocr-guide-center-line"></div>
     <div class="ocr-guide-tick ocr-guide-tick-left"></div>
     <div class="ocr-guide-tick ocr-guide-tick-right"></div>
+    <div id="ocr-scan-indicator" class="ocr-scan-indicator hidden">
+      <div class="spinner-sm"></div>
+      <span>인식 중...</span>
+    </div>
   </div>
   <div id="ocr-camera-error" class="scan-error-text hidden"></div>
-  <div class="ocr-camera-actions">
-    <button id="ocr-capture-btn" class="btn btn-primary btn-block">촬영</button>
-  </div>
 </div>
 
 <!-- OCR 인식 결과 확인 -->
@@ -599,12 +600,6 @@
       <button id="ocr-confirm-manual-btn" class="btn ocr-btn-manual" type="button">직접입력</button>
     </div>
   </div>
-</div>
-
-<!-- OCR 인식 중 -->
-<div id="ocr-processing-overlay" class="ocr-processing-overlay hidden">
-  <div class="spinner"></div>
-  <div>인식 중...</div>
 </div>
 
 <canvas id="ocr-capture-canvas" class="hidden"></canvas>

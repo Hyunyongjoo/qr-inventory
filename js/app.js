@@ -62,7 +62,9 @@
     ocrTarget: null,
     ocrStream: null,
     ocrLastCode: '',
-    ocrBusy: false
+    ocrWorker: null,
+    ocrScanning: false,
+    ocrScanTimer: null
   };
 
   // popstate(뒤로가기) 처리 중 switchView가 다시 history.pushState를 호출해
@@ -3949,16 +3951,17 @@
   }
 
   // ------------------------- OCR 자재코드 스캔 -------------------------
-  // 화면 정중앙의 빨간 중심선을 기준으로 위아래 일정 영역만 잘라내 Tesseract.js로 문자 인식을 돌리고,
-  // "XXXX-XXX-XXX" 형태의 자재코드 패턴만 뽑아낸다. 인식 결과는 QR 스캔과 동일하게
+  // 화면 정중앙의 빨간 중심선을 기준으로 위아래 일정 영역만 지속적으로 잘라내 Tesseract.js로
+  // 문자 인식을 돌리고, "XXXX-XXX-XXX" 형태의 자재코드 패턴이 감지되면 자동으로 스캔을 멈추고
+  // 확인 팝업을 띄운다(QR 스캔과 동일한 자동 인식 방식). 인식 결과는 QR 스캔과 동일하게
   // handleScannedCode(입고/출고)/handleReturnScannedCode(반납)로 넘겨 그대로 조회를 이어간다.
 
   const OCR_GUIDE_TOP_FRAC = 0.40;
   const OCR_GUIDE_BOTTOM_FRAC = 0.60;
+  const OCR_SCAN_INTERVAL_MS = 300;
 
   function bindOcr() {
     $('#ocr-camera-close-btn').addEventListener('click', closeOcrCamera);
-    $('#ocr-capture-btn').addEventListener('click', captureAndRecognizeOcr);
     $('#ocr-confirm-ok-btn').addEventListener('click', confirmOcrCode);
     $('#ocr-confirm-retry-btn').addEventListener('click', retryOcrCapture);
     $('#ocr-confirm-manual-btn').addEventListener('click', switchOcrToManualInput);
@@ -3975,9 +3978,14 @@
     el.classList.remove('hidden');
   }
 
+  function showOcrScanIndicator(show) {
+    $('#ocr-scan-indicator').classList.toggle('hidden', !show);
+  }
+
   async function openOcrCamera(target) {
     state.ocrTarget = target;
     showOcrCameraError('');
+    showOcrScanIndicator(false);
     $('#ocr-camera-overlay').classList.remove('hidden');
 
     if (typeof Tesseract === 'undefined') {
@@ -3999,6 +4007,7 @@
       const video = $('#ocr-camera-video');
       video.srcObject = stream;
       await video.play();
+      startOcrAutoScan();
     } catch (err) {
       const message = String((err && err.message) || err || '');
       let friendly = '카메라를 시작할 수 없습니다.';
@@ -4015,6 +4024,7 @@
   }
 
   function closeOcrCamera() {
+    stopOcrAutoScan();
     if (state.ocrStream) {
       state.ocrStream.getTracks().forEach((t) => t.stop());
       state.ocrStream = null;
@@ -4040,16 +4050,40 @@
     return { sx: 0, sy, sw: vw, sh };
   }
 
-  function showOcrProcessing(show) {
-    $('#ocr-processing-overlay').classList.toggle('hidden', !show);
+  // 카메라가 열려 있는 동안 Tesseract 워커 하나를 재사용하며 중심선 영역을 주기적으로 인식한다.
+  // 매 프레임마다 워커를 새로 만들면 느리므로, 스캔이 끝날 때(성공/닫기)까지 워커를 유지한다.
+  async function startOcrAutoScan() {
+    if (state.ocrScanning) return;
+    state.ocrScanning = true;
+    try {
+      state.ocrWorker = await Tesseract.createWorker('eng');
+      await state.ocrWorker.setParameters({ tessedit_char_whitelist: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-' });
+    } catch (err) {
+      state.ocrScanning = false;
+      showOcrCameraError('OCR 엔진을 초기화하지 못했습니다.');
+      return;
+    }
+    ocrScanLoop();
   }
 
-  async function captureAndRecognizeOcr() {
-    if (state.ocrBusy) return;
+  function stopOcrAutoScan() {
+    state.ocrScanning = false;
+    if (state.ocrScanTimer) {
+      clearTimeout(state.ocrScanTimer);
+      state.ocrScanTimer = null;
+    }
+    showOcrScanIndicator(false);
+    const worker = state.ocrWorker;
+    state.ocrWorker = null;
+    if (worker) worker.terminate().catch(() => {});
+  }
+
+  async function ocrScanLoop() {
+    if (!state.ocrScanning) return;
     const video = $('#ocr-camera-video');
     const viewport = $('#ocr-camera-viewport');
     if (!video.videoWidth) {
-      showOcrCameraError('카메라 준비 중입니다. 잠시 후 다시 시도해 주세요.');
+      state.ocrScanTimer = setTimeout(ocrScanLoop, OCR_SCAN_INTERVAL_MS);
       return;
     }
 
@@ -4059,30 +4093,23 @@
     canvas.height = rect.sh;
     canvas.getContext('2d').drawImage(video, rect.sx, rect.sy, rect.sw, rect.sh, 0, 0, rect.sw, rect.sh);
 
-    const target = state.ocrTarget;
-    closeOcrCamera();
-    state.ocrBusy = true;
-    showOcrProcessing(true);
-    let worker;
+    showOcrScanIndicator(true);
+    let code = null;
     try {
-      worker = await Tesseract.createWorker('eng');
-      await worker.setParameters({ tessedit_char_whitelist: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-' });
-      const { data } = await worker.recognize(canvas);
-      const code = extractMaterialCode_(data && data.text);
-      if (!code) {
-        toast('자재코드를 인식하지 못했습니다. 다시 촬영해 주세요.', 'error');
-        openOcrCamera(target);
-        return;
-      }
-      showOcrConfirm(code);
+      const { data } = await state.ocrWorker.recognize(canvas);
+      code = extractMaterialCode_(data && data.text);
     } catch (err) {
-      toast((err && err.message) || 'OCR 인식 중 오류가 발생했습니다.', 'error');
-      openOcrCamera(target);
-    } finally {
-      if (worker) worker.terminate().catch(() => {});
-      state.ocrBusy = false;
-      showOcrProcessing(false);
+      // 한 프레임 인식 실패는 무시하고 다음 프레임에서 다시 시도한다.
     }
+
+    if (!state.ocrScanning) return; // 인식 도중 카메라가 닫혔으면 여기서 중단
+    if (code) {
+      closeOcrCamera();
+      showOcrConfirm(code);
+      return;
+    }
+    showOcrScanIndicator(false);
+    state.ocrScanTimer = setTimeout(ocrScanLoop, OCR_SCAN_INTERVAL_MS);
   }
 
   // 인식된 문자열에서 "XXXX-XXX-XXX" 형태의 자재코드를 찾아낸다. 앞/뒤 블록(4자리·마지막 3자리)은

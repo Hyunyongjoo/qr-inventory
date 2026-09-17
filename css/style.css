@@ -577,12 +577,32 @@ html, body {
 }
 .ocr-guide-tick-left { left: 8%; }
 .ocr-guide-tick-right { right: 8%; }
-.ocr-camera-actions {
-  padding: 16px;
-  padding-bottom: max(16px, env(safe-area-inset-bottom));
+.ocr-scan-indicator {
+  position: absolute; left: 50%; bottom: 14%;
+  transform: translateX(-50%);
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 14px;
   background: rgba(0,0,0,.55);
+  border-radius: 999px;
+  color: #fff;
+  font-size: 13px;
+  pointer-events: none;
 }
-.ocr-camera-actions .scan-error-text { color: #ff8a80; margin-bottom: 10px; }
+.spinner-sm {
+  width: 16px; height: 16px;
+  border: 2px solid rgba(255,255,255,.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin .8s linear infinite;
+  flex-shrink: 0;
+}
+#ocr-camera-error.scan-error-text {
+  color: #ff8a80;
+  padding: 0 16px 12px;
+  padding-bottom: max(12px, env(safe-area-inset-bottom));
+  background: rgba(0,0,0,.55);
+  margin: 0;
+}
 
 .ocr-confirm-overlay {
   position: fixed; inset: 0;
@@ -624,15 +644,6 @@ html, body {
 .ocr-btn-ok { background: var(--success); color: #fff; }
 .ocr-btn-retry { background: var(--orange); color: #fff; }
 .ocr-btn-manual { background: #9ca3af; color: #fff; }
-
-.ocr-processing-overlay {
-  position: fixed; inset: 0;
-  background: rgba(0,0,0,.6);
-  z-index: 230;
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  color: #fff;
-  gap: 12px;
-}
 
 /* ---------- 입고확인 ---------- */
 .inbound-search { display: flex; gap: 8px; align-items: flex-start; }

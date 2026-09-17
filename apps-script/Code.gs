@@ -619,6 +619,12 @@ function isSafetyStockRow_(r) {
   return String(r['라인'] || '').trim() === SAFETY_STOCK_ZONE;
 }
 
+// 안전재고 건 중 입고완료 상태가 된 행. 안전재고는 입고완료되어도 시트 데이터는 그대로 두되,
+// 입고확인 화면 조회 결과에서만 제외한다(재고확인중/구매대기/구매완료/부분입고 상태는 계속 표시).
+function isSafetyStockInboundDoneRow_(r) {
+  return isSafetyStockRow_(r) && computeInboundStatus_(r).status === '입고완료';
+}
+
 // 누적출고수량이 요청수량 이상이면(=출고여부가 "출고완료"가 되는 조건) 이미 마감된 행으로 보고
 // 더 이상 입고/재출고 대상이 아니므로 제외한다. 별도 플래그 없이 수량 비교만으로 판단한다.
 function isOutboundDoneRow_(r) {
@@ -752,8 +758,8 @@ function toDateOnly_(value) {
 // 한 번에 반환한다. 상태(재고확인중/구매대기/구매완료/부분입고/입고완료/재고사용/구매보류/
 // 부분출고/출고완료)별로 따로 배분하거나 상태마다 별도 건수를 보장하지 않는다 — 상태별 건수
 // 표시와 상태 클릭 필터링은 이 결과를 그대로 받은 화면(js/app.js)에서 추가 조회 없이 계산한다.
-// 재고사용(O,X)이 '취소'인 행은 시트 데이터는 그대로 두고 이 조회 결과(요약/상세 모두, 따라서
-// 화면 상단 건수 표시도)에서만 제외한다.
+// 재고사용(O,X)이 '취소'인 행과, 라인="안전재고"이면서 입고완료 상태가 된 행은 시트 데이터는
+// 그대로 두고 이 조회 결과(요약/상세 모두, 따라서 화면 상단 건수 표시도)에서만 제외한다.
 // 반환값은 { summary, detail } 객체다. detail은 관리 버튼(재고사용/입고/출고완료/취소)이
 // 필요로 하는 필드를 모두 담은 기존 행 목록이고, summary는 입고확인 화면 "요약 보기"
 // 표에 필요한 필드(rowIndex + 라인구매번호/구매요청번호/라인/자재코드/품명/규격/요청수량/특이사항1/2)만
@@ -768,9 +774,11 @@ function checkInbound_(site, name, startDate, endDate, zone, materialQuery) {
   const materialQ = normalizeForSearch_((materialQuery || '').toString().trim().toLowerCase());
 
   const allRows = readAll_(sheet_(poInSheetName_(site)));
-  // 취소된 요청(재고사용(O,X)=취소)은 시트 데이터는 그대로 두고, 이 화면의 조회 결과(요약/상세
-  // 모두)에서만 제외한다 — pendingMap 등 다른 계산에 쓰이는 allRows는 건드리지 않는다.
-  let rows = allRows.filter(r => !isCancelledRow_(r));
+  // 취소된 요청(재고사용(O,X)=취소)과, 안전재고 건 중 이미 입고완료된 건은 시트 데이터는
+  // 그대로 두고 이 화면의 조회 결과(요약/상세 모두)에서만 제외한다 — 안전재고는 재고확인중/
+  // 구매대기/구매완료/부분입고 상태일 때는 계속 보여야 하므로 입고완료된 건만 걸러낸다.
+  // pendingMap 등 다른 계산에 쓰이는 allRows는 건드리지 않는다.
+  let rows = allRows.filter(r => !isCancelledRow_(r) && !isSafetyStockInboundDoneRow_(r));
   if (q) rows = rows.filter(r => String(r['신청자'] || '').includes(q));
   if (zoneQ) rows = rows.filter(r => String(r['라인'] || '').trim() === zoneQ);
   if (start || end) {

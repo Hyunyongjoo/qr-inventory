@@ -168,8 +168,14 @@ function doPost(e) {
       case 'updateStockUsage':
         result = updateStockUsage_(body);
         break;
+      case 'checkInboundQty':
+        result = checkInboundQty_(body);
+        break;
       case 'inboundByManager':
         result = inboundByManager_(body);
+        break;
+      case 'checkOutboundQty':
+        result = checkOutboundQty_(body);
         break;
       case 'outboundComplete':
         result = outboundComplete_(body);
@@ -1469,6 +1475,30 @@ function updateStockUsage_(body) {
   }
 }
 
+// 입고확인 화면의 "입고" 버튼 1단계: 실제로 반영하지 않고 요청수량/누적입고수량만 빠르게 읽어,
+// 입력 수량이 잔여수량(요청수량-누적입고수량)을 넘는지만 먼저 확인한다. 잠금 없이 읽기만 하므로
+// 실제 반영(입고수량 갱신 + 재고 증가)을 처리하는 inboundByManager_(2단계)보다 훨씬 빨리 끝난다.
+// 화면은 이 결과로 입고완료/부분입고 상태를 먼저 낙관적으로 보여주고, inboundByManager_는
+// 화면이 이미 갱신된 뒤 백그라운드로 호출해 실제 시트에 반영한다(실패 시 화면에서 원래 상태로 복구).
+function checkInboundQty_(body) {
+  const site = assertSite_(body.site);
+  assertManagerRole_(body.pin);
+  const row = findPoRowByIndex_(site, body.rowIndex);
+  const qty = Number(body.quantity);
+  if (!qty || qty <= 0) throw new Error('입고 수량은 0보다 커야 합니다.');
+
+  const requestedQty = Number(row['요청수량']) || 0;
+  const cumulativeQty = Number(row['누적입고수량']) || 0;
+  const remainingQty = Math.max(0, requestedQty - cumulativeQty);
+  if (qty > remainingQty) {
+    throw new Error(`입고 가능한 수량(${remainingQty})을 초과했습니다.`);
+  }
+
+  const cumulativeAfter = cumulativeQty + qty;
+  const status = cumulativeAfter < requestedQty ? '부분입고' : '입고완료';
+  return { requestedQty, cumulativeQty, remainingQty, cumulativeAfter, status };
+}
+
 // 입고확인 화면의 "입고" 버튼: 팝업으로 입력받은 수량을 그 구매요청 행 하나에 직접 누적한다.
 // (QR 스캔 입고(stockIn_)와 달리 여러 발주에 FIFO로 나눠 채우지 않고, 화면에 보이는 그 요청 건에만 반영한다.)
 // 구매완료(구매요청번호 등록) 상태 중 구매완료/부분입고 건에서만 처리할 수 있다 — 재고확인중/구매대기/
@@ -1529,6 +1559,31 @@ function inboundByManager_(body) {
   } finally {
     lock.releaseLock();
   }
+}
+
+// 입고확인 화면의 "출고완료" 버튼 1단계: 실제로 반영하지 않고 재고 시트 현재고만 빠르게 읽어,
+// 출고 수량이 현재고를 넘는지만 먼저 확인한다. 출고 이력 기록/재고 차감/구매발주및입고 시트
+// 출고수량 갱신을 모두 처리하는 outboundComplete_(2단계)보다 훨씬 빨리 끝난다. 화면은 이 결과로
+// 출고완료/부분출고 상태를 먼저 낙관적으로 보여주고, outboundComplete_는 화면이 이미 갱신된 뒤
+// 백그라운드로 호출해 실제 시트에 반영한다(실패 시 화면에서 원래 상태로 복구).
+function checkOutboundQty_(body) {
+  const site = assertSite_(body.site);
+  assertManagerRole_(body.pin);
+  const row = findPoRowByIndex_(site, body.rowIndex);
+  const qty = Number(body.quantity);
+  if (!qty || qty <= 0) throw new Error('출고 수량은 0보다 커야 합니다.');
+
+  const itemId = row['자재코드'];
+  const stockQty = getStockQty_(site, itemId);
+  if (qty > stockQty) {
+    throw new Error(`재고 부족: 현재고 ${stockQty}, 출고 요청 ${qty}`);
+  }
+
+  const requestedQty = Number(row['요청수량']) || 0;
+  const shippedBefore = Number(row['누적출고수량']) || 0;
+  const shippedCumulative = shippedBefore + qty;
+  const status = shippedCumulative < requestedQty ? '부분출고' : '출고완료';
+  return { stockQty, requestedQty, shippedBefore, shippedCumulative, status };
 }
 
 // 입고확인 화면의 "출고완료" 버튼: 재고사용(O) 또는 입고완료 상태인 요청을 그 라인으로 출고 처리한다.

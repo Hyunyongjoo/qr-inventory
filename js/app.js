@@ -2868,11 +2868,17 @@
   // 입고완료/출고완료 건의 "수정" 버튼은 당일 건에서만 활성화한다(서버에서도 다시 검증).
   function isTodayDateStr_(dateStr) {
     if (!dateStr) return false;
+    return String(dateStr).trim() === todayDateStr_();
+  }
+
+  // 오늘 날짜를 서버(Utilities.formatDate(..., 'yyyy-MM-dd'))와 같은 형식으로 반환한다.
+  // 입고/출고완료 낙관적 업데이트에서 최종입고일/최종출고일을 미리 채워 넣는 데 쓴다.
+  function todayDateStr_() {
     const d = new Date();
     const y = d.getFullYear();
     const m = String(d.getMonth() + 1).padStart(2, '0');
     const day = String(d.getDate()).padStart(2, '0');
-    return String(dateStr).trim() === `${y}-${m}-${day}`;
+    return `${y}-${m}-${day}`;
   }
 
   function bindInboundCheck() {
@@ -3406,6 +3412,34 @@
     return clone;
   }
 
+  // "입고" 처리 낙관적 업데이트용: checkInboundQty(1단계)가 돌려준 결과로 새 상태/수량을 미리
+  // 계산한다. 실제 반영(재고 증가/입고여부 갱신)은 이어서 백그라운드로 부르는 inboundByManager_
+  // (2단계)가 처리하며, 그 결과로 이 값은 다시 한 번 갱신된다.
+  function buildOptimisticInboundRow_(row, check) {
+    return Object.assign({}, row, {
+      cumulativeQty: check.cumulativeAfter,
+      remainingQty: Math.max(0, check.requestedQty - check.cumulativeAfter),
+      status: check.status,
+      category: check.status,
+      lastInboundDate: todayDateStr_()
+    });
+  }
+
+  // "출고완료" 처리 낙관적 업데이트용: checkOutboundQty(1단계)가 돌려준 결과로 새 상태/수량을
+  // 미리 계산한다. 실제 반영(출고 이력 기록/재고 차감/출고수량 갱신)은 이어서 백그라운드로 부르는
+  // outboundComplete_(2단계)가 처리하며, 그 결과로 이 값은 다시 한 번 갱신된다.
+  function buildOptimisticOutboundRow_(row, check) {
+    return Object.assign({}, row, {
+      shippedQty: check.shippedCumulative,
+      remainingShipQty: Math.max(0, check.requestedQty - check.shippedCumulative),
+      status: check.status,
+      category: check.status,
+      outboundDone: check.status === '출고완료',
+      outboundPartial: check.status === '부분출고',
+      lastOutboundDate: todayDateStr_()
+    });
+  }
+
   // updateStockUsage 처리 직후 서버가 돌려준 최신 행 하나로 state.inboundRows와 화면(요약 건수 +
   // 그 카드)만 갱신한다. 필터에 더 이상 맞지 않게 된 경우 카드를 제거하고, 목록이 비면
   // (검색 결과 없음 메시지 등을 위해) renderInboundList()로 전체를 다시 그린다.
@@ -3446,9 +3480,13 @@
     if (row) openInboundReceiveModal(row);
   }
 
-  // "입고" 버튼: 수량 입력 팝업을 띄우고, 확인 시 그 요청 건에 직접 입고수량을 누적한다.
+  // "입고" 버튼: 수량 입력 팝업을 띄우고, 확인 시 2단계로 처리한다.
+  // 1단계(즉시): checkInboundQty로 요청수량/누적입고수량만 빠르게 확인해 잔여수량을 넘지 않는지
+  //   검증하고, 통과하면 실제 반영을 기다리지 않고 화면을 먼저 입고완료/부분입고로 낙관적 갱신한다.
+  // 2단계(백그라운드): inboundByManager로 실제 반영(입고수량 갱신 + 재고 증가)을 진행하고,
+  //   실패하면 화면을 원래 상태로 되돌리고 오류 메시지를 띄운다.
   // 입력 가능한 최대 수량은 요청수량-누적입고수량(잔여수량)으로 제한해 초과 입력 시 잔여수량이
-  // 마이너스가 되는 것을 막는다. 확인 버튼은 요청이 끝날 때까지 비활성화해 중복 클릭(연타)으로
+  // 마이너스가 되는 것을 막는다. 확인 버튼은 1단계 요청이 끝날 때까지 비활성화해 중복 클릭(연타)으로
   // 같은 건에 두 번 요청이 나가 두 번째 요청이 이미 바뀐 상태 때문에 실패하는 것을 막는다.
   function openInboundReceiveModal(row) {
     const maxQty = Math.max(0, Number(row.remainingQty) || 0);
@@ -3493,10 +3531,22 @@
       submitting = true;
       confirmBtn.disabled = true;
       try {
-        await Api.post('inboundByManager', { site: state.site, rowIndex: row.rowIndex, quantity: qty, pin: state.user.pin });
-        toast('입고 처리되었습니다.', 'success');
+        // 1단계(즉시): 요청수량/누적입고수량만 빠르게 확인해 잔여수량을 넘는지 검증한다.
+        // 여기서 통과하면 실제 반영을 기다리지 않고 화면을 먼저 입고완료/부분입고로 갱신한다.
+        const check = await Api.post('checkInboundQty', { site: state.site, rowIndex: row.rowIndex, quantity: qty, pin: state.user.pin });
         closeModal();
-        await fetchInboundRows();
+        const original = state.inboundRows.find((r) => r.rowIndex === row.rowIndex);
+        if (original) updateInboundRowInPlace(buildOptimisticInboundRow_(original, check));
+        toast('입고 처리되었습니다.', 'success');
+
+        // 2단계(백그라운드): 실제 반영(입고수량 갱신 + 재고 증가)은 화면 갱신 뒤에 진행하고,
+        // 실패하면 방금 바꾼 카드를 원래 상태로 되돌린다.
+        Api.post('inboundByManager', { site: state.site, rowIndex: row.rowIndex, quantity: qty, pin: state.user.pin })
+          .then((updatedRow) => updateInboundRowInPlace(updatedRow))
+          .catch((err) => {
+            if (original) updateInboundRowInPlace(original);
+            toast(err.message || '입고 처리 중 오류가 발생했습니다.', 'error');
+          });
       } catch (err) {
         toast(err.message || '입고 처리 중 오류가 발생했습니다.', 'error');
       } finally {
@@ -3512,10 +3562,16 @@
     if (row) openInboundShipModal(row);
   }
 
-  // "출고완료" 버튼: 수량 입력 팝업을 띄우고, 확인 시 그 요청 건에만(다른 건은 건드리지 않고)
-  // 입력한 수량만큼 누적출고수량을 더한다. 선입선출은 적용하지 않는다(QR 스캔 출고 전용 로직).
-  // 출고 수량은 실제 재고수량을 초과할 수 없다: 재고수량 < 출고수량이면 서버가 거부하고
-  // "재고 부족: 현재고 N개, 출고 요청 N개" 오류를 던진다(부분 출고로 조용히 줄이지 않음).
+  // "출고완료" 버튼: 수량 입력 팝업을 띄우고, 확인 시 2단계로 처리한다.
+  // 1단계(즉시): checkOutboundQty로 재고 시트 현재고만 빠르게 확인해 출고 수량이 재고를 넘지
+  //   않는지 검증하고, 통과하면 실제 반영을 기다리지 않고 화면을 먼저 출고완료/부분출고로
+  //   낙관적 갱신한다.
+  // 2단계(백그라운드): outboundComplete로 실제 반영(출고 이력 기록 + 재고 차감 + 출고수량 갱신)을
+  //   진행하고, 실패하면 화면을 원래 상태로 되돌리고 오류 메시지를 띄운다.
+  // 그 요청 건에만(다른 건은 건드리지 않고) 입력한 수량만큼 누적출고수량을 더한다. 선입선출은
+  // 적용하지 않는다(QR 스캔 출고 전용 로직). 출고 수량은 실제 재고수량을 초과할 수 없다:
+  // 재고수량 < 출고수량이면 1단계에서 거부하고 "재고 부족: 현재고 N개, 출고 요청 N개" 오류를
+  // 띄운다(부분 출고로 조용히 줄이지 않음).
   function openInboundShipModal(row) {
     const remaining = Math.max(0, Number(row.remainingShipQty) || 0);
     const stockQty = Math.max(0, Number(row.stockQty) || 0);
@@ -3535,20 +3591,40 @@
       </div>
     `;
     openModal(html);
+    const shipConfirmBtn = $('#inbound-ship-confirm');
+    let shipSubmitting = false;
     $('#inbound-ship-cancel').addEventListener('click', closeModal);
-    $('#inbound-ship-confirm').addEventListener('click', async () => {
+    shipConfirmBtn.addEventListener('click', async () => {
+      if (shipSubmitting) return;
       const qty = Number($('#inbound-ship-qty').value);
       if (!qty || qty <= 0) {
         toast('올바른 수량을 입력하세요.', 'error');
         return;
       }
+      shipSubmitting = true;
+      shipConfirmBtn.disabled = true;
       try {
-        await Api.post('outboundComplete', { site: state.site, rowIndex: row.rowIndex, quantity: qty, pin: state.user.pin });
-        toast('출고완료 처리되었습니다.', 'success');
+        // 1단계(즉시): 재고 시트 현재고만 빠르게 확인해 출고 수량이 재고를 넘는지 검증한다.
+        // 여기서 통과하면 실제 반영을 기다리지 않고 화면을 먼저 출고완료/부분출고로 갱신한다.
+        const check = await Api.post('checkOutboundQty', { site: state.site, rowIndex: row.rowIndex, quantity: qty, pin: state.user.pin });
         closeModal();
-        await fetchInboundRows();
+        const original = state.inboundRows.find((r) => r.rowIndex === row.rowIndex);
+        if (original) updateInboundRowInPlace(buildOptimisticOutboundRow_(original, check));
+        toast('출고완료 처리되었습니다.', 'success');
+
+        // 2단계(백그라운드): 실제 반영(출고 이력 기록 + 재고 차감 + 출고수량 갱신)은 화면 갱신
+        // 뒤에 진행하고, 실패하면 방금 바꾼 카드를 원래 상태로 되돌린다.
+        Api.post('outboundComplete', { site: state.site, rowIndex: row.rowIndex, quantity: qty, pin: state.user.pin })
+          .then((updatedRow) => updateInboundRowInPlace(updatedRow))
+          .catch((err) => {
+            if (original) updateInboundRowInPlace(original);
+            toast(err.message || '출고완료 처리 중 오류가 발생했습니다.', 'error');
+          });
       } catch (err) {
         toast(err.message || '출고완료 처리 중 오류가 발생했습니다.', 'error');
+      } finally {
+        shipSubmitting = false;
+        shipConfirmBtn.disabled = false;
       }
     });
   }

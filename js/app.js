@@ -3878,8 +3878,8 @@
     },
     transaction: {
       label: '거래명세서',
-      columns: ['BQMS', 'S/N', '수량', '라인', '층'],
-      toRow: (r) => [r.bqms, r.sn, r.qty, r.zone, r.floor]
+      columns: ['BQMS', 'S/N', '수량', '라인', '층', '', '자재코드', '품명', '규격', '단위'],
+      toRow: (r) => [r.bqms, r.sn, r.qty, r.zone, r.floor, '', r.itemId, r.itemName, r.spec, r.unit]
     }
   };
 

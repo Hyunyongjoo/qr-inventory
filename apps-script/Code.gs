@@ -2070,7 +2070,8 @@ function getOutboundDownload_(site, startDate, endDate, zone) {
   });
 }
 
-// 거래명세서 다운로드: 출고 시트 원본 그대로(자재코드 중복 합산 없이) BQMS/S-N/수량/라인/층만 뽑는다.
+// 거래명세서 다운로드: 출고 시트 원본 그대로(자재코드 중복 합산 없이) BQMS/S-N/수량/라인/층 +
+// 자재코드/품명/규격/단위를 뽑는다.
 function getTransactionDownload_(site, startDate, endDate, zone) {
   assertSite_(site);
   const zoneQ = (zone || '').toString().trim();
@@ -2084,7 +2085,11 @@ function getTransactionDownload_(site, startDate, endDate, zone) {
     sn: r['S/N'] || '',
     qty: Number(r['수량']) || 0,
     zone: r['라인'] || '',
-    floor: r['층'] || ''
+    floor: r['층'] || '',
+    itemId: r['자재코드'] || '',
+    itemName: r['자재명'] || '',
+    spec: r['규격'] || '',
+    unit: r['단위'] || ''
   }));
 }
 

@@ -366,7 +366,11 @@ html, body {
 }
 .scan-debug-row:empty { display: none; }
 #scan-reader-wrap, #return-reader-wrap { margin-bottom: 14px; }
-#qr-reader, #return-qr-reader, #transfer-qr-reader {
+/* OCR 인라인 미리보기(#ocr-reader-viewport, #return-ocr-reader-viewport)도 QR 스캔
+   박스와 같은 규칙을 공유해 크기/모서리가 완전히 동일하게 나오도록 한다. */
+#qr-reader, #return-qr-reader, #transfer-qr-reader,
+#ocr-reader-viewport, #return-ocr-reader-viewport {
+  position: relative;
   width: 100%;
   min-height: 300px;
   border-radius: var(--radius);
@@ -374,7 +378,8 @@ html, body {
   margin-bottom: 10px;
   background: #000;
 }
-#qr-reader video, #return-qr-reader video, #transfer-qr-reader video {
+#qr-reader video, #return-qr-reader video, #transfer-qr-reader video,
+#ocr-reader-viewport video, #return-ocr-reader-viewport video {
   width: 100% !important;
   height: 100% !important;
   object-fit: cover;
@@ -524,52 +529,23 @@ html, body {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* ---------- OCR 자재코드 스캔 ---------- */
+/* ---------- OCR 자재코드 스캔 (QR 스캔과 동일한 인라인 박스 레이아웃) ---------- */
 .scan-btn-row { display: flex; gap: 8px; }
 .scan-btn-row .btn { flex: 1; }
 
-.ocr-camera-overlay {
-  position: fixed; inset: 0;
-  background: #000;
-  z-index: 210;
-  display: flex;
-  flex-direction: column;
+/* QR 스캔 박스에서 html5-qrcode가 자동으로 그려주는 흰색 모서리 브라켓과
+   시각적으로 맞춘 장식. #ocr-reader-viewport/#return-ocr-reader-viewport 전용. */
+.scan-corner {
+  position: absolute;
+  width: 26px; height: 26px;
+  border: 0 solid #fff;
+  pointer-events: none;
 }
-.ocr-camera-header {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 10px;
-  padding: 12px 16px;
-  padding-top: max(12px, env(safe-area-inset-top));
-  background: rgba(0,0,0,.55);
-  color: #fff;
-  font-size: 14px;
-}
-.ocr-camera-close {
-  background: none; border: none; color: #fff; font-size: 20px; line-height: 1; padding: 4px 8px; cursor: pointer;
-}
-/* QR 스캔 화면의 #qr-reader 박스와 동일한 크기/모양을 재사용해, 실제 촬영 영역이
-   풀스크린이 아니라 화면 중앙의 적당한 박스임을 명확히 보여준다. */
-.ocr-camera-body {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 16px;
-}
-.ocr-camera-viewport {
-  position: relative;
-  width: 100%;
-  min-height: 300px;
-  border-radius: var(--radius);
-  overflow: hidden;
-  background: #000;
-}
-.ocr-camera-viewport video {
-  width: 100%; height: 100%;
-  object-fit: cover;
-  display: block;
-}
+.scan-corner-tl { top: 10px; left: 10px; border-top-width: 3px; border-left-width: 3px; border-top-left-radius: 4px; }
+.scan-corner-tr { top: 10px; right: 10px; border-top-width: 3px; border-right-width: 3px; border-top-right-radius: 4px; }
+.scan-corner-bl { bottom: 10px; left: 10px; border-bottom-width: 3px; border-left-width: 3px; border-bottom-left-radius: 4px; }
+.scan-corner-br { bottom: 10px; right: 10px; border-bottom-width: 3px; border-right-width: 3px; border-bottom-right-radius: 4px; }
+
 /* 중심선 위/아래(=실제 crop 영역 바깥)를 어둡게 가려 촬영 범위를 명확히 표시한다.
    OCR_GUIDE_TOP_FRAC(0.40)/OCR_GUIDE_BOTTOM_FRAC(0.60)과 값을 맞춰야 한다. */
 .ocr-guide-dim {
@@ -579,6 +555,17 @@ html, body {
 }
 .ocr-guide-dim-top { top: 0; height: 40%; }
 .ocr-guide-dim-bottom { bottom: 0; height: 40%; }
+.ocr-guide-hint {
+  position: absolute; left: 50%; top: calc(50% - 20px);
+  transform: translate(-50%, -100%);
+  white-space: nowrap;
+  padding: 6px 12px;
+  background: rgba(0,0,0,.55);
+  border-radius: 999px;
+  color: #fff;
+  font-size: 12px;
+  pointer-events: none;
+}
 .ocr-guide-center-line {
   position: absolute; left: 8%; right: 8%; top: 50%;
   height: 3px;
@@ -616,14 +603,6 @@ html, body {
   animation: spin .8s linear infinite;
   flex-shrink: 0;
 }
-#ocr-camera-error.scan-error-text {
-  color: #ff8a80;
-  padding: 0 16px 12px;
-  padding-bottom: max(12px, env(safe-area-inset-bottom));
-  background: rgba(0,0,0,.55);
-  margin: 0;
-}
-
 .ocr-confirm-overlay {
   position: fixed; inset: 0;
   background: rgba(0,0,0,.75);

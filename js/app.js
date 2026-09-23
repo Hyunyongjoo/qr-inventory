@@ -196,6 +196,7 @@
       state.cart = [];
       state.currentView = null;
       stopScanning();
+      closeOcrCamera();
       showLoginView();
     });
   }
@@ -436,10 +437,8 @@
     if (name !== 'return') stopReturnScanning();
     if (name !== 'order-out') stopOrderOutScanning();
     if (name !== 'transfer-request') stopTransferScanning();
-    if (name !== 'scan' && name !== 'return') {
-      closeOcrCamera();
-      hideOcrConfirm();
-    }
+    if (state.ocrTarget && name !== state.ocrTarget) closeOcrCamera();
+    if (name !== 'scan' && name !== 'return') hideOcrConfirm();
 
     if (name === 'home') loadStock();
     if (name === 'items') loadItems();
@@ -574,7 +573,6 @@
   // ------------------------- QR 스캔 -------------------------
 
   function bindScan() {
-    $('#ocr-scan-btn').addEventListener('click', () => openOcrCamera('scan'));
     $('#scan-toggle-btn').addEventListener('click', toggleScanning);
     $('#manual-lookup-btn').addEventListener('click', doManualCodeLookup);
     $('#manual-code-input').addEventListener('keydown', (e) => {
@@ -626,6 +624,8 @@
   }
 
   function startScanning() {
+    // OCR 스캔과 같은 박스를 공유하므로, QR 스캔을 켜기 전에 OCR 스캔이 켜져 있으면 먼저 끈다.
+    if (state.ocrScanning && state.ocrTarget === 'scan') closeOcrCamera();
     clearScanError();
 
     if (typeof Html5Qrcode === 'undefined') {
@@ -1074,6 +1074,7 @@
     if (!state.site) { toast('사이트를 선택하세요.', 'error'); return; }
 
     stopScanning();
+    closeOcrCamera();
 
     const btn = $('#cart-submit-btn');
     btn.disabled = true;
@@ -1501,7 +1502,6 @@
 
   function bindReturn() {
     $('#return-back-btn').addEventListener('click', () => switchView('actions'));
-    $('#return-ocr-scan-btn').addEventListener('click', () => openOcrCamera('return'));
     $('#return-scan-toggle-btn').addEventListener('click', toggleReturnScanning);
     $('#return-manual-lookup-btn').addEventListener('click', () => {
       const code = $('#return-manual-code-input').value.trim();
@@ -1569,6 +1569,8 @@
   // 인식되면 콜백으로 원본 텍스트를 넘긴다. 카메라는 계속 켜둔 채 연속으로 스캔하되,
   // 이미 조회 중이거나 결과 카드가 떠 있는 동안에는 새 스캔을 무시한다.
   function startReturnScanning() {
+    // OCR 스캔과 같은 박스를 공유하므로, QR 스캔을 켜기 전에 OCR 스캔이 켜져 있으면 먼저 끈다.
+    if (state.ocrScanning && state.ocrTarget === 'return') closeOcrCamera();
     clearReturnScanError();
 
     if (typeof Html5Qrcode === 'undefined') {
@@ -4027,46 +4029,101 @@
   }
 
   // ------------------------- OCR 자재코드 스캔 -------------------------
-  // 화면 정중앙의 빨간 중심선을 기준으로 위아래 일정 영역만 지속적으로 잘라내 Tesseract.js로
-  // 문자 인식을 돌리고, "XXXX-XXX-XXX" 형태의 자재코드 패턴이 감지되면 자동으로 스캔을 멈추고
-  // 확인 팝업을 띄운다(QR 스캔과 동일한 자동 인식 방식). 인식 결과는 QR 스캔과 동일하게
-  // handleScannedCode(입고/출고)/handleReturnScannedCode(반납)로 넘겨 그대로 조회를 이어간다.
+  // QR 스캔과 완전히 동일한 인라인 박스(#ocr-reader-viewport / #return-ocr-reader-viewport)에서
+  // 카메라를 켜고, 화면 정중앙의 빨간 중심선을 기준으로 위아래 일정 영역만 지속적으로 잘라내
+  // Tesseract.js로 문자 인식을 돌린다. "XXXX-XXX-XXX" 형태의 자재코드 패턴이 감지되면 자동으로
+  // 스캔을 멈추고 확인 팝업을 띄운다(QR 스캔과 동일한 자동 인식 방식). 인식 결과는 QR 스캔과
+  // 동일하게 handleScannedCode(입고/출고)/handleReturnScannedCode(반납)로 넘겨 조회를 이어간다.
 
   const OCR_GUIDE_TOP_FRAC = 0.40;
   const OCR_GUIDE_BOTTOM_FRAC = 0.60;
   const OCR_SCAN_INTERVAL_MS = 300;
 
+  // 입고/출고 통합 스캔 화면과 반납 화면은 서로 다른 DOM(비디오/버튼/에러 표시줄)을 쓰므로,
+  // 화면별 설정을 한 곳에 모아두고 state.ocrTarget으로 어느 쪽을 쓸지 고른다.
+  const OCR_UI = {
+    scan: {
+      viewport: '#ocr-reader-viewport',
+      video: '#ocr-camera-video',
+      indicator: '#ocr-scan-indicator',
+      toggleBtn: '#ocr-scan-btn',
+      titleEl: '#scan-view-title',
+      idleTitle: 'QR 스캔',
+      activeTitle: 'OCR 스캔',
+      showError: (msg) => showScanError(msg),
+      clearError: () => clearScanError(),
+      stopQr: () => stopScanning(),
+      manualInput: '#manual-code-input',
+      onDetected: (code) => handleScannedCode(code)
+    },
+    return: {
+      viewport: '#return-ocr-reader-viewport',
+      video: '#return-ocr-camera-video',
+      indicator: '#return-ocr-scan-indicator',
+      toggleBtn: '#return-ocr-scan-btn',
+      titleEl: null,
+      idleTitle: null,
+      activeTitle: null,
+      showError: (msg) => showReturnScanError(msg),
+      clearError: () => clearReturnScanError(),
+      stopQr: () => stopReturnScanning(),
+      manualInput: '#return-manual-code-input',
+      onDetected: (code) => handleReturnScannedCode(code)
+    }
+  };
+
+  function ocrCfg_() {
+    return OCR_UI[state.ocrTarget] || OCR_UI.scan;
+  }
+
+  function setOcrTitle_(cfg, active) {
+    if (!cfg.titleEl) return;
+    $(cfg.titleEl).textContent = active ? cfg.activeTitle : cfg.idleTitle;
+  }
+
   function bindOcr() {
-    $('#ocr-camera-close-btn').addEventListener('click', closeOcrCamera);
+    $('#ocr-scan-btn').addEventListener('click', () => toggleOcrScanning('scan'));
+    $('#return-ocr-scan-btn').addEventListener('click', () => toggleOcrScanning('return'));
     $('#ocr-confirm-ok-btn').addEventListener('click', confirmOcrCode);
     $('#ocr-confirm-retry-btn').addEventListener('click', retryOcrCapture);
     $('#ocr-confirm-manual-btn').addEventListener('click', switchOcrToManualInput);
   }
 
-  function showOcrCameraError(message) {
-    const el = $('#ocr-camera-error');
-    if (!message) {
-      el.textContent = '';
-      el.classList.add('hidden');
-      return;
+  // QR 스캔의 "QR 스캔 시작 / 스캔 중지" 토글 버튼과 동일한 동작:
+  // 꺼져 있으면 켜고, 이 화면에서 이미 켜져 있으면(또는 켜는 중이면) 끈다.
+  function toggleOcrScanning(target) {
+    const active = state.ocrTarget === target && !$(OCR_UI[target].viewport).classList.contains('hidden');
+    if (active) {
+      closeOcrCamera();
+    } else {
+      openOcrCamera(target);
     }
-    el.textContent = message;
-    el.classList.remove('hidden');
+  }
+
+  function showOcrCameraError(message) {
+    const cfg = ocrCfg_();
+    if (message) cfg.showError(message); else cfg.clearError();
   }
 
   function showOcrScanIndicator(show) {
-    $('#ocr-scan-indicator').classList.toggle('hidden', !show);
+    $(ocrCfg_().indicator).classList.toggle('hidden', !show);
   }
 
   async function openOcrCamera(target) {
+    const cfg = OCR_UI[target];
+    cfg.stopQr(); // QR 스캔과 같은 박스를 공유하므로, 켜기 전에 QR 스캔이 켜져 있으면 먼저 끈다.
+
     state.ocrTarget = target;
-    showOcrCameraError('');
+    cfg.clearError();
     showOcrScanIndicator(false);
-    $('#ocr-camera-overlay').classList.remove('hidden');
+    $(cfg.viewport).classList.remove('hidden');
+    $(cfg.toggleBtn).textContent = '스캔 중지';
+    setOcrTitle_(cfg, true);
 
     if (typeof Tesseract === 'undefined') {
       showOcrCameraError('OCR 라이브러리를 불러오지 못했습니다. 앱을 새로고침해 주세요.');
       toast('OCR 라이브러리를 불러오지 못했습니다.', 'error');
+      closeOcrCamera();
       return;
     }
 
@@ -4074,13 +4131,14 @@
     if (!isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       showOcrCameraError('카메라를 사용하려면 HTTPS 주소로 접속해야 합니다.');
       toast('보안 연결(HTTPS)이 아니어서 카메라를 사용할 수 없습니다.', 'error');
+      closeOcrCamera();
       return;
     }
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
       state.ocrStream = stream;
-      const video = $('#ocr-camera-video');
+      const video = $(cfg.video);
       video.srcObject = stream;
       await video.play();
       startOcrAutoScan();
@@ -4094,22 +4152,28 @@
       } else if (/NotReadableError/i.test(message)) {
         friendly = '카메라가 다른 앱에서 사용 중입니다. 다른 앱을 종료한 후 다시 시도해 주세요.';
       }
-      showOcrCameraError(friendly);
+      showOcrCameraError(friendly + ' 자재코드를 직접 입력해도 됩니다.');
       toast(friendly, 'error');
+      closeOcrCamera();
     }
   }
 
   function closeOcrCamera() {
+    const cfg = ocrCfg_();
     stopOcrAutoScan();
     if (state.ocrStream) {
       state.ocrStream.getTracks().forEach((t) => t.stop());
       state.ocrStream = null;
     }
-    $('#ocr-camera-overlay').classList.add('hidden');
+    $(cfg.viewport).classList.add('hidden');
+    $(cfg.toggleBtn).textContent = 'OCR 스캔';
+    setOcrTitle_(cfg, false);
   }
 
   // 가이드 중심선이 표시된 컨테이너(object-fit: cover) 좌표를, 실제 영상(video) 픽셀 좌표로 환산한다.
   // 가로는 전체 폭을 그대로 쓰고(자재코드가 좌우로 잘리지 않게), 세로만 중심선 기준 상하 영역으로 자른다.
+  // QR 스캔과 동일한 크기로 축소된 박스에서도 viewport의 실제 렌더링 크기를 그대로 쓰기 때문에
+  // 별도 보정 없이 항상 올바른 좌표가 나온다.
   function computeOcrCropRect_(video, viewport) {
     const vw = video.videoWidth;
     const vh = video.videoHeight;
@@ -4156,8 +4220,9 @@
 
   async function ocrScanLoop() {
     if (!state.ocrScanning) return;
-    const video = $('#ocr-camera-video');
-    const viewport = $('#ocr-camera-viewport');
+    const cfg = ocrCfg_();
+    const video = $(cfg.video);
+    const viewport = $(cfg.viewport);
     if (!video.videoWidth) {
       state.ocrScanTimer = setTimeout(ocrScanLoop, OCR_SCAN_INTERVAL_MS);
       return;
@@ -4215,13 +4280,9 @@
 
   function confirmOcrCode() {
     const code = state.ocrLastCode;
-    const target = state.ocrTarget;
+    const cfg = ocrCfg_();
     hideOcrConfirm();
-    if (target === 'return') {
-      handleReturnScannedCode(code);
-    } else {
-      handleScannedCode(code);
-    }
+    cfg.onDetected(code);
   }
 
   function retryOcrCapture() {
@@ -4231,11 +4292,7 @@
 
   function switchOcrToManualInput() {
     hideOcrConfirm();
-    if (state.ocrTarget === 'return') {
-      $('#return-manual-code-input').focus();
-    } else {
-      $('#manual-code-input').focus();
-    }
+    $(ocrCfg_().manualInput).focus();
   }
 
 })();

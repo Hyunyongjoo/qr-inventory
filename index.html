@@ -160,7 +160,7 @@
     <!-- QR 스캔 -->
     <section id="view-scan" class="view hidden">
       <div class="view-header">
-        <h2>QR 스캔</h2>
+        <h2 id="scan-view-title">QR 스캔</h2>
         <button class="btn-link" id="scan-back-btn">← 뒤로</button>
       </div>
       <div class="scan-context muted" id="scan-context-label"></div>
@@ -173,6 +173,23 @@
 
       <div id="scan-reader-wrap">
         <div id="qr-reader" class="hidden"></div>
+        <div id="ocr-reader-viewport" class="hidden">
+          <video id="ocr-camera-video" autoplay playsinline muted></video>
+          <div class="scan-corner scan-corner-tl"></div>
+          <div class="scan-corner scan-corner-tr"></div>
+          <div class="scan-corner scan-corner-bl"></div>
+          <div class="scan-corner scan-corner-br"></div>
+          <div class="ocr-guide-dim ocr-guide-dim-top"></div>
+          <div class="ocr-guide-dim ocr-guide-dim-bottom"></div>
+          <div class="ocr-guide-hint">자재코드 숫자 중간을 선에 맞춰주세요</div>
+          <div class="ocr-guide-center-line"></div>
+          <div class="ocr-guide-tick ocr-guide-tick-left"></div>
+          <div class="ocr-guide-tick ocr-guide-tick-right"></div>
+          <div id="ocr-scan-indicator" class="ocr-scan-indicator hidden">
+            <div class="spinner-sm"></div>
+            <span>인식 중...</span>
+          </div>
+        </div>
         <div id="scan-error-text" class="scan-error-text hidden"></div>
         <div class="scan-btn-row">
           <button id="ocr-scan-btn" class="btn btn-primary">OCR 스캔</button>
@@ -288,6 +305,23 @@
 
       <div id="return-reader-wrap">
         <div id="return-qr-reader" class="hidden"></div>
+        <div id="return-ocr-reader-viewport" class="hidden">
+          <video id="return-ocr-camera-video" autoplay playsinline muted></video>
+          <div class="scan-corner scan-corner-tl"></div>
+          <div class="scan-corner scan-corner-tr"></div>
+          <div class="scan-corner scan-corner-bl"></div>
+          <div class="scan-corner scan-corner-br"></div>
+          <div class="ocr-guide-dim ocr-guide-dim-top"></div>
+          <div class="ocr-guide-dim ocr-guide-dim-bottom"></div>
+          <div class="ocr-guide-hint">자재코드 숫자 중간을 선에 맞춰주세요</div>
+          <div class="ocr-guide-center-line"></div>
+          <div class="ocr-guide-tick ocr-guide-tick-left"></div>
+          <div class="ocr-guide-tick ocr-guide-tick-right"></div>
+          <div id="return-ocr-scan-indicator" class="ocr-scan-indicator hidden">
+            <div class="spinner-sm"></div>
+            <span>인식 중...</span>
+          </div>
+        </div>
         <div id="return-scan-error-text" class="scan-error-text hidden"></div>
         <div class="scan-btn-row">
           <button id="return-ocr-scan-btn" class="btn btn-primary">OCR 스캔</button>
@@ -568,29 +602,6 @@
     <div class="spinner"></div>
     <div id="batch-loading-text">처리 중...</div>
   </div>
-</div>
-
-<!-- OCR 카메라 화면 -->
-<div id="ocr-camera-overlay" class="ocr-camera-overlay hidden">
-  <div class="ocr-camera-header">
-    <span>자재코드 숫자 중간을 선에 맞춰주세요</span>
-    <button id="ocr-camera-close-btn" class="ocr-camera-close" type="button">✕</button>
-  </div>
-  <div class="ocr-camera-body">
-    <div id="ocr-camera-viewport" class="ocr-camera-viewport">
-      <video id="ocr-camera-video" autoplay playsinline muted></video>
-      <div class="ocr-guide-dim ocr-guide-dim-top"></div>
-      <div class="ocr-guide-dim ocr-guide-dim-bottom"></div>
-      <div class="ocr-guide-center-line"></div>
-      <div class="ocr-guide-tick ocr-guide-tick-left"></div>
-      <div class="ocr-guide-tick ocr-guide-tick-right"></div>
-      <div id="ocr-scan-indicator" class="ocr-scan-indicator hidden">
-        <div class="spinner-sm"></div>
-        <span>인식 중...</span>
-      </div>
-    </div>
-  </div>
-  <div id="ocr-camera-error" class="scan-error-text hidden"></div>
 </div>
 
 <!-- OCR 인식 결과 확인 -->

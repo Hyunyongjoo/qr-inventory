@@ -576,14 +576,18 @@
     <span>자재코드 숫자 중간을 선에 맞춰주세요</span>
     <button id="ocr-camera-close-btn" class="ocr-camera-close" type="button">✕</button>
   </div>
-  <div id="ocr-camera-viewport" class="ocr-camera-viewport">
-    <video id="ocr-camera-video" autoplay playsinline muted></video>
-    <div class="ocr-guide-center-line"></div>
-    <div class="ocr-guide-tick ocr-guide-tick-left"></div>
-    <div class="ocr-guide-tick ocr-guide-tick-right"></div>
-    <div id="ocr-scan-indicator" class="ocr-scan-indicator hidden">
-      <div class="spinner-sm"></div>
-      <span>인식 중...</span>
+  <div class="ocr-camera-body">
+    <div id="ocr-camera-viewport" class="ocr-camera-viewport">
+      <video id="ocr-camera-video" autoplay playsinline muted></video>
+      <div class="ocr-guide-dim ocr-guide-dim-top"></div>
+      <div class="ocr-guide-dim ocr-guide-dim-bottom"></div>
+      <div class="ocr-guide-center-line"></div>
+      <div class="ocr-guide-tick ocr-guide-tick-left"></div>
+      <div class="ocr-guide-tick ocr-guide-tick-right"></div>
+      <div id="ocr-scan-indicator" class="ocr-scan-indicator hidden">
+        <div class="spinner-sm"></div>
+        <span>인식 중...</span>
+      </div>
     </div>
   </div>
   <div id="ocr-camera-error" class="scan-error-text hidden"></div>

@@ -547,10 +547,21 @@ html, body {
 .ocr-camera-close {
   background: none; border: none; color: #fff; font-size: 20px; line-height: 1; padding: 4px 8px; cursor: pointer;
 }
-.ocr-camera-viewport {
-  position: relative;
+/* QR 스캔 화면의 #qr-reader 박스와 동일한 크기/모양을 재사용해, 실제 촬영 영역이
+   풀스크린이 아니라 화면 중앙의 적당한 박스임을 명확히 보여준다. */
+.ocr-camera-body {
   flex: 1;
   min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 16px;
+}
+.ocr-camera-viewport {
+  position: relative;
+  width: 100%;
+  min-height: 300px;
+  border-radius: var(--radius);
   overflow: hidden;
   background: #000;
 }
@@ -559,6 +570,15 @@ html, body {
   object-fit: cover;
   display: block;
 }
+/* 중심선 위/아래(=실제 crop 영역 바깥)를 어둡게 가려 촬영 범위를 명확히 표시한다.
+   OCR_GUIDE_TOP_FRAC(0.40)/OCR_GUIDE_BOTTOM_FRAC(0.60)과 값을 맞춰야 한다. */
+.ocr-guide-dim {
+  position: absolute; left: 0; right: 0;
+  background: rgba(0,0,0,.6);
+  pointer-events: none;
+}
+.ocr-guide-dim-top { top: 0; height: 40%; }
+.ocr-guide-dim-bottom { bottom: 0; height: 40%; }
 .ocr-guide-center-line {
   position: absolute; left: 8%; right: 8%; top: 50%;
   height: 3px;

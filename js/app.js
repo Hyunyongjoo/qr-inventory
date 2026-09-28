@@ -64,7 +64,9 @@
     ocrLastCode: '',
     ocrWorker: null,
     ocrScanning: false,
-    ocrScanTimer: null
+    ocrScanTimer: null,
+    ocrStartAt: 0,
+    ocrCandidate: null
   };
 
   // popstate(뒤로가기) 처리 중 switchView가 다시 history.pushState를 호출해
@@ -4034,10 +4036,24 @@
   // Tesseract.js로 문자 인식을 돌린다. "XXXX-XXX-XXX" 형태의 자재코드 패턴이 감지되면 자동으로
   // 스캔을 멈추고 확인 팝업을 띄운다(QR 스캔과 동일한 자동 인식 방식). 인식 결과는 QR 스캔과
   // 동일하게 handleScannedCode(입고/출고)/handleReturnScannedCode(반납)로 넘겨 조회를 이어간다.
+  //
+  // 여러 줄의 자재코드가 있을 때 사용자가 원하는 줄에 중심선을 맞추기 전에 다른 줄이 잡히지 않도록
+  // 인식 타이밍을 완화한다:
+  //  - 카메라를 켠 직후(재인식 포함) OCR_START_DELAY_MS 동안은 인식을 시도하지 않는다.
+  //  - 인식 시도는 OCR_SCAN_INTERVAL_MS 간격(시도 시작~다음 시도 시작 기준)으로만 한다.
+  //  - 같은 코드가 연속으로 OCR_STABLE_MIN_HITS회 이상, OCR_STABLE_MIN_MS 이상 반복 인식돼야 확정한다.
+  //    다른 코드가 섞여 나오면 즉시 초기화하고, 코드가 안 잡힌 프레임은 OCR_STABLE_MAX_MISSES회까지만
+  //    봐준다(손떨림 등으로 한 프레임 놓치는 경우).
+  //  - 확정되면 "고정 중..." 표시를 OCR_LOCK_FEEDBACK_MS 동안 보여준 뒤 확인 팝업으로 넘어간다.
 
   const OCR_GUIDE_TOP_FRAC = 0.40;
   const OCR_GUIDE_BOTTOM_FRAC = 0.60;
-  const OCR_SCAN_INTERVAL_MS = 300;
+  const OCR_SCAN_INTERVAL_MS = 400;
+  const OCR_START_DELAY_MS = 500;
+  const OCR_STABLE_MIN_HITS = 2;
+  const OCR_STABLE_MIN_MS = 700;
+  const OCR_STABLE_MAX_MISSES = 1;
+  const OCR_LOCK_FEEDBACK_MS = 600;
 
   // 입고/출고 통합 스캔 화면과 반납 화면은 서로 다른 DOM(비디오/버튼/에러 표시줄)을 쓰므로,
   // 화면별 설정을 한 곳에 모아두고 state.ocrTarget으로 어느 쪽을 쓸지 고른다.
@@ -4105,8 +4121,12 @@
     if (message) cfg.showError(message); else cfg.clearError();
   }
 
-  function showOcrScanIndicator(show) {
-    $(ocrCfg_().indicator).classList.toggle('hidden', !show);
+  // 인디케이터는 평소엔 "인식 중...", 안정화 중엔 "확인 중 · 코드", 확정 직전엔 "고정 중... 코드"를 보여준다.
+  function showOcrScanIndicator(show, text, locked) {
+    const el = $(ocrCfg_().indicator);
+    el.classList.toggle('hidden', !show);
+    el.classList.toggle('locked', !!locked);
+    el.querySelector('span').textContent = text || '인식 중...';
   }
 
   async function openOcrCamera(target) {
@@ -4114,6 +4134,8 @@
     cfg.stopQr(); // QR 스캔과 같은 박스를 공유하므로, 켜기 전에 QR 스캔이 켜져 있으면 먼저 끈다.
 
     state.ocrTarget = target;
+    state.ocrStartAt = Date.now(); // 진입/재인식 직후 최소 대기시간 기준점
+    state.ocrCandidate = null;
     cfg.clearError();
     showOcrScanIndicator(false);
     $(cfg.viewport).classList.remove('hidden');
@@ -4208,6 +4230,7 @@
 
   function stopOcrAutoScan() {
     state.ocrScanning = false;
+    state.ocrCandidate = null;
     if (state.ocrScanTimer) {
       clearTimeout(state.ocrScanTimer);
       state.ocrScanTimer = null;
@@ -4227,6 +4250,13 @@
       state.ocrScanTimer = setTimeout(ocrScanLoop, OCR_SCAN_INTERVAL_MS);
       return;
     }
+    // 화면 진입/재인식 직후에는 사용자가 중심선을 맞출 시간을 준다.
+    const sinceStart = Date.now() - state.ocrStartAt;
+    if (sinceStart < OCR_START_DELAY_MS) {
+      state.ocrScanTimer = setTimeout(ocrScanLoop, OCR_START_DELAY_MS - sinceStart);
+      return;
+    }
+    const attemptAt = Date.now();
 
     const rect = computeOcrCropRect_(video, viewport);
     const canvas = $('#ocr-capture-canvas');
@@ -4234,7 +4264,8 @@
     canvas.height = rect.sh;
     canvas.getContext('2d').drawImage(video, rect.sx, rect.sy, rect.sw, rect.sh, 0, 0, rect.sw, rect.sh);
 
-    showOcrScanIndicator(true);
+    const pending = state.ocrCandidate;
+    showOcrScanIndicator(true, pending ? `확인 중 · ${pending.code}` : '');
     let code = null;
     try {
       const { data } = await state.ocrWorker.recognize(canvas);
@@ -4244,13 +4275,43 @@
     }
 
     if (!state.ocrScanning) return; // 인식 도중 카메라가 닫혔으면 여기서 중단
-    if (code) {
-      closeOcrCamera();
-      showOcrConfirm(code);
+    if (updateOcrCandidate_(code, attemptAt)) {
+      lockOcrCode_(code);
       return;
     }
-    showOcrScanIndicator(false);
-    state.ocrScanTimer = setTimeout(ocrScanLoop, OCR_SCAN_INTERVAL_MS);
+    if (!state.ocrCandidate) showOcrScanIndicator(false);
+    // 인식에 걸린 시간을 빼서, 시도 시작 시점 기준으로 OCR_SCAN_INTERVAL_MS 간격을 유지한다.
+    const wait = Math.max(0, OCR_SCAN_INTERVAL_MS - (Date.now() - attemptAt));
+    state.ocrScanTimer = setTimeout(ocrScanLoop, wait);
+  }
+
+  // 이번 프레임 인식 결과로 안정화 후보를 갱신하고, 확정 조건을 만족하면 true를 돌려준다.
+  function updateOcrCandidate_(code, at) {
+    const cand = state.ocrCandidate;
+    if (!code) {
+      if (cand && ++cand.misses > OCR_STABLE_MAX_MISSES) state.ocrCandidate = null;
+      return false;
+    }
+    if (!cand || cand.code !== code) {
+      // 처음 잡혔거나 다른 줄의 코드가 섞여 나오면 카운트를 새로 시작한다.
+      state.ocrCandidate = { code, firstAt: at, hits: 1, misses: 0 };
+      return false;
+    }
+    cand.hits++;
+    cand.misses = 0;
+    return cand.hits >= OCR_STABLE_MIN_HITS && at - cand.firstAt >= OCR_STABLE_MIN_MS;
+  }
+
+  // 확정된 코드를 "고정 중..."으로 잠깐 보여준 뒤 카메라를 닫고 확인 팝업을 띄운다.
+  // 그 사이 사용자가 스캔 중지/화면 이동을 하면 stopOcrAutoScan이 타이머를 지우므로 팝업은 뜨지 않는다.
+  function lockOcrCode_(code) {
+    showOcrScanIndicator(true, `고정 중... ${code}`, true);
+    state.ocrScanTimer = setTimeout(() => {
+      state.ocrScanTimer = null;
+      if (!state.ocrScanning) return;
+      closeOcrCamera();
+      showOcrConfirm(code);
+    }, OCR_LOCK_FEEDBACK_MS);
   }
 
   // 인식된 문자열에서 "XXXX-XXX-XXX" 형태의 자재코드를 찾아낸다. 앞/뒤 블록(4자리·마지막 3자리)은

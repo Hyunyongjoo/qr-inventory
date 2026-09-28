@@ -595,6 +595,11 @@ html, body {
   font-size: 13px;
   pointer-events: none;
 }
+.ocr-scan-indicator.locked {
+  background: rgba(22,163,74,.9);
+  font-weight: 700;
+}
+.ocr-scan-indicator.locked .spinner-sm { display: none; }
 .spinner-sm {
   width: 16px; height: 16px;
   border: 2px solid rgba(255,255,255,.35);

@@ -581,7 +581,7 @@ function listStock_(site, query) {
 // 현재고를 쓰는 유일한 지점. 현재고는 "누적 실제값"이며 입고/출고/반납/이관 이벤트마다
 // decrementStockQuantity_/incrementStockQuantity_가 그 자리에서 직접 증감한다(이력 재합산으로 덮어쓰지 않음).
 // 읽고-더해서-쓰기 사이에 다른 요청이 끼어들면 수량이 유실되므로 반드시 스크립트 락 안에서만 호출한다.
-// item을 넘기면 재고 시트에 자재명/규격도 함께 저장한다. 월초재고/"YYYY-MM 재고" 열은 건드리지 않는다.
+// item을 넘기면 재고 시트에 자재명/규격도 함께 저장한다. 월초재고/스냅샷("YY-MM-DD 재고") 열은 건드리지 않는다.
 function setStockQuantity_(site, itemId, newQuantity, item) {
   if (scriptLockDepth_ === 0) throw new Error('현재고는 스크립트 락 안에서만 변경할 수 있습니다.');
   const sheet = sheet_(stockSheetName_(site));

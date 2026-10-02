@@ -40,7 +40,7 @@ function setupSpreadsheet() {
 
     // 현재고: 입출고/반납/이관 이벤트마다 직접 증감되는 실제 재고(유일한 기준값).
     // 월초재고: 재고 대사(검증)용 기준값으로만 쓰는 수동 관리 열 — 자동으로 덮어쓰지 않는다.
-    // 매월 1일에는 오른쪽 끝에 "YYYY-MM 재고" 스냅샷 열이 자동으로 추가된다(기록/참고용).
+    // 매월 1일에는 오른쪽 끝에 "YY-MM-DD 재고"(생성일) 스냅샷 열이 자동으로 추가된다(기록/참고용).
     const stockSheet = createSheetIfMissing_(ss, site + '_재고', [
       '자재코드', '자재명', '규격', '월초재고', '현재고', '최종업데이트'
     ], [6]); // 최종업데이트
@@ -81,7 +81,7 @@ function setupSpreadsheet() {
   // 평택_묶음자재 구성표 데이터는 스프레드시트에 직접 업로드해 관리한다.
   seedPyeongtaekSetUsedMaterials_(ss);
 
-  // 매월 1일 00시에 현재고를 "YYYY-MM 재고" 열로 기록하는 스냅샷 트리거 (이전 롤오버 트리거는 제거됨)
+  // 매월 1일 00시에 현재고를 "YY-MM-DD 재고"(생성일) 열로 기록하는 스냅샷 트리거 (이전 롤오버 트리거는 제거됨)
   setupMonthlySnapshotTrigger();
 
   // 샘플 로그인 PIN (Users 시트가 비어있을 때만 채워 넣음)
@@ -236,7 +236,8 @@ function formatStockSheetNumberColumns_(sheet) {
 
 // ------------------------- 월초 재고 스냅샷 -------------------------
 // 현재고는 입고/출고/반납/이관 이벤트마다 직접 증감되는 "누적 실제값"이다(Code.gs setStockQuantity_ 참고).
-// 매월 1일에는 그 시점 현재고를 각 사이트 _재고 시트 오른쪽 끝에 "YYYY-MM 재고" 열로 새로 기록한다.
+// 매월 1일에는 그 시점 현재고를 각 사이트 _재고 시트 오른쪽 끝에 "YY-MM-DD 재고" 열로 새로 기록한다
+// (날짜는 실제 생성일 — 자동 트리거면 보통 1일, 메뉴로 늦게 만들면 그 날짜). 한 달에 한 열만 만든다.
 // 이 스냅샷은 순수 기록/참고용이라 재고 계산에 관여하지 않으며, 실패해도 현재고에는 영향이 없다.
 
 // 트리거/keepAlive 안전망이 스냅샷을 자동으로 만들기 시작하는 달. 그 이전 달(2026-10)은 현재고를
@@ -254,8 +255,27 @@ function currentMonth_() {
   return Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM');
 }
 
-function snapshotLabel_(month) {
-  return month + ' 재고';
+// 새로 만드는 스냅샷 열 이름: 생성일 기준 "YY-MM-DD 재고" (예: 2026-11-01 생성 → "26-11-01 재고").
+function snapshotLabel_(date) {
+  return Utilities.formatDate(date, 'Asia/Seoul', 'yy-MM-dd') + ' 재고';
+}
+
+// 열 이름이 스냅샷 열이면 그 스냅샷의 연월('yyyy-MM')을, 아니면 null을 돌려준다.
+// 새 형식("26-11-01 재고")과 이전 형식("2026-10 재고")을 모두 인식한다.
+function snapshotMonthOfHeader_(header) {
+  const text = String(header || '').trim();
+  let m = text.match(/^(\d{2})-(\d{2})-(\d{2}) 재고$/);
+  if (m) return '20' + m[1] + '-' + m[2];
+  m = text.match(/^(\d{4})-(\d{2}) 재고$/);
+  if (m) return m[1] + '-' + m[2];
+  return null;
+}
+
+// 헤더 목록에서 해당 월(yyyy-MM)의 스냅샷 열 이름을 찾는다. 없으면 null.
+// 열 이름에 생성일이 들어가 날짜마다 달라지므로, 중복 생성 여부는 열 이름이 아니라 "월"로 판단한다.
+function findSnapshotHeaderForMonth_(heads, month) {
+  const found = heads.find(h => snapshotMonthOfHeader_(h) === month);
+  return found === undefined ? null : String(found);
 }
 
 /**
@@ -287,7 +307,7 @@ function monthlyStockSnapshot() {
     Logger.log(month + ' 스냅샷은 자동 생성 대상이 아닙니다 (' + SNAPSHOT_AUTO_START_MONTH + '부터 자동).');
     return;
   }
-  runStockSnapshotWithNotify_(month, '자동(트리거)');
+  runStockSnapshotWithNotify_('자동(트리거)');
 }
 
 // keepAlive()(5분마다)가 호출하는 안전망: 이번 달 스냅샷이 아직 없으면 직접 만든다.
@@ -307,39 +327,44 @@ function ensureMonthlySnapshot_() {
   if (now.getTime() - lastAttempt < 60 * 60 * 1000) return;
   props.setProperty(SNAPSHOT_ATTEMPT_PROP, String(now.getTime()));
 
-  runStockSnapshotWithNotify_(month, '안전망(정규 트리거 미실행 감지)');
+  runStockSnapshotWithNotify_('안전망(정규 트리거 미실행 감지)');
 }
 
 // "자재관리 > 이번 달 재고 스냅샷 생성" 메뉴. 이미 모든 사이트에 생성돼 있으면 안내만 하고 다시 만들지 않는다.
 function createStockSnapshotFromMenu() {
   const ui = SpreadsheetApp.getUi();
   const month = currentMonth_();
-  const label = snapshotLabel_(month);
   const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const existing = [];
   const pending = SITES.filter(site => {
     const sheet = ss.getSheetByName(site + '_재고');
-    return sheet && headers_(sheet).indexOf(label) === -1;
+    if (!sheet) return false;
+    const header = findSnapshotHeaderForMonth_(headers_(sheet), month);
+    if (header) existing.push(site + ' "' + header + '"');
+    return !header;
   });
   if (!pending.length) {
-    ui.alert('"' + label + '" 열이 이미 모든 사이트 재고 시트에 있습니다. 다시 생성하지 않습니다.');
+    ui.alert(month + ' 재고 스냅샷이 이미 모든 사이트에 있습니다. 다시 생성하지 않습니다.\n\n' + existing.join('\n'));
     return;
   }
-  const outcome = runStockSnapshotWithNotify_(month, '수동(메뉴)');
+  const outcome = runStockSnapshotWithNotify_('수동(메뉴)');
   ui.alert(outcome.status + '\n\n' + outcome.message);
 }
 
 // 스냅샷 생성 + 재고 대사 + 결과 알림(알림로그 시트 + 메일). 스냅샷과 대사는 서로 독립적으로 실패한다.
-function runStockSnapshotWithNotify_(month, source) {
+// 열 이름의 날짜는 이 함수가 실행된 시각(생성일)으로 정해진다.
+function runStockSnapshotWithNotify_(source) {
+  const now = new Date();
   let result;
   try {
-    result = createStockSnapshot_(month);
+    result = createStockSnapshot_(now);
   } catch (err) {
     result = { created: [], skipped: [], missing: [], errors: [{ site: '전체', message: String(err && err.message || err) }] };
   }
 
   const status = result.errors.length ? '실패' : (result.created.length ? '성공' : '이미 생성됨');
   const lines = [
-    '대상: ' + snapshotLabel_(month) + ' / 실행: ' + source,
+    '대상 월: ' + Utilities.formatDate(now, 'Asia/Seoul', 'yyyy-MM') + ' / 열 이름: "' + snapshotLabel_(now) + '" / 실행: ' + source,
     '생성: ' + (result.created.join(', ') || '없음'),
     '이미 있음(건너뜀): ' + (result.skipped.join(', ') || '없음')
   ];
@@ -358,11 +383,13 @@ function runStockSnapshotWithNotify_(month, source) {
   return { status, message };
 }
 
-// 각 사이트 _재고 시트에 "YYYY-MM 재고" 열을 추가하고 그 시점 현재고를 복사한다.
-// 열이 이미 있으면 건너뛴다(멱등). 값을 먼저 쓰고 헤더를 마지막에 써서, 중간에 실패해도
-// "헤더만 있고 값이 빈" 열이 완료로 간주되는 일이 없게 한다. 현재고 열은 읽기만 한다.
-function createStockSnapshot_(month) {
-  const label = snapshotLabel_(month);
+// 각 사이트 _재고 시트에 "YY-MM-DD 재고"(now 기준 생성일) 열을 추가하고 그 시점 현재고를 복사한다.
+// 같은 달의 스냅샷 열(새/이전 형식 모두)이 이미 있으면 건너뛴다(월 단위 멱등). 값을 먼저 쓰고 헤더를
+// 마지막에 써서, 중간에 실패해도 "헤더만 있고 값이 빈" 열이 완료로 간주되는 일이 없게 한다.
+// 현재고 열은 읽기만 한다.
+function createStockSnapshot_(now) {
+  const month = Utilities.formatDate(now, 'Asia/Seoul', 'yyyy-MM');
+  const label = snapshotLabel_(now);
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const result = { created: [], skipped: [], missing: [], errors: [] };
 
@@ -375,7 +402,8 @@ function createStockSnapshot_(month) {
         const sheet = ss.getSheetByName(site + '_재고');
         if (!sheet) { result.missing.push(site); return; }
         const heads = headers_(sheet);
-        if (heads.indexOf(label) !== -1) { result.skipped.push(site); return; }
+        const existingHeader = findSnapshotHeaderForMonth_(heads, month);
+        if (existingHeader) { result.skipped.push(site + '("' + existingHeader + '")'); return; }
         const qtyIdx = heads.indexOf('현재고');
         if (qtyIdx === -1) throw new Error('현재고 열을 찾을 수 없습니다.');
 

@@ -43,19 +43,31 @@ const Api = {
     return json.data;
   },
 
+  // 요청 1건(=사용자 동작 1회)을 식별하는 ID. 서버(Code.gs runIdempotent_)는 이미 처리한 requestId가
+  // 다시 오면 재반영하지 않고 처음 응답을 돌려준다 — 같은 동작을 재전송할 때는 같은 ID를 써야 한다.
+  newRequestId() {
+    if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
+    return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 12);
+  },
+
   // text/plain 으로 전송해 CORS 프리플라이트(OPTIONS)를 피합니다.
   async post(action, payload = {}) {
+    const body = Object.assign({ action }, payload);
+    if (!body.requestId) body.requestId = this.newRequestId();
     const json = await fetchJson_(API_BASE_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(Object.assign({ action }, payload))
+      body: JSON.stringify(body)
     });
     if (!json.success) throw new Error(json.error || '요청 실패');
     return json.data;
   },
 
-  // 오프라인일 수 있는 입/출고/이동 요청 전용: 실패 시 로컬 큐에 저장 후 재시도
+  // 오프라인일 수 있는 입/출고/이동 요청 전용: 실패 시 로컬 큐에 저장 후 재시도.
+  // 응답만 유실되고 서버에는 이미 반영된 경우에도 큐 재전송이 두 번 반영되지 않도록,
+  // 첫 전송 전에 requestId를 정해 큐 항목에 그대로 저장한다.
   async postWithQueue(action, payload = {}) {
+    payload = Object.assign({}, payload, { requestId: payload.requestId || this.newRequestId() });
     try {
       return { queued: false, data: await this.post(action, payload) };
     } catch (err) {

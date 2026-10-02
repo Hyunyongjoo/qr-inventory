@@ -1092,7 +1092,10 @@
       showBatchLoading(i + 1, state.cart.length);
       try {
         const action = state.scanType === 'IN' ? 'stockIn' : 'stockOut';
-        const payload = { itemId: c.itemId, site: state.site, quantity: c.quantity, pin: state.user.pin };
+        // 장바구니 항목마다 requestId를 한 번만 만들어 두고, 실패 후 재시도할 때도 같은 값을 보낸다
+        // (서버에 이미 반영됐는데 응답만 실패한 경우 재시도가 이중 반영되지 않도록).
+        if (!c.requestId) c.requestId = Api.newRequestId();
+        const payload = { itemId: c.itemId, site: state.site, quantity: c.quantity, pin: state.user.pin, requestId: c.requestId };
         if (state.scanType === 'OUT') payload.zone = c.zone;
 
         const result = await Api.postWithQueue(action, payload);
@@ -3641,7 +3644,7 @@
 
   // "수정" 버튼: 입고완료 건은 입고수량(누적입고수량), 출고완료 건은 출고수량(누적출고수량)을
   // 새 값으로 통째로 고친다(기존 값에 더하는 것이 아님). 요청수량을 넘지 않도록 자르고,
-  // 서버에서 입고여부/출고여부를 새 값 기준으로 다시 판정하고 재고 시트 현재고도 재계산한다.
+  // 서버에서 입고여부/출고여부를 새 값 기준으로 다시 판정하고, 현재고는 수정 전후 차이만큼 직접 증감한다.
   function openInboundEditModal(row) {
     const isInboundEdit = row.status === '입고완료';
     const requested = Math.max(0, Number(row.requestedQty) || 0);

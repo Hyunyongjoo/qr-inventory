@@ -132,76 +132,144 @@ function doGet(e) {
   }
 }
 
+// 재고/시트를 바꾸는 POST 액션. 클라이언트가 보낸 requestId로 중복 전송(네트워크 오류 후 오프라인 큐
+// 재전송, 같은 항목 재시도 등)을 걸러내 같은 요청이 두 번 반영되지 않게 한다(runIdempotent_ 참고).
+const IDEMPOTENT_ACTIONS = [
+  'stockIn', 'stockOut', 'submitPurchase', 'stockReturn', 'cancelPurchase', 'updateRequestedQty',
+  'stockOutByOrder', 'updateStockUsage', 'inboundByManager', 'outboundComplete', 'editInboundQty',
+  'requestTransfer', 'approveTransfer', 'rejectTransfer', 'returnTransfer'
+];
+// 처리 완료된 requestId의 응답을 보관하는 시간(초). CacheService 최대값(6시간).
+const IDEMPOTENCY_TTL_SEC = 21600;
+
 function doPost(e) {
   try {
     const body = JSON.parse(e.postData.contents || '{}');
     const action = body.action;
-    let result;
-    switch (action) {
-      case 'verifyPin':
-        result = handleLogin_(body.pin);
-        break;
-      case 'addItem':
-        result = addItem_(body);
-        break;
-      case 'stockIn':
-        result = stockIn_(body);
-        break;
-      case 'stockOut':
-        result = stockOut_(body);
-        break;
-      case 'submitPurchase':
-        result = submitPurchase_(body);
-        break;
-      case 'stockReturn':
-        result = stockReturn_(body);
-        break;
-      case 'cancelPurchase':
-        result = cancelPurchase_(body);
-        break;
-      case 'updateRequestedQty':
-        result = updateRequestedQty_(body);
-        break;
-      case 'stockOutByOrder':
-        result = stockOutByOrder_(body);
-        break;
-      case 'updateStockUsage':
-        result = updateStockUsage_(body);
-        break;
-      case 'checkInboundQty':
-        result = checkInboundQty_(body);
-        break;
-      case 'inboundByManager':
-        result = inboundByManager_(body);
-        break;
-      case 'checkOutboundQty':
-        result = checkOutboundQty_(body);
-        break;
-      case 'outboundComplete':
-        result = outboundComplete_(body);
-        break;
-      case 'editInboundQty':
-        result = editInboundQty_(body);
-        break;
-      case 'requestTransfer':
-        result = requestTransfer_(body);
-        break;
-      case 'approveTransfer':
-        result = approveTransfer_(body);
-        break;
-      case 'rejectTransfer':
-        result = rejectTransfer_(body);
-        break;
-      case 'returnTransfer':
-        result = returnTransfer_(body);
-        break;
-      default:
-        throw new Error('알 수 없는 action: ' + action);
+    const requestId = String(body.requestId || '').trim();
+    if (requestId && IDEMPOTENT_ACTIONS.indexOf(action) !== -1) {
+      return jsonResponse_({ success: true, data: runIdempotent_(action, requestId, () => dispatchPost_(action, body)) });
     }
-    return jsonResponse_({ success: true, data: result });
+    return jsonResponse_({ success: true, data: dispatchPost_(action, body) });
   } catch (err) {
     return jsonResponse_({ success: false, error: String(err.message || err) });
   }
+}
+
+// 같은 requestId가 이미 성공 처리됐으면 다시 실행하지 않고 그때의 응답을 그대로 돌려준다.
+// 확인 → 실행 → 응답 저장 전체를 스크립트 락 안에서 수행하므로, 원본과 중복 요청이 동시에 들어와도
+// 하나만 실행된다(각 핸들러 내부의 scriptLock_()은 재진입이라 여기서 이미 잡은 락을 그대로 쓴다).
+// 실행이 오류로 끝나면 아무것도 저장하지 않아, 같은 requestId로 재시도할 수 있다.
+function runIdempotent_(action, requestId, fn) {
+  const cache = CacheService.getScriptCache();
+  const key = 'req:' + action + ':' + requestId;
+  const lock = scriptLock_();
+  lock.waitLock(30000);
+  try {
+    const cached = cache.get(key);
+    if (cached !== null) {
+      Logger.log('중복 요청 무시: ' + key);
+      return JSON.parse(cached);
+    }
+    const result = fn();
+    const serialized = JSON.stringify(result === undefined ? null : result);
+    // CacheService 값 한도(100KB)를 넘는 응답은 원본 대신 처리 완료 표식만 남긴다(재반영 방지가 목적).
+    cache.put(key, serialized.length < 90000 ? serialized : JSON.stringify({ duplicate: true }), IDEMPOTENCY_TTL_SEC);
+    return result;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// 재진입 가능한 스크립트 락. runIdempotent_가 락을 잡은 상태에서 핸들러가 다시 waitLock을 호출해도
+// 바로 통과하고, 가장 바깥쪽 releaseLock에서만 실제 락을 푼다. 한 실행(요청) 안에서만 유효하다.
+let heldScriptLock_ = null;
+let scriptLockDepth_ = 0;
+function scriptLock_() {
+  return {
+    waitLock(timeoutMs) {
+      if (scriptLockDepth_ === 0) {
+        const lock = LockService.getScriptLock();
+        lock.waitLock(timeoutMs);
+        heldScriptLock_ = lock;
+      }
+      scriptLockDepth_++;
+    },
+    releaseLock() {
+      if (scriptLockDepth_ === 0) return;
+      scriptLockDepth_--;
+      if (scriptLockDepth_ === 0) {
+        heldScriptLock_.releaseLock();
+        heldScriptLock_ = null;
+      }
+    }
+  };
+}
+
+function dispatchPost_(action, body) {
+  let result;
+  switch (action) {
+    case 'verifyPin':
+      result = handleLogin_(body.pin);
+      break;
+    case 'addItem':
+      result = addItem_(body);
+      break;
+    case 'stockIn':
+      result = stockIn_(body);
+      break;
+    case 'stockOut':
+      result = stockOut_(body);
+      break;
+    case 'submitPurchase':
+      result = submitPurchase_(body);
+      break;
+    case 'stockReturn':
+      result = stockReturn_(body);
+      break;
+    case 'cancelPurchase':
+      result = cancelPurchase_(body);
+      break;
+    case 'updateRequestedQty':
+      result = updateRequestedQty_(body);
+      break;
+    case 'stockOutByOrder':
+      result = stockOutByOrder_(body);
+      break;
+    case 'updateStockUsage':
+      result = updateStockUsage_(body);
+      break;
+    case 'checkInboundQty':
+      result = checkInboundQty_(body);
+      break;
+    case 'inboundByManager':
+      result = inboundByManager_(body);
+      break;
+    case 'checkOutboundQty':
+      result = checkOutboundQty_(body);
+      break;
+    case 'outboundComplete':
+      result = outboundComplete_(body);
+      break;
+    case 'editInboundQty':
+      result = editInboundQty_(body);
+      break;
+    case 'requestTransfer':
+      result = requestTransfer_(body);
+      break;
+    case 'approveTransfer':
+      result = approveTransfer_(body);
+      break;
+    case 'rejectTransfer':
+      result = rejectTransfer_(body);
+      break;
+    case 'returnTransfer':
+      result = returnTransfer_(body);
+      break;
+    default:
+      throw new Error('알 수 없는 action: ' + action);
+  }
+  return result;
 }
 
 // action=ping 진단: Apps Script 배포가 살아있는지 + Items 시트에 실제 데이터가 있는지 함께 확인
@@ -510,8 +578,12 @@ function listStock_(site, query) {
   return rows;
 }
 
-// item을 넘기면 재고 시트에 자재명/규격도 함께 저장한다. 월초재고는 건드리지 않는다(수동 관리 컬럼).
+// 현재고를 쓰는 유일한 지점. 현재고는 "누적 실제값"이며 입고/출고/반납/이관 이벤트마다
+// decrementStockQuantity_/incrementStockQuantity_가 그 자리에서 직접 증감한다(이력 재합산으로 덮어쓰지 않음).
+// 읽고-더해서-쓰기 사이에 다른 요청이 끼어들면 수량이 유실되므로 반드시 스크립트 락 안에서만 호출한다.
+// item을 넘기면 재고 시트에 자재명/규격도 함께 저장한다. 월초재고/"YYYY-MM 재고" 열은 건드리지 않는다.
 function setStockQuantity_(site, itemId, newQuantity, item) {
+  if (scriptLockDepth_ === 0) throw new Error('현재고는 스크립트 락 안에서만 변경할 수 있습니다.');
   const sheet = sheet_(stockSheetName_(site));
   const rows = readAll_(sheet);
   const existing = rows.find(s => String(s['자재코드']) === String(itemId));
@@ -528,44 +600,63 @@ function setStockQuantity_(site, itemId, newQuantity, item) {
   }
 }
 
-// 현재고 = 월초재고 + 누적입고수량(구매발주및입고 시트에서 그 자재의 모든 행 합계)
-//         - 누적출고수량(출고 시트에서 그 자재의 모든 행 합계)
-//         + 누적반납수량(반납 시트에서 그 자재의 모든 행 합계)
-// 재고를 독립적으로 증감시키지 않고, 매번 발주/출고/반납 원본 데이터로부터 다시 계산한다.
-function calculateCurrentStock_(site, itemId) {
-  const stockRows = readAll_(sheet_(stockSheetName_(site)));
-  const stockRow = stockRows.find(s => String(s['자재코드']) === String(itemId));
-  // 월초재고 셀이 공란(빈 문자열)이거나 재고 행 자체가 없으면(null/undefined) Number()가 각각
-  // 0 또는 NaN이 되는데, 둘 다 falsy라 `|| 0`이 두 경우 모두 0으로 대체해 계산한다.
-  const monthStart = stockRow ? (Number(stockRow['월초재고']) || 0) : 0;
+// [검증/대사 전용 — 현재고에 절대 쓰지 않는다]
+// 원본 이력으로부터 계산한 "이론 재고"를 사이트의 자재코드별 맵으로 돌려준다.
+//   이론 재고 = 월초재고(기준값, 수동 관리 열) + 누적입고수량(구매발주및입고 전체 행)
+//             - 출고수량(출고 시트 전체 행) + 반납수량(반납 시트 전체 행)
+//             - 이관 승인으로 공급한 수량 + 이관 승인으로 받은 수량 (반납 완료 건은 서로 상쇄돼 제외)
+// 입고확인 화면의 출고완료 "수정"처럼 출고 시트에 행을 남기지 않는 조정은 반영되지 않으므로,
+// 현재고와 차이가 나면 경고로만 남기고 사람이 확인한다(reconcileStock_ 참고).
+function calculateExpectedStockMap_(site) {
+  const map = {};
+  const add = (itemId, qty) => {
+    const key = String(itemId || '').trim();
+    if (!key) return;
+    map[key] = (map[key] || 0) + qty;
+  };
 
-  const poRows = readAll_(sheet_(poInSheetName_(site)));
-  const totalIn = poRows
-    .filter(r => String(r['자재코드']) === String(itemId))
-    .reduce((sum, r) => sum + (Number(r['누적입고수량']) || 0), 0);
+  readAll_(sheet_(stockSheetName_(site))).forEach(r => add(r['자재코드'], Number(r['월초재고']) || 0));
+  readAll_(sheet_(poInSheetName_(site))).forEach(r => add(r['자재코드'], Number(r['누적입고수량']) || 0));
+  readAll_(sheet_(txSheetName_(site))).forEach(r => add(r['자재코드'], -(Number(r['출고수량']) || 0)));
+  readAll_(sheet_(returnSheetName_(site))).forEach(r => add(r['자재코드'], Number(r['반납수량']) || 0));
 
-  const outRows = readAll_(sheet_(txSheetName_(site)));
-  const totalOut = outRows
-    .filter(r => String(r['자재코드']) === String(itemId))
-    .reduce((sum, r) => sum + (Number(r['출고수량']) || 0), 0);
-
-  const returnRows = readAll_(sheet_(returnSheetName_(site)));
-  const totalReturn = returnRows
-    .filter(r => String(r['자재코드']) === String(itemId))
-    .reduce((sum, r) => sum + (Number(r['반납수량']) || 0), 0);
-
-  return monthStart + totalIn - totalOut + totalReturn;
+  const transferSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(TRANSFER_SHEET_NAME);
+  if (transferSheet) {
+    readAll_(transferSheet).forEach(r => {
+      if (String(r['상태'] || '').trim() !== TRANSFER_STATUS.APPROVED) return;
+      const qty = Number(r['출고수량']) || 0;
+      if (String(r['공급사이트']).trim() === site) add(r['자재코드'], -qty);
+      if (String(r['요청사이트']).trim() === site) add(r['자재코드'], qty);
+    });
+  }
+  return map;
 }
 
-function recalculateStock_(site, itemId, item) {
-  const newQty = calculateCurrentStock_(site, itemId);
-  setStockQuantity_(site, itemId, newQty, item);
-  return newQty;
+// [검증/대사 전용] 자재 하나의 이론 재고. 현재고 계산에는 쓰지 않는다.
+function calculateCurrentStock_(site, itemId) {
+  return calculateExpectedStockMap_(site)[String(itemId)] || 0;
+}
+
+// 사이트 재고 시트의 현재고와 이론 재고(calculateExpectedStockMap_)를 비교해, 차이 나는 자재 목록을
+// 돌려주고 각 건을 경고 로그로 남긴다. 값은 아무것도 고치지 않는다.
+function reconcileStock_(site) {
+  const expected = calculateExpectedStockMap_(site);
+  const actual = buildStockMap_(site);
+  const codes = Object.keys(Object.assign({}, expected, actual));
+  const mismatches = [];
+  codes.forEach(code => {
+    const exp = expected[code] || 0;
+    const act = actual[code] || 0;
+    if (exp !== act) mismatches.push({ itemId: code, actual: act, expected: exp, diff: act - exp });
+  });
+  mismatches.forEach(m => Logger.log('[재고 대사 경고] ' + site + ' ' + m.itemId +
+    ': 현재고 ' + m.actual + ' / 이력 기준 ' + m.expected + ' (차이 ' + m.diff + ')'));
+  return mismatches;
 }
 
 // 출고 시 재고 시트의 현재고에서 출고수량만큼 직접 차감한다(현재고 = 현재고 - 출고수량).
-// calculateCurrentStock_처럼 입고/출고/반납 이력 전체를 매번 다시 합산하지 않으므로, 과거 이력
-// 데이터의 누락/중복 등으로 인한 드리프트가 현재고에 반영되지 않는다. 락(LockService)으로 감싼
+// 이력 전체를 다시 합산하지 않으므로(calculateExpectedStockMap_는 검증 전용), 과거 이력
+// 데이터의 누락/중복 등으로 인한 드리프트가 현재고에 반영되지 않는다. 락(scriptLock_)으로 감싼
 // 함수 안에서만 호출해 동시 요청에 의한 중복 차감을 막는다.
 function decrementStockQuantity_(site, itemId, qty, item) {
   const current = getStockQty_(site, itemId);
@@ -1207,7 +1298,7 @@ function getPhotoUrl_(itemId) {
 // 자동 채워지고, 재고사용(O,X)/누적입고수량은 비워둔 채(입고여부는 '미입고') 등록해
 // 자재담당자가 이후 재고사용(O,X) 여부를 확인하고 실제 입고를 FIFO로 매칭하게 한다.
 function submitPurchase_(body) {
-  const lock = LockService.getScriptLock();
+  const lock = scriptLock_();
   lock.waitLock(30000);
   try {
     const site = assertSite_(body.site);
@@ -1365,7 +1456,7 @@ function registerNewItemIfMissing_(itemId, itemName, spec) {
 //  - Role이 자재담당자/관리자인 사용자: 재고확인중/재고사용/구매필요(구매대기) 건까지 취소 가능.
 //    구매완료(구매요청번호 등록, 구매완료/부분입고/입고완료)·출고완료로 넘어간 건은 취소를 막는다.
 function cancelPurchase_(body) {
-  const lock = LockService.getScriptLock();
+  const lock = scriptLock_();
   lock.waitLock(30000);
   try {
     const site = assertSite_(body.site);
@@ -1399,7 +1490,7 @@ function cancelPurchase_(body) {
 // 시작되지 않은(재고확인중/구매대기) 요청에 한해 요청수량 자체를 고친다. 신청자 본인 또는
 // 자재담당자/관리자만 바꿀 수 있다(cancelPurchase_와 동일한 권한 패턴).
 function updateRequestedQty_(body) {
-  const lock = LockService.getScriptLock();
+  const lock = scriptLock_();
   lock.waitLock(30000);
   try {
     const site = assertSite_(body.site);
@@ -1444,7 +1535,7 @@ function findPoRowByIndex_(site, rowIndex) {
 // (구매완료 이후에는 이 함수 자체가 막히므로, 그 전 단계에서 되돌리는 경우) 자동 입력했던 "재고사용"
 // 표시만 지워 실제 구매요청번호와 혼동되지 않게 한다.
 function updateStockUsage_(body) {
-  const lock = LockService.getScriptLock();
+  const lock = scriptLock_();
   lock.waitLock(30000);
   try {
     const site = assertSite_(body.site);
@@ -1506,7 +1597,7 @@ function checkInboundQty_(body) {
 // 예외: 안전재고 건(라인="안전재고")은 구매요청번호 없이 등록돼 계속 구매대기 상태이므로,
 // 구매대기 상태에서도 입고 처리를 허용한다.
 function inboundByManager_(body) {
-  const lock = LockService.getScriptLock();
+  const lock = scriptLock_();
   lock.waitLock(30000);
   try {
     const site = assertSite_(body.site);
@@ -1549,10 +1640,7 @@ function inboundByManager_(body) {
     });
 
     // 재고 시트 현재고 += 입고수량 (최종업데이트일도 함께 갱신됨, setStockQuantity_ 참고).
-    // recalculateStock_(발주/출고/반납 이력 전체를 다시 합산)는 이관(승인/반납)으로 직접 증감된
-    // 재고량을 그 계산식에 포함하지 않아, 이 건에서 재계산을 돌리면 이관으로 반영됐던 수량이
-    // 사라져 버린다 — 그래서 출고완료(decrementStockQuantity_)/이관(increment/decrement
-    // StockQuantity_)과 동일하게 이번에 입고된 수량만큼만 직접 더한다.
+    // 현재고는 이벤트 기반 누적값이라 모든 경로가 이번에 바뀐 수량만큼만 직접 증감한다.
     incrementStockQuantity_(site, row['자재코드'], qty, item);
 
     return poRowToInboundView_(site, findPoRowByIndex_(site, body.rowIndex));
@@ -1591,7 +1679,7 @@ function checkOutboundQty_(body) {
 // 누적출고수량과 요청수량을 비교해 출고여부를 부분출고/출고완료로 자동 판정한다.
 // 출고 시트에도 이번에 출고한 수량만큼 한 줄을 기록한다(라인구매번호 포함, 추후 QR 출고 연동용).
 function outboundComplete_(body) {
-  const lock = LockService.getScriptLock();
+  const lock = scriptLock_();
   lock.waitLock(30000);
   try {
     const site = assertSite_(body.site);
@@ -1662,7 +1750,7 @@ function outboundComplete_(body) {
 // 되지 않도록), 저장 후 입고여부/출고여부를 새 수량 기준으로 다시 계산한다. 재고 시트 현재고
 // 반영 방식은 입고/출고가 서로 다르다(각 분기 주석 참고).
 function editInboundQty_(body) {
-  const lock = LockService.getScriptLock();
+  const lock = scriptLock_();
   lock.waitLock(30000);
   try {
     const site = assertSite_(body.site);
@@ -1690,10 +1778,8 @@ function editInboundQty_(body) {
         '잔여수량': remaining,
         '입고여부': status
       });
-      // 입고 현재고는 (입고 처리 때와 마찬가지로) 발주/출고/반납 이력 전체를 다시 합산하지 않고
-      // 직접 증감한다 — recalculateStock_는 이관(승인/반납)으로 직접 증감된 재고량을 계산식에
-      // 포함하지 않아, 재계산을 돌리면 이관으로 반영됐던 수량이 사라진다. 수정 전후 수량 차이
-      // (delta)만큼만 현재고에 추가로 더하거나 뺀다.
+      // 입고 현재고는 (입고 처리 때와 마찬가지로) 이력을 다시 합산하지 않고 수정 전후 수량
+      // 차이(delta)만큼만 현재고에 추가로 더하거나 뺀다.
       const delta = qty - receivedBefore;
       incrementStockQuantity_(site, row['자재코드'], delta, item);
     } else if (info.status === '출고완료') {
@@ -1723,7 +1809,7 @@ function editInboundQty_(body) {
 // ------------------------- 입고 / 출고 -------------------------
 
 function stockIn_(body) {
-  const lock = LockService.getScriptLock();
+  const lock = scriptLock_();
   lock.waitLock(30000);
   try {
     const site = assertSite_(body.site);
@@ -1747,8 +1833,6 @@ function stockIn_(body) {
     }
 
     // 재고 시트 현재고 += 입고수량 (입고확인 화면의 "입고"/"수정" 버튼과 동일한 방식).
-    // recalculateStock_(발주/출고/반납 이력 전체 재합산)는 이관(승인/반납)으로 직접 증감된
-    // 재고량을 계산식에 포함하지 않아, 재계산을 돌리면 이관으로 반영됐던 수량이 사라진다.
     const newQty = incrementStockQuantity_(site, itemId, qty, item);
 
     return {
@@ -1813,7 +1897,7 @@ function applyLineFifoOutboundBookkeeping_(site, itemId, zone, qty) {
 // QR 스캔 출고: 같은 자재+라인의 구매요청 건들을 선입선출로 매칭해 각 건의 누적출고수량/출고여부를
 // 갱신하고, 매칭된 건별로 출고 시트에 행을 나눠 기록한다(라인구매번호 포함, 건별 이력 추적용).
 function stockOut_(body) {
-  const lock = LockService.getScriptLock();
+  const lock = scriptLock_();
   lock.waitLock(30000);
   try {
     const site = assertSite_(body.site);
@@ -1861,7 +1945,7 @@ function stockOut_(body) {
 
 // 건별 출고: 라인구매번호로 조회한 여러 자재를 한 번에 출고 처리한다 (건 하나당 락 1회).
 function stockOutByOrder_(body) {
-  const lock = LockService.getScriptLock();
+  const lock = scriptLock_();
   lock.waitLock(30000);
   try {
     const site = assertSite_(body.site);
@@ -1902,9 +1986,9 @@ function stockOutByOrder_(body) {
 // ------------------------- 반납 -------------------------
 
 // 이미 출고되었던 자재를 재고로 되돌린다. 발주/라인 개념이 없어 장바구니에 담긴 자재마다
-// 반납 시트에 한 줄씩 기록하고, 입고/출고와 동일하게 원본 데이터로부터 현재고를 다시 계산해 반영한다.
+// 반납 시트에 한 줄씩 기록하고, 입고/출고와 동일하게 현재고에 반납수량만큼 직접 더한다.
 function stockReturn_(body) {
-  const lock = LockService.getScriptLock();
+  const lock = scriptLock_();
   lock.waitLock(30000);
   try {
     const site = assertSite_(body.site);
@@ -1932,7 +2016,7 @@ function stockReturn_(body) {
         '비고': it.note || ''
       });
 
-      recalculateStock_(site, itemId, item);
+      incrementStockQuantity_(site, itemId, qty, item);
       count++;
     });
 
@@ -2227,7 +2311,7 @@ function transferRowToView_(r) {
 // 이관 요청(빌리는 사이트): 장바구니에 담긴 자재마다 사이트이관 시트에 '요청' 상태로 새 행을 등록한다.
 // 한 번의 제출은 하나의 이관번호를 공유하고, 승인/거절/반납은 행 단위로 개별 처리된다.
 function requestTransfer_(body) {
-  const lock = LockService.getScriptLock();
+  const lock = scriptLock_();
   lock.waitLock(30000);
   try {
     const reqSite = assertSite_(body.site);
@@ -2343,10 +2427,9 @@ function getTransferList_(site) {
 
 // 이관 승인(공급사이트 담당자, 관리자/자재담당자만): 공급사이트 재고를 출고수량만큼 줄이고
 // 요청사이트 재고를 그만큼 늘린 뒤, 상태를 '승인'으로 바꾸고 승인일을 오늘로 기록한다.
-// 재고 증감은 이력 재계산(recalculateStock_) 대상이 아니므로 직접 반영한다
-// (입고확인 화면의 "출고완료" 버튼이 decrementStockQuantity_로 재고를 직접 줄이는 것과 동일한 방식).
+// 재고 증감은 다른 입출고 경로와 동일하게 decrement/incrementStockQuantity_로 직접 반영한다.
 function approveTransfer_(body) {
-  const lock = LockService.getScriptLock();
+  const lock = scriptLock_();
   lock.waitLock(30000);
   try {
     const site = assertSite_(body.site);
@@ -2394,7 +2477,7 @@ function approveTransfer_(body) {
 
 // 이관 거절(공급사이트 담당자, 관리자/자재담당자만): 재고 변화 없이 상태만 '거절'로 바꾼다.
 function rejectTransfer_(body) {
-  const lock = LockService.getScriptLock();
+  const lock = scriptLock_();
   lock.waitLock(30000);
   try {
     const site = assertSite_(body.site);
@@ -2420,7 +2503,7 @@ function rejectTransfer_(body) {
 // 요청사이트(빌린 곳) 재고를 줄이고 공급사이트(빌려준 곳) 재고를 늘린 뒤,
 // 상태를 '반납'으로 바꾸고 반납일을 오늘로 기록한다. 반납수량이 비어있으면 이관수량 전체로 본다.
 function returnTransfer_(body) {
-  const lock = LockService.getScriptLock();
+  const lock = scriptLock_();
   lock.waitLock(30000);
   try {
     const site = assertSite_(body.site);
@@ -2497,7 +2580,13 @@ function getTransferDownload_(startDate, endDate, supplySite) {
 // ------------------------- 유지보수(Keep-alive) -------------------------
 
 // 5분마다 실행되는 트리거(Setup.gs의 setupTrigger() 참고)가 호출하는 핑 함수.
-// 시트/스프레드시트를 건드리지 않고 로그만 남긴다.
+// 월초 재고 스냅샷 트리거가 실행되지 않은 경우를 대비한 안전망도 겸한다
+// (ensureMonthlySnapshot_: 평소에는 스크립트 속성 하나만 읽고 끝난다).
 function keepAlive() {
   Logger.log('ping: ' + new Date().toISOString());
+  try {
+    ensureMonthlySnapshot_();
+  } catch (err) {
+    Logger.log('월초 재고 스냅샷 안전망 확인 실패: ' + (err && err.message || err));
+  }
 }

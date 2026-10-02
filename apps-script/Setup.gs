@@ -38,6 +38,9 @@ function setupSpreadsheet() {
       '라인구매번호'
     ], [1]); // 출고일자
 
+    // 현재고: 입출고/반납/이관 이벤트마다 직접 증감되는 실제 재고(유일한 기준값).
+    // 월초재고: 재고 대사(검증)용 기준값으로만 쓰는 수동 관리 열 — 자동으로 덮어쓰지 않는다.
+    // 매월 1일에는 오른쪽 끝에 "YYYY-MM 재고" 스냅샷 열이 자동으로 추가된다(기록/참고용).
     const stockSheet = createSheetIfMissing_(ss, site + '_재고', [
       '자재코드', '자재명', '규격', '월초재고', '현재고', '최종업데이트'
     ], [6]); // 최종업데이트
@@ -78,8 +81,8 @@ function setupSpreadsheet() {
   // 평택_묶음자재 구성표 데이터는 스프레드시트에 직접 업로드해 관리한다.
   seedPyeongtaekSetUsedMaterials_(ss);
 
-  // 매월 1일 00시에 현재고 값을 월초재고로 복사하는 트리거 (이미 설치되어 있으면 건너뜀)
-  ensureMonthlyStockRolloverTrigger_();
+  // 매월 1일 00시에 현재고를 "YYYY-MM 재고" 열로 기록하는 스냅샷 트리거 (이전 롤오버 트리거는 제거됨)
+  setupMonthlySnapshotTrigger();
 
   // 샘플 로그인 PIN (Users 시트가 비어있을 때만 채워 넣음)
   const userSheet = ss.getSheetByName('Users');
@@ -223,7 +226,7 @@ function arraysEqual_(a, b) {
   return a.every((v, i) => v === b[i]);
 }
 
-// 재고 시트의 월초재고(4열)/현재고(5열) 컬럼을 숫자 서식으로 지정한다 (새로 만들어진 시트에만 호출됨).
+// 재고 시트의 월초재고(4열, 대사 기준값)/현재고(5열) 컬럼을 숫자 서식으로 지정한다 (새로 만들어진 시트에만 호출됨).
 function formatStockSheetNumberColumns_(sheet) {
   const maxRows = sheet.getMaxRows();
   if (maxRows < 2) return;
@@ -231,35 +234,241 @@ function formatStockSheetNumberColumns_(sheet) {
   sheet.getRange(2, 5, maxRows - 1, 1).setNumberFormat('#,##0'); // 현재고
 }
 
-/**
- * 매월 1일 00시, 그 시점의 현재고 값을 월초재고로 복사하는 시간 트리거를 설치한다.
- * 이미 설치되어 있으면 다시 만들지 않는다 (setupSpreadsheet()에서 매번 호출해도 안전).
- */
-function ensureMonthlyStockRolloverTrigger_() {
-  const already = ScriptApp.getProjectTriggers()
-    .some(t => t.getHandlerFunction() === 'monthlyStockRollover_');
-  if (already) return;
+// ------------------------- 월초 재고 스냅샷 -------------------------
+// 현재고는 입고/출고/반납/이관 이벤트마다 직접 증감되는 "누적 실제값"이다(Code.gs setStockQuantity_ 참고).
+// 매월 1일에는 그 시점 현재고를 각 사이트 _재고 시트 오른쪽 끝에 "YYYY-MM 재고" 열로 새로 기록한다.
+// 이 스냅샷은 순수 기록/참고용이라 재고 계산에 관여하지 않으며, 실패해도 현재고에는 영향이 없다.
 
-  ScriptApp.newTrigger('monthlyStockRollover_')
+// 트리거/keepAlive 안전망이 스냅샷을 자동으로 만들기 시작하는 달. 그 이전 달(2026-10)은 현재고를
+// 버전 기록으로 복원한 뒤 "자재관리 > 이번 달 재고 스냅샷 생성" 메뉴로 수동 생성한다.
+const SNAPSHOT_AUTO_START_MONTH = '2026-11';
+const NOTIFY_LOG_SHEET_NAME = '알림로그';
+const STOCK_RECONCILE_SHEET_NAME = '재고대사';
+// 스크립트 속성 키: 스냅샷이 완료된 마지막 달 / 안전망의 마지막 시도 시각(ms).
+const SNAPSHOT_DONE_PROP = 'STOCK_SNAPSHOT_DONE_MONTH';
+const SNAPSHOT_ATTEMPT_PROP = 'STOCK_SNAPSHOT_LAST_ATTEMPT';
+// 스크립트 속성에 NOTIFY_EMAIL을 지정하면 그 주소로, 없으면 실행 계정(트리거 소유자)에게 메일을 보낸다.
+const NOTIFY_EMAIL_PROP = 'NOTIFY_EMAIL';
+
+function currentMonth_() {
+  return Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM');
+}
+
+function snapshotLabel_(month) {
+  return month + ' 재고';
+}
+
+/**
+ * 매월 1일 00시에 monthlyStockSnapshot()을 호출하는 시간 트리거를 설치한다.
+ * 이전 방식(monthlyStockRollover_, 월초재고 덮어쓰기) 트리거가 남아 있으면 함께 지운다.
+ * setupSpreadsheet()에서도 호출되며, 편집기에서 setupMonthlySnapshotTrigger()를 직접 실행해도 된다.
+ * (트리거는 이름이 _로 끝나는 비공개 함수를 호출하지 못하므로 핸들러는 공개 함수명을 쓴다.)
+ */
+function setupMonthlySnapshotTrigger() {
+  ScriptApp.getProjectTriggers().forEach(t => {
+    const handler = t.getHandlerFunction();
+    if (handler === 'monthlyStockRollover_' || handler === 'monthlyStockSnapshot') {
+      ScriptApp.deleteTrigger(t);
+    }
+  });
+  ScriptApp.newTrigger('monthlyStockSnapshot')
     .timeBased()
     .onMonthDay(1)
     .atHour(0)
     .create();
-  Logger.log('월초재고 자동 롤오버 트리거를 설치했습니다 (매월 1일 00시).');
+  Logger.log('월초 재고 스냅샷 트리거를 설치했습니다 (매월 1일 00시). 현재 트리거: ' +
+    ScriptApp.getProjectTriggers().map(t => t.getHandlerFunction()).join(', '));
 }
 
-// 트리거가 매월 1일 00시에 실제로 호출하는 함수: 그 시점의 현재고를 월초재고에 복사한다.
-function monthlyStockRollover_() {
+// 트리거가 매월 1일 00시에 호출한다.
+function monthlyStockSnapshot() {
+  const month = currentMonth_();
+  if (month < SNAPSHOT_AUTO_START_MONTH) {
+    Logger.log(month + ' 스냅샷은 자동 생성 대상이 아닙니다 (' + SNAPSHOT_AUTO_START_MONTH + '부터 자동).');
+    return;
+  }
+  runStockSnapshotWithNotify_(month, '자동(트리거)');
+}
+
+// keepAlive()(5분마다)가 호출하는 안전망: 이번 달 스냅샷이 아직 없으면 직접 만든다.
+// 1일 01시 이전에는 정규 트리거에 맡기고, 실패가 반복돼도 1시간에 한 번만 다시 시도한다.
+function ensureMonthlySnapshot_() {
+  const month = currentMonth_();
+  if (month < SNAPSHOT_AUTO_START_MONTH) return;
+  const props = PropertiesService.getScriptProperties();
+  if (props.getProperty(SNAPSHOT_DONE_PROP) === month) return;
+
+  const now = new Date();
+  const day = Number(Utilities.formatDate(now, 'Asia/Seoul', 'd'));
+  const hour = Number(Utilities.formatDate(now, 'Asia/Seoul', 'H'));
+  if (day === 1 && hour < 1) return;
+
+  const lastAttempt = Number(props.getProperty(SNAPSHOT_ATTEMPT_PROP)) || 0;
+  if (now.getTime() - lastAttempt < 60 * 60 * 1000) return;
+  props.setProperty(SNAPSHOT_ATTEMPT_PROP, String(now.getTime()));
+
+  runStockSnapshotWithNotify_(month, '안전망(정규 트리거 미실행 감지)');
+}
+
+// "자재관리 > 이번 달 재고 스냅샷 생성" 메뉴. 이미 모든 사이트에 생성돼 있으면 안내만 하고 다시 만들지 않는다.
+function createStockSnapshotFromMenu() {
+  const ui = SpreadsheetApp.getUi();
+  const month = currentMonth_();
+  const label = snapshotLabel_(month);
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  SITES.forEach(site => {
+  const pending = SITES.filter(site => {
     const sheet = ss.getSheetByName(site + '_재고');
-    if (!sheet) return;
-    const rows = readAll_(sheet);
-    rows.forEach(r => {
-      updateRow_(sheet, r._row, { '월초재고': Number(r['현재고']) || 0 });
-    });
-    Logger.log(site + '_재고: ' + rows.length + '건 월초재고 롤오버 완료');
+    return sheet && headers_(sheet).indexOf(label) === -1;
   });
+  if (!pending.length) {
+    ui.alert('"' + label + '" 열이 이미 모든 사이트 재고 시트에 있습니다. 다시 생성하지 않습니다.');
+    return;
+  }
+  const outcome = runStockSnapshotWithNotify_(month, '수동(메뉴)');
+  ui.alert(outcome.status + '\n\n' + outcome.message);
+}
+
+// 스냅샷 생성 + 재고 대사 + 결과 알림(알림로그 시트 + 메일). 스냅샷과 대사는 서로 독립적으로 실패한다.
+function runStockSnapshotWithNotify_(month, source) {
+  let result;
+  try {
+    result = createStockSnapshot_(month);
+  } catch (err) {
+    result = { created: [], skipped: [], missing: [], errors: [{ site: '전체', message: String(err && err.message || err) }] };
+  }
+
+  const status = result.errors.length ? '실패' : (result.created.length ? '성공' : '이미 생성됨');
+  const lines = [
+    '대상: ' + snapshotLabel_(month) + ' / 실행: ' + source,
+    '생성: ' + (result.created.join(', ') || '없음'),
+    '이미 있음(건너뜀): ' + (result.skipped.join(', ') || '없음')
+  ];
+  if (result.missing.length) lines.push('재고 시트 없음: ' + result.missing.join(', '));
+  result.errors.forEach(e => lines.push('오류 [' + e.site + ']: ' + e.message));
+
+  try {
+    const summary = runStockReconciliation_();
+    lines.push('재고 대사: ' + summary.text);
+  } catch (err) {
+    lines.push('재고 대사 실패: ' + String(err && err.message || err));
+  }
+
+  const message = lines.join('\n');
+  notify_('월초 재고 스냅샷', status, message);
+  return { status, message };
+}
+
+// 각 사이트 _재고 시트에 "YYYY-MM 재고" 열을 추가하고 그 시점 현재고를 복사한다.
+// 열이 이미 있으면 건너뛴다(멱등). 값을 먼저 쓰고 헤더를 마지막에 써서, 중간에 실패해도
+// "헤더만 있고 값이 빈" 열이 완료로 간주되는 일이 없게 한다. 현재고 열은 읽기만 한다.
+function createStockSnapshot_(month) {
+  const label = snapshotLabel_(month);
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const result = { created: [], skipped: [], missing: [], errors: [] };
+
+  // 입출고 처리 도중의 값이 찍히지 않도록 입출고와 같은 스크립트 락을 잡는다.
+  const lock = scriptLock_();
+  lock.waitLock(60000);
+  try {
+    SITES.forEach(site => {
+      try {
+        const sheet = ss.getSheetByName(site + '_재고');
+        if (!sheet) { result.missing.push(site); return; }
+        const heads = headers_(sheet);
+        if (heads.indexOf(label) !== -1) { result.skipped.push(site); return; }
+        const qtyIdx = heads.indexOf('현재고');
+        if (qtyIdx === -1) throw new Error('현재고 열을 찾을 수 없습니다.');
+
+        const col = sheet.getLastColumn() + 1;
+        if (col > sheet.getMaxColumns()) sheet.insertColumnsAfter(sheet.getMaxColumns(), col - sheet.getMaxColumns());
+        const lastRow = sheet.getLastRow();
+        if (lastRow >= 2) {
+          const values = sheet.getRange(2, qtyIdx + 1, lastRow - 1, 1).getValues()
+            .map(r => [Number(r[0]) || 0]);
+          sheet.getRange(2, col, values.length, 1).setValues(values).setNumberFormat('#,##0');
+        }
+        sheet.getRange(1, col).setNumberFormat('@').setValue(label)
+          .setFontWeight('bold').setBackground('#f1f3f4');
+        result.created.push(site);
+      } catch (err) {
+        result.errors.push({ site, message: String(err && err.message || err) });
+      }
+    });
+    SpreadsheetApp.flush();
+  } finally {
+    lock.releaseLock();
+  }
+
+  if (!result.errors.length) {
+    PropertiesService.getScriptProperties().setProperty(SNAPSHOT_DONE_PROP, month);
+  }
+  return result;
+}
+
+// ------------------------- 재고 대사(검증) -------------------------
+
+// 모든 사이트의 현재고를 이력 기준 이론 재고(Code.gs calculateExpectedStockMap_)와 비교해
+// 재고대사 시트에 차이 목록을 새로 기록한다. 현재고 값은 절대 고치지 않는다.
+function runStockReconciliation_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const rows = [];
+  const perSite = [];
+  SITES.forEach(site => {
+    if (!ss.getSheetByName(site + '_재고')) return;
+    const mismatches = reconcileStock_(site);
+    perSite.push(site + ' ' + mismatches.length + '건');
+    mismatches.forEach(m => rows.push([site, m.itemId, m.actual, m.expected, m.diff]));
+  });
+
+  let sheet = ss.getSheetByName(STOCK_RECONCILE_SHEET_NAME);
+  if (!sheet) sheet = ss.insertSheet(STOCK_RECONCILE_SHEET_NAME);
+  sheet.clear();
+  const checkedAt = Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd HH:mm:ss');
+  sheet.getRange(1, 1, 1, 6).setValues([['사이트', '자재코드', '현재고', '이력 기준 재고', '차이', '확인시각 ' + checkedAt]])
+    .setFontWeight('bold').setBackground('#f1f3f4');
+  sheet.setFrozenRows(1);
+  if (rows.length) sheet.getRange(2, 1, rows.length, 5).setValues(rows);
+
+  const text = rows.length
+    ? '차이 ' + rows.length + '건 (' + perSite.join(', ') + ') — "' + STOCK_RECONCILE_SHEET_NAME + '" 시트 확인'
+    : '차이 없음';
+  return { count: rows.length, text };
+}
+
+// "자재관리 > 재고 대사(검증)" 메뉴.
+function runStockReconciliationFromMenu() {
+  const summary = runStockReconciliation_();
+  if (summary.count) notify_('재고 대사', '경고', summary.text);
+  SpreadsheetApp.getUi().alert('재고 대사 결과: ' + summary.text +
+    '\n\n이력 기준 재고는 참고값입니다(월초재고 기준값 + 전체 입고 − 출고 + 반납 ± 이관). 현재고는 변경하지 않았습니다.');
+}
+
+// ------------------------- 알림 -------------------------
+
+// 알림로그 시트에 한 줄 남기고 메일을 보낸다. 둘 중 하나가 실패해도 다른 하나는 시도한다.
+function notify_(task, status, message) {
+  const at = Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd HH:mm:ss');
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    let sheet = ss.getSheetByName(NOTIFY_LOG_SHEET_NAME);
+    if (!sheet) {
+      sheet = ss.insertSheet(NOTIFY_LOG_SHEET_NAME);
+      sheet.getRange(1, 1, 1, 4).setValues([['일시', '작업', '결과', '내용']])
+        .setFontWeight('bold').setBackground('#f1f3f4');
+      sheet.setFrozenRows(1);
+    }
+    sheet.appendRow([at, task, status, message]);
+  } catch (err) {
+    Logger.log('알림로그 기록 실패: ' + (err && err.message || err));
+  }
+  try {
+    const to = PropertiesService.getScriptProperties().getProperty(NOTIFY_EMAIL_PROP) ||
+      Session.getEffectiveUser().getEmail();
+    if (to) MailApp.sendEmail(to, '[QR 재고] ' + task + ' ' + status, at + '\n\n' + message);
+  } catch (err) {
+    Logger.log('알림 메일 발송 실패: ' + (err && err.message || err));
+  }
+  Logger.log('[' + task + '] ' + status + '\n' + message);
 }
 
 /**
@@ -282,12 +491,15 @@ function setupTrigger() {
 
 /**
  * 스프레드시트를 열 때마다 자동으로 실행되는 심플 트리거(함수명 고정, Apps Script가 직접 호출).
- * 상단에 "자재관리 > 자재 동기화" 메뉴를 추가한다.
+ * 상단에 "자재관리" 메뉴(자재 동기화 / 이번 달 재고 스냅샷 생성 / 재고 대사)를 추가한다.
  */
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('자재관리')
     .addItem('자재 동기화', 'syncMaterials_')
+    .addSeparator()
+    .addItem('이번 달 재고 스냅샷 생성', 'createStockSnapshotFromMenu')
+    .addItem('재고 대사(검증)', 'runStockReconciliationFromMenu')
     .addToUi();
 }
 

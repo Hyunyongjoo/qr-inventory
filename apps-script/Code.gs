@@ -27,6 +27,12 @@ const SITE_CODES = { '기흥': 'GH', '화성': 'HS', '평택': 'PT' };
 // assertZone_ 검증을 건너뛰고(관리자/자재담당자만), 재고사용(O,X)에 기본값 'X'를 넣어
 // 등록 즉시 "구매대기" 상태가 되게 한다.
 const SAFETY_STOCK_ZONE = '안전재고';
+// 구매요청 시 라인 대신 지정하는 "안전용품구매" 표식. 안전재고와 달리 라인담당자도 사용할 수 있고,
+// 일반 라인 구매와 같은 절차(재고확인중 → 재고사용/구매필요 → ... → 출고)를 따른다.
+// 사용자재 시트의 사용설비에 SAFETY_SUPPLY_KEYWORD가 포함된 자재만 이 표식으로 요청할 수 있고,
+// 그 자재들은 라인/안전재고 구매 검색에서는 제외된다(isSafetySupplyMaterial_ 참고).
+const SAFETY_SUPPLY_ZONE = '안전용품';
+const SAFETY_SUPPLY_KEYWORD = '안전용품';
 // 입고확인 화면의 재고사용/구매필요/입고/출고완료 버튼을 사용할 수 있는 Role (Users 시트 Role 컬럼 값).
 const MANAGER_ROLES = ['자재담당자', '관리자'];
 // 구매요청번호가 등록되어(구매완료 계열) 이후로 넘어간 상태에서는 재고사용/구매필요/구매보류
@@ -83,7 +89,7 @@ function doGet(e) {
         result = checkInbound_(e.parameter.site || '', e.parameter.name || '', e.parameter.startDate || '', e.parameter.endDate || '', e.parameter.zone || '', e.parameter.materialQuery || '');
         break;
       case 'searchMaterials':
-        result = searchMaterials_(e.parameter.site || '', e.parameter.query || '', e.parameter.specQuery || '');
+        result = searchMaterials_(e.parameter.site || '', e.parameter.query || '', e.parameter.specQuery || '', e.parameter.scope || '');
         break;
       case 'getPhotoUrl':
         result = getPhotoUrl_(e.parameter.itemId || '');
@@ -1182,6 +1188,14 @@ function stripSpaces_(s) {
   return String(s == null ? '' : s).replace(/\s+/g, '');
 }
 
+// 사용자재 시트 행이 안전용품인지: 사용설비 값 전체에서 공백을 모두 지운 뒤 "안전용품"이 들어있는지 본다
+// ("안전 용품"도 같은 것으로 인식). 쉼표 등으로 여러 설비가 섞여 있어도(예: "11LINE, 안전용품")
+// 문자열 어딘가에 포함되기만 하면 안전용품으로 판정한다 — 즉 라인 구매에서는 제외되고
+// 안전용품구매에서만 보인다.
+function isSafetySupplyMaterial_(r) {
+  return normalizeForSearch_(stripSpaces_(r['사용설비'])).indexOf(SAFETY_SUPPLY_KEYWORD) !== -1;
+}
+
 // 한글검색 컬럼(쉼표로 여러 값 구분)이 검색어 qNoSpace(이미 공백 제거+소문자 처리됨)와
 // 부분 일치하는지 검사한다. 각 값도 공백을 제거한 뒤 비교한다.
 function matchesHangulField_(r, qNoSpace) {
@@ -1231,12 +1245,16 @@ function matchesSearchQuery_(site, r, q) {
 // 별도로 부분 문자열 매칭한다.
 // 두 검색어를 모두 입력하면 AND 조건으로 둘 다 만족하는 행만 반환한다(예: query="O-RING" +
 // specQuery="NW50" → 품명에 O-RING이 있으면서 규격에 NW50이 있는 자재만). 둘 다 비어있으면
-// (리스트 진입 직후 등) 사용자재 시트 전체를 반환한다.
-function searchMaterials_(site, query, specQuery) {
+// (리스트 진입 직후 등) 대상 범위 전체를 반환한다.
+// scope='safetySupply'(안전용품구매 화면)이면 사용설비에 "안전용품"이 포함된 자재만, 그 외(라인 구매/
+// 안전재고구매)는 안전용품 자재를 뺀 나머지만 검색 대상으로 삼는다 — 검색어 매칭보다 먼저 거른다.
+function searchMaterials_(site, query, specQuery, scope) {
   assertSite_(site);
   const q = (query || '').toString().trim().toLowerCase();
   const specQ = (specQuery || '').toString().trim().toLowerCase();
-  const rows = readAll_(sheet_(usedMaterialsSheetName_(site)));
+  const safetySupplyOnly = scope === 'safetySupply';
+  const rows = readAll_(sheet_(usedMaterialsSheetName_(site)))
+    .filter(r => isSafetySupplyMaterial_(r) === safetySupplyOnly);
   const filtered = (q || specQ)
     ? rows.filter(r => {
         const mainOk = !q || matchesSearchQuery_(site, r, q);
@@ -1305,10 +1323,17 @@ function submitPurchase_(body) {
     // "안전재고구매": 라인 대신 SAFETY_STOCK_ZONE이 들어오면 라인 검증을 건너뛰고
     // (관리자/자재담당자만 사용 가능), 아래에서 재고사용(O,X)에 'X'를 기본값으로 넣는다.
     const isSafetyStock = String(body.zone || '').trim() === SAFETY_STOCK_ZONE || body.safetyStock === true;
+    // "안전용품구매": 라인 대신 SAFETY_SUPPLY_ZONE이 들어오면 라인 검증을 건너뛴다. 라인담당자도
+    // 사용할 수 있으므로 역할 검증은 하지 않고(로그인만 확인), 대신 아래에서 담긴 자재가 모두
+    // 이 사이트 사용자재 시트의 안전용품 자재인지 검증한다.
+    const isSafetySupply = !isSafetyStock &&
+      (String(body.zone || '').trim() === SAFETY_SUPPLY_ZONE || body.safetySupply === true);
     let zone;
     if (isSafetyStock) {
       assertManagerRole_(body.pin);
       zone = SAFETY_STOCK_ZONE;
+    } else if (isSafetySupply) {
+      zone = SAFETY_SUPPLY_ZONE;
     } else {
       zone = assertZone_(site, body.zone);
     }
@@ -1316,6 +1341,7 @@ function submitPurchase_(body) {
     const worker = handleLogin_(body.pin);
     const items = Array.isArray(body.items) ? body.items : [];
     if (!items.length) throw new Error('담긴 자재가 없습니다.');
+    if (isSafetySupply) assertSafetySupplyItems_(site, items);
 
     const requiredDate = body.requiredDate || '';
     const note1 = String(body.note1 || '').trim();
@@ -1407,6 +1433,25 @@ function submitPurchase_(body) {
   } finally {
     lock.releaseLock();
   }
+}
+
+// 안전용품구매로 들어온 자재가 모두 그 사이트 사용자재 시트의 안전용품 자재인지 확인한다.
+// 일반 자재는 자재코드로, 세트("***" 품명)는 세트명으로 대조한다 — 화면을 거치지 않은 요청으로
+// 라인담당자가 안전용품이 아닌 자재를 "안전용품" 라인으로 등록하는 것을 막는다.
+function assertSafetySupplyItems_(site, items) {
+  const supplyRows = readAll_(sheet_(usedMaterialsSheetName_(site))).filter(isSafetySupplyMaterial_);
+  const itemIds = new Set(supplyRows.map(r => String(r['자재코드'] || '').trim()).filter(Boolean));
+  const setNames = new Set(supplyRows
+    .filter(r => isSetItemName_(r['품명']))
+    .map(r => normalizeSetName_(r['품명'])));
+  items.forEach(it => {
+    const ok = isSetItemName_(it.itemName)
+      ? setNames.has(normalizeSetName_(it.itemName))
+      : itemIds.has(String(it.itemId || '').trim());
+    if (!ok) {
+      throw new Error('안전용품이 아닌 자재는 안전용품구매로 요청할 수 없습니다: ' + (it.itemName || it.itemId || ''));
+    }
+  });
 }
 
 // 건별 출고 화면: 라인구매번호로 구매발주및입고 시트에서 해당 건에 속한 자재 목록을 조회한다.

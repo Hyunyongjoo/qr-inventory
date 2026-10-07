@@ -14,6 +14,9 @@
   };
   // 구매 라인 선택 화면의 "안전재고구매" 버튼 값. 서버(Code.gs SAFETY_STOCK_ZONE)와 일치해야 한다.
   const SAFETY_STOCK_ZONE = '안전재고';
+  // 구매 라인 선택 화면의 "안전용품구매" 버튼 값. 서버(Code.gs SAFETY_SUPPLY_ZONE)와 일치해야 한다.
+  // 안전재고와 달리 라인담당자도 사용할 수 있고, 자재 목록은 사용설비에 "안전용품"이 포함된 자재로 한정된다.
+  const SAFETY_SUPPLY_ZONE = '안전용품';
 
   const state = {
     user: null,
@@ -325,9 +328,13 @@
     const grid = $('#line-grid');
     const zones = ZONES[state.site] || [];
     let html = zones.map((z) => `<button class="site-btn" data-zone="${escapeHtml(z)}">${escapeHtml(z)}</button>`).join('');
-    // 구매요청 흐름에서만, 관리자/자재담당자에게 "안전재고구매" 버튼을 라인 목록 끝에 추가한다.
-    if (state.scanType === 'PURCHASE' && canManageInbound()) {
-      html += `<button class="site-btn site-btn-safety" data-zone="${escapeHtml(SAFETY_STOCK_ZONE)}">안전재고구매</button>`;
+    // 구매요청 흐름에서만 라인 목록 끝에 "안전용품구매"(모든 역할) → "안전재고구매"(관리자/자재담당자만)
+    // 순서로 버튼을 추가한다.
+    if (state.scanType === 'PURCHASE') {
+      html += `<button class="site-btn site-btn-safety" data-zone="${escapeHtml(SAFETY_SUPPLY_ZONE)}">안전용품구매</button>`;
+      if (canManageInbound()) {
+        html += `<button class="site-btn site-btn-safety" data-zone="${escapeHtml(SAFETY_STOCK_ZONE)}">안전재고구매</button>`;
+      }
     }
     grid.innerHTML = html;
     $$('.site-btn', grid).forEach((btn) => {
@@ -1166,21 +1173,32 @@
     $('#purchase-note1').value = '';
     $('#purchase-note2').value = '';
     switchView('purchase');
-    const zoneLabel = state.scanZone === SAFETY_STOCK_ZONE ? '안전재고구매' : state.scanZone;
+    const zoneLabel = state.scanZone === SAFETY_STOCK_ZONE ? '안전재고구매'
+      : state.scanZone === SAFETY_SUPPLY_ZONE ? '안전용품구매'
+      : state.scanZone;
     $('#purchase-context-label').textContent = `${state.site} · ${zoneLabel} · 구매요청`;
     renderPurchaseCart();
     renderPurchaseBulkUI();
+    // 안전용품은 대상 자재가 한정돼 있으므로 진입하자마자 전체 목록을 보여준다.
+    if (isSafetySupplyPurchase()) searchMaterials();
+  }
+
+  function isSafetySupplyPurchase() {
+    return state.scanZone === SAFETY_SUPPLY_ZONE;
   }
 
   // 품명 검색창(자재코드/BQMS/품명)과 규격 검색창은 AND 조건으로 함께 서버에 전달된다
   // (둘 다 입력하면 두 조건을 모두 만족하는 자재만 반환됨 — searchMaterials_ 참고).
+  // 안전용품구매 화면은 scope=safetySupply로 안전용품 자재 안에서만, 그 외(라인/안전재고)는 안전용품을
+  // 뺀 자재 안에서만 검색된다. 안전용품구매 화면은 검색어가 비어 있으면 안전용품 전체 목록을 보여준다.
   async function searchMaterials() {
     const q = $('#purchase-search-input').value.trim();
     const specQ = $('#purchase-spec-search-input').value.trim();
     const resultsEl = $('#purchase-search-results');
+    const safetySupply = isSafetySupplyPurchase();
     state.purchaseSearchRows = [];
     state.purchaseSelectedIdx = new Set();
-    if (!q && !specQ) {
+    if (!q && !specQ && !safetySupply) {
       resultsEl.innerHTML = '';
       renderPurchaseBulkUI();
       return;
@@ -1188,7 +1206,12 @@
     resultsEl.innerHTML = `<div class="empty-state">검색 중...</div>`;
     renderPurchaseBulkUI();
     try {
-      const rows = await Api.get('searchMaterials', { site: state.site, query: q, specQuery: specQ });
+      const requestedZone = state.scanZone;
+      const rows = await Api.get('searchMaterials', {
+        site: state.site, query: q, specQuery: specQ, scope: safetySupply ? 'safetySupply' : ''
+      });
+      // 응답이 오기 전에 다른 라인 화면으로 옮겨간 경우 이전 화면의 결과를 그리지 않는다.
+      if (state.scanZone !== requestedZone) return;
       state.purchaseSearchRows = rows;
       renderPurchaseSearchList(rows);
     } catch (err) {
@@ -1323,6 +1346,7 @@
       $('#purchase-spec-search-input').value = '';
       $('#purchase-search-results').innerHTML = '';
       renderPurchaseBulkUI();
+      if (isSafetySupplyPurchase()) searchMaterials();
       $('#purchase-search-input').focus();
     });
   }
@@ -1410,6 +1434,7 @@
     $('#purchase-search-input').value = '';
     $('#purchase-spec-search-input').value = '';
     $('#purchase-search-results').innerHTML = '';
+    if (isSafetySupplyPurchase()) searchMaterials();
     $('#purchase-search-input').focus();
   }
 
@@ -1476,6 +1501,7 @@
         site: state.site,
         zone: state.scanZone,
         safetyStock: state.scanZone === SAFETY_STOCK_ZONE,
+        safetySupply: isSafetySupplyPurchase(),
         pin: state.user.pin,
         requiredDate: $('#purchase-required-date').value,
         note1: $('#purchase-note1').value.trim(),
@@ -2939,12 +2965,14 @@
 
   // 라인 드롭다운은 사이트마다 목록이 달라서, 입고확인 화면에 들어갈 때마다(사이트가 바뀌었을
   // 수 있으므로) 현재 사이트 기준으로 다시 채운다.
-  // 안전재고 옵션은 관리자/자재담당자에게만 보인다 — 전체 라인(빈 값) 선택 시에는 서버가
-  // 라인으로 필터링하지 않으므로 권한과 무관하게 안전재고 건이 이미 포함되어 있다.
+  // 안전용품 옵션은 모든 역할에게(라인담당자도 안전용품구매를 하므로), 안전재고 옵션은
+  // 관리자/자재담당자에게만 보인다 — 전체 라인(빈 값) 선택 시에는 서버가 라인으로 필터링하지
+  // 않으므로 권한과 무관하게 안전재고/안전용품 건이 이미 포함되어 있다.
   function populateInboundZoneOptions() {
     const sel = $('#inbound-zone-select');
     if (!sel) return;
     const zones = (ZONES[state.site] || []).slice();
+    zones.push(SAFETY_SUPPLY_ZONE);
     if (canManageInbound()) zones.push(SAFETY_STOCK_ZONE);
     const current = sel.value;
     sel.innerHTML = `<option value="">전체 라인</option>` +
@@ -3839,10 +3867,12 @@
   }
 
   // 라인 드롭다운은 사이트마다 목록이 달라서, 다운로드 화면에 들어갈 때마다 현재 사이트 기준으로 다시 채운다.
+  // 안전용품 건(라인="안전용품")만 따로 받을 수 있도록 라인 목록 끝에 안전용품을 덧붙인다
+  // (파일명은 buildDownloadFilename_에서 예: 구매_20261007_안전용품.xlsx).
   function populateDownloadZoneOptions() {
     const sel = $('#download-zone-select');
     if (!sel) return;
-    const zones = ZONES[state.site] || [];
+    const zones = (ZONES[state.site] || []).concat([SAFETY_SUPPLY_ZONE]);
     const current = sel.value;
     sel.innerHTML = `<option value="">전체 라인</option>` +
       zones.map((z) => `<option value="${escapeHtml(z)}">${escapeHtml(z)}</option>`).join('');

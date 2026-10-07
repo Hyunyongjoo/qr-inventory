@@ -3867,12 +3867,14 @@
   }
 
   // 라인 드롭다운은 사이트마다 목록이 달라서, 다운로드 화면에 들어갈 때마다 현재 사이트 기준으로 다시 채운다.
-  // 안전용품 건(라인="안전용품")만 따로 받을 수 있도록 라인 목록 끝에 안전용품을 덧붙인다
+  // 안전용품/안전재고 건만 따로 받을 수 있도록 라인 목록 끝에 안전용품(모든 역할)과
+  // 안전재고(관리자/자재담당자만 — 입고확인 라인 필터와 같은 규칙)를 덧붙인다
   // (파일명은 buildDownloadFilename_에서 예: 구매_20261007_안전용품.xlsx).
   function populateDownloadZoneOptions() {
     const sel = $('#download-zone-select');
     if (!sel) return;
     const zones = (ZONES[state.site] || []).concat([SAFETY_SUPPLY_ZONE]);
+    if (canManageInbound()) zones.push(SAFETY_STOCK_ZONE);
     const current = sel.value;
     sel.innerHTML = `<option value="">전체 라인</option>` +
       zones.map((z) => `<option value="${escapeHtml(z)}">${escapeHtml(z)}</option>`).join('');

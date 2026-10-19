@@ -8,7 +8,7 @@
  * 데이터가 없으면(2행 이후가 비어있으면) 헤더를 새 구조로 교체하고, 데이터가 있으면
  * 절대 건드리지 않습니다. 여러 번 실행해도 안전합니다.
  *
- * 사이트(기흥/화성/평택)별로 구매발주및입고/출고/재고/사용자재/반납 시트가 각각 분리되어 생성됩니다.
+ * 사이트(기흥/화성/평택)별로 구매발주및입고/출고/재고/사용자재/반납/장기보관자재 시트가 각각 분리되어 생성됩니다.
  * SITES 상수는 Code.gs에 정의되어 있습니다 (Apps Script는 모든 .gs 파일을
  * 하나의 전역 스코프로 병합하므로 여기서 다시 선언하지 않습니다).
  */
@@ -70,6 +70,15 @@ function setupSpreadsheet() {
     '자재코드', '자재명', '규격', '단위', '출고수량',
     '반납예정일', '상태', '승인일', '반납일'
   ], [2, 10, 12, 13]); // 요청일, 반납예정일, 승인일, 반납일
+
+  // 장기보관자재 시트: 외부 재고 파일(CSV)로 통째로 교체해 쓰는 시트라, 없을 때만 헤더와 함께 만들고
+  // 이미 있으면 헤더/내용/서식을 절대 건드리지 않는다 (createSheetIfMissing_의 헤더 교체 규칙을 쓰지 않음).
+  SITES.forEach(site => {
+    const name = longTermSheetName_(site);
+    if (!ss.getSheetByName(name)) {
+      ss.insertSheet(name).getRange(1, 1, 1, LONG_TERM_HEADERS.length).setValues([LONG_TERM_HEADERS]);
+    }
+  });
 
   // 화성_묶음자재 기본 데이터 자동 입력 (세트 오링 TRITON(V1)/(V2), 시트가 비어있을 때만)
   seedHwaseongBundledMaterials_(ss);
@@ -519,7 +528,7 @@ function setupTrigger() {
 
 /**
  * 스프레드시트를 열 때마다 자동으로 실행되는 심플 트리거(함수명 고정, Apps Script가 직접 호출).
- * 상단에 "자재관리" 메뉴(자재 동기화 / 이번 달 재고 스냅샷 생성 / 재고 대사)를 추가한다.
+ * 상단에 "자재관리" 메뉴(자재 동기화 / 이번 달 재고 스냅샷 생성 / 재고 대사 / 장기보관 표시 새로고침)를 추가한다.
  */
 function onOpen() {
   SpreadsheetApp.getUi()
@@ -528,7 +537,37 @@ function onOpen() {
     .addSeparator()
     .addItem('이번 달 재고 스냅샷 생성', 'createStockSnapshotFromMenu')
     .addItem('재고 대사(검증)', 'runStockReconciliationFromMenu')
+    .addSeparator()
+    .addItem('장기보관 표시 새로고침', 'refreshLongTermMarksFromMenu')
     .addToUi();
+}
+
+/**
+ * "자재관리 > 장기보관 표시 새로고침" 메뉴.
+ * 사이트별 구매발주및입고 시트 전체를 현재 [사이트]_장기보관자재 시트와 대조해 자재코드/라인 셀의
+ * 빨간색 표시(LONG_TERM_MARK_COLOR)를 다시 맞춘다. 목록에서 빠졌거나 라인이 달라진 셀은 그 색일 때만
+ * 배경을 지우고, 다른 색 서식은 건드리지 않는다. 장기보관자재 시트가 없거나 ERP CODE/사이트 열을
+ * 못 찾은 사이트는 칠하지도 지우지도 않고 알림으로 알려준다.
+ */
+function refreshLongTermMarksFromMenu() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const lines = [];
+  // 구매요청 저장(행 추가)과 겹치지 않도록 같은 스크립트 락을 잡는다.
+  const lock = scriptLock_();
+  lock.waitLock(60000);
+  try {
+    SITES.forEach(site => {
+      const poSheet = ss.getSheetByName(poInSheetName_(site));
+      if (!poSheet) { lines.push(site + ': 구매발주및입고 시트 없음 (건너뜀)'); return; }
+      const result = markLongTermRows_(site, poSheet, 2, poSheet.getLastRow());
+      if (result.error) lines.push(site + ': ' + result.error + ' (표시 변경 안 함)');
+      else lines.push(site + ': 칠함 ' + result.painted + '칸, 해제 ' + result.cleared + '칸');
+    });
+    SpreadsheetApp.flush();
+  } finally {
+    lock.releaseLock();
+  }
+  SpreadsheetApp.getUi().alert('장기보관 표시 새로고침 결과\n\n' + lines.join('\n'));
 }
 
 /**

@@ -48,6 +48,18 @@ const SCAN_CODE_SEARCH_MAX = 30;
 const TRANSFER_SHEET_NAME = '사이트이관';
 // 사이트이관 시트 '상태' 컬럼 값. 요청 → 승인/거절, 승인 → 반납.
 const TRANSFER_STATUS = { REQUESTED: '요청', APPROVED: '승인', REJECTED: '거절', RETURNED: '반납' };
+// 장기보관자재 시트(사이트별 "[사이트]_장기보관자재"). 외부 재고 파일을 CSV로 통째로 교체해 쓰므로
+// 코드는 이 시트를 읽기만 한다. 열 순서는 외부 파일과 동일하며, 실제 열 위치는 헤더 이름으로 찾는다.
+const LONG_TERM_SHEET_SUFFIX = '_장기보관자재';
+const LONG_TERM_HEADERS = [
+  'NO', '선입선출 순위', '발행번호', '부품계약코드', 'SN', '단위', '공급일자', '반입일자',
+  '작성자', '반입 사업부', 'ID', 'ERP CODE', '수량(재고)', '사이트'
+];
+const LONG_TERM_CODE_HEADER = 'ERP CODE';
+const LONG_TERM_LINE_HEADER = '사이트';
+// 장기보관 표시 전용 배경색. 새로고침 시 이 색인 셀만 원래대로 되돌리므로 다른 용도로 쓰지 않는다.
+// (getBackground()는 소문자 hex를 돌려주므로 소문자로 둔다.)
+const LONG_TERM_MARK_COLOR = '#ff6b6b';
 // sheet_()가 실행 중 같은 시트에 대해 매번 컬럼 마이그레이션을 반복하지 않도록 하는 캐시 (실행마다 초기화됨).
 const ensuredColumnsCache_ = {};
 
@@ -1354,6 +1366,7 @@ function submitPurchase_(body) {
 
     const sheet = sheet_(poInSheetName_(site));
     const lineOrderNo = generateLineOrderNo_(site);
+    const firstNewRow = sheet.getLastRow() + 1;
     let count = 0;
     items.forEach(it => {
       const qty = Number(it.quantity);
@@ -1429,9 +1442,141 @@ function submitPurchase_(body) {
     });
 
     if (!count) throw new Error('등록할 수 있는 자재가 없습니다 (자재코드/수량을 확인하세요).');
+
+    // 장기보관 표시는 부가 기능이라, 실패해도 이미 저장된 구매요청은 그대로 성공 처리한다.
+    try {
+      markLongTermRows_(site, sheet, firstNewRow, sheet.getLastRow());
+    } catch (err) {
+      Logger.log('장기보관 표시 실패 [' + site + ']: ' + (err && err.message || err));
+    }
     return { count, lineOrderNo };
   } finally {
     lock.releaseLock();
+  }
+}
+
+// ------------------------- 장기보관자재 표시 -------------------------
+// 구매발주및입고 행의 자재코드가 [사이트]_장기보관자재 시트의 ERP CODE에 있으면 자재코드 셀을,
+// 그 코드를 가진 장기보관 행 중 하나라도 "사이트"(라인) 값이 구매 행의 라인과 같으면 라인 셀도
+// LONG_TERM_MARK_COLOR로 칠한다. 장기보관자재 시트는 읽기만 한다.
+
+function longTermSheetName_(site) {
+  return site + LONG_TERM_SHEET_SUFFIX;
+}
+
+// 헤더 비교용: 모든 공백 제거 + 대문자 ("작성자 ", "ERP  CODE" 등도 같은 헤더로 본다).
+function normalizeHeader_(s) {
+  return stripSpaces_(s).toUpperCase();
+}
+
+// 자재코드 비교용: 공백 제거 + 대문자.
+function normalizeMaterialCode_(s) {
+  return stripSpaces_(s).toUpperCase();
+}
+
+// 라인 비교용: 공백 제거 + 대문자 + "라인" → "LINE". 예) "15LINE", "15 line", "15라인" → "15LINE".
+// 구매발주및입고 시트의 라인 값은 ZONES 그대로("15LINE")이고, 안전재고/안전용품 행은 어떤 라인과도
+// 같아지지 않으므로 자재코드 셀만 칠해진다.
+function normalizeLine_(s) {
+  return stripSpaces_(s).toUpperCase().replace(/라인/g, 'LINE');
+}
+
+// [사이트]_장기보관자재 시트를 읽어 { codes: Map(정규화 코드 → Set(정규화 라인)) }을 돌려준다.
+// 시트가 없거나 ERP CODE/사이트 헤더를 못 찾으면 { error } 를 돌려주고, 호출부는 칠하지 않는다.
+// 같은 ERP CODE가 여러 행이어도 합치지 않고 라인만 모아 비교에 쓴다.
+function loadLongTermMap_(site) {
+  const name = longTermSheetName_(site);
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(name);
+  if (!sheet) return { error: '"' + name + '" 시트가 없습니다.' };
+  const lastCol = sheet.getLastColumn();
+  if (!lastCol) return { error: '"' + name + '" 시트에 헤더가 없습니다.' };
+
+  const heads = sheet.getRange(1, 1, 1, lastCol).getValues()[0].map(normalizeHeader_);
+  const codeIdx = heads.indexOf(normalizeHeader_(LONG_TERM_CODE_HEADER));
+  const lineIdx = heads.indexOf(normalizeHeader_(LONG_TERM_LINE_HEADER));
+  const missing = [];
+  if (codeIdx === -1) missing.push('"' + LONG_TERM_CODE_HEADER + '"');
+  if (lineIdx === -1) missing.push('"' + LONG_TERM_LINE_HEADER + '"');
+  if (missing.length) return { error: '"' + name + '" 시트 1행에서 ' + missing.join(', ') + ' 열을 찾을 수 없습니다.' };
+
+  const codes = new Map();
+  const lastRow = sheet.getLastRow();
+  if (lastRow >= 2) {
+    sheet.getRange(2, 1, lastRow - 1, lastCol).getValues().forEach(row => {
+      const code = normalizeMaterialCode_(row[codeIdx]);
+      if (!code) return;
+      if (!codes.has(code)) codes.set(code, new Set());
+      const line = normalizeLine_(row[lineIdx]);
+      if (line) codes.get(code).add(line);
+    });
+  }
+  return { codes };
+}
+
+// 구매발주및입고 시트 startRow~endRow 구간의 자재코드/라인 셀 표시를 장기보관자재와 맞춘다.
+// 칠할 셀은 LONG_TERM_MARK_COLOR로 칠하고, 해당하지 않는데 그 색으로 칠해진 셀만 배경을 지운다
+// (다른 색 서식은 건드리지 않는다). 결과 { painted, cleared } 또는 { error }.
+function markLongTermRows_(site, poSheet, startRow, endRow, longTerm) {
+  if (endRow < startRow) return { painted: 0, cleared: 0 };
+  const lt = longTerm || loadLongTermMap_(site);
+  if (lt.error) {
+    Logger.log('장기보관 표시 건너뜀 [' + site + ']: ' + lt.error);
+    return { error: lt.error };
+  }
+
+  const heads = headers_(poSheet);
+  const codeCol = heads.indexOf('자재코드') + 1;
+  const lineCol = heads.indexOf('라인') + 1;
+  if (!codeCol || !lineCol) {
+    return { error: '"' + poSheet.getName() + '" 시트에서 자재코드/라인 열을 찾을 수 없습니다.' };
+  }
+
+  const numRows = endRow - startRow + 1;
+  const codes = poSheet.getRange(startRow, codeCol, numRows, 1).getValues();
+  const lines = poSheet.getRange(startRow, lineCol, numRows, 1).getValues();
+  const codeBgs = poSheet.getRange(startRow, codeCol, numRows, 1).getBackgrounds();
+  const lineBgs = poSheet.getRange(startRow, lineCol, numRows, 1).getBackgrounds();
+
+  const toPaint = [];
+  const toClear = [];
+  const apply = (want, bg, a1) => {
+    const isMarked = String(bg).toLowerCase() === LONG_TERM_MARK_COLOR;
+    if (want && !isMarked) toPaint.push(a1);
+    else if (!want && isMarked) toClear.push(a1);
+  };
+
+  const codeLetter = columnLetter_(codeCol);
+  const lineLetter = columnLetter_(lineCol);
+  for (let i = 0; i < numRows; i++) {
+    const row = startRow + i;
+    const ltLines = lt.codes.get(normalizeMaterialCode_(codes[i][0]));
+    const codeMatch = !!ltLines;
+    const lineMatch = codeMatch && ltLines.has(normalizeLine_(lines[i][0]));
+    apply(codeMatch, codeBgs[i][0], codeLetter + row);
+    apply(lineMatch, lineBgs[i][0], lineLetter + row);
+  }
+
+  setBackgroundInChunks_(poSheet, toPaint, LONG_TERM_MARK_COLOR);
+  setBackgroundInChunks_(poSheet, toClear, null);
+  return { painted: toPaint.length, cleared: toClear.length };
+}
+
+// 1-based 열 번호 → A1 열 문자 (1 → A, 27 → AA).
+function columnLetter_(col) {
+  let s = '';
+  while (col > 0) {
+    const m = (col - 1) % 26;
+    s = String.fromCharCode(65 + m) + s;
+    col = Math.floor((col - 1) / 26);
+  }
+  return s;
+}
+
+// A1 표기 목록을 RangeList로 묶어 한 번에 배경색을 바꾼다 (null이면 배경 없음으로 되돌림).
+function setBackgroundInChunks_(sheet, a1List, color) {
+  const CHUNK = 500;
+  for (let i = 0; i < a1List.length; i += CHUNK) {
+    sheet.getRangeList(a1List.slice(i, i + CHUNK)).setBackground(color);
   }
 }
 

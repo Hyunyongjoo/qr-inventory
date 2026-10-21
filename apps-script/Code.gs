@@ -400,20 +400,45 @@ function isSetItemName_(itemName) {
   return String(itemName || '').trim().indexOf('***') === 0;
 }
 
-// 세트명 비교용 정규화: 맨 앞의 "***"(별표 + 뒤따르는 공백)를 떼고 양끝 공백을 제거한다.
+// 세트명 비교용 정규화: 맨 앞의 "***"를 떼고 모든 공백 제거 + 대문자로 맞춘다.
 // 사용자재 시트의 품명("*** 세트명")과 묶음자재 시트의 세트명은 둘 다 "***"를 붙여 두는 것이
-// 원칙이지만(화성 예시 참고), 엑셀 업로드 과정에서 한쪽만 "***"가 빠지는 경우가 있어
-// 매칭이 깨지지 않도록 양쪽 다 이 함수를 거쳐 비교한다.
+// 원칙이지만(화성 예시 참고), 엑셀 업로드 과정에서 한쪽만 "***"가 빠지거나 공백/대소문자가
+// 달라지는 경우가 있어 매칭이 깨지지 않도록 양쪽 다 이 함수를 거쳐 비교한다.
 function normalizeSetName_(s) {
-  return String(s == null ? '' : s).trim().replace(/^\*+\s*/, '').trim();
+  return stripSpaces_(String(s == null ? '' : s).trim().replace(/^\*+/, '')).toUpperCase();
 }
 
+// 묶음자재 시트에서 읽는 열. 시트를 엑셀로 다시 올리면서 헤더에 공백이 섞여도("세트명 ", "수 량")
+// 찾을 수 있도록 normalizeHeader_로 비교한다. 필수 열이 없으면 원인을 알 수 있게 오류를 낸다.
+const BUNDLE_HEADERS = ['세트명', '자재코드', 'BQMS', '품명', '규격', '수량'];
+const BUNDLE_REQUIRED_HEADERS = ['세트명', '자재코드', '수량'];
+
 // 세트명으로 그 사이트의 묶음자재 시트에서 구성 자재 행들을 모두 찾는다.
-// "***" 접두사 유무와 무관하게 매칭되도록 normalizeSetName_로 정규화해 비교한다.
+// "***" 접두사/공백/대소문자와 무관하게 매칭되도록 normalizeSetName_로 정규화해 비교한다.
+// 반환 행은 BUNDLE_HEADERS 이름을 키로 갖는다(시트 헤더 표기와 무관).
 function findBundleComponents_(site, setName) {
-  const rows = readAll_(sheet_(bundledMaterialsSheetName_(site)));
+  const sheetName = bundledMaterialsSheetName_(site);
+  const sheet = sheet_(sheetName);
+  const lastCol = sheet.getLastColumn();
+  const heads = lastCol ? headers_(sheet).map(normalizeHeader_) : [];
+  const idx = {};
+  BUNDLE_HEADERS.forEach(h => { idx[h] = heads.indexOf(normalizeHeader_(h)); });
+  const missing = BUNDLE_REQUIRED_HEADERS.filter(h => idx[h] === -1);
+  if (missing.length) {
+    throw new Error('"' + sheetName + '" 시트 1행에서 ' + missing.map(h => '"' + h + '"').join(', ') +
+      ' 열을 찾을 수 없습니다. 헤더를 확인하세요.');
+  }
+
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
   const name = normalizeSetName_(setName);
-  return rows.filter(r => normalizeSetName_(r['세트명']) === name);
+  return sheet.getRange(2, 1, lastRow - 1, lastCol).getValues()
+    .map((row, i) => {
+      const obj = { _row: i + 2 };
+      BUNDLE_HEADERS.forEach(h => { obj[h] = idx[h] === -1 ? '' : row[idx[h]]; });
+      return obj;
+    })
+    .filter(r => normalizeSetName_(r['세트명']) === name);
 }
 
 function headers_(sheet) {
@@ -1367,7 +1392,10 @@ function submitPurchase_(body) {
     const sheet = sheet_(poInSheetName_(site));
     const lineOrderNo = generateLineOrderNo_(site);
     const firstNewRow = sheet.getLastRow() + 1;
-    let count = 0;
+    // 먼저 모든 자재(세트는 구성 자재까지)를 검증해 등록할 행을 모은 뒤 한꺼번에 쓴다.
+    // 중간에 오류가 나면 아무 행도 쓰지 않으므로, 장바구니 일부만 저장된 채 오류가 나고
+    // 재시도 시 앞 자재가 중복 등록되는 일이 없다.
+    const pending = [];
     items.forEach(it => {
       const qty = Number(it.quantity);
       if (!qty || qty <= 0) return;
@@ -1378,37 +1406,46 @@ function submitPurchase_(body) {
       // 화면에서 같은 세트 주문임을 알아볼 수 있게 한다.
       if (isSetItemName_(itemName)) {
         const components = findBundleComponents_(site, itemName);
-        if (!components.length) throw new Error('세트 구성을 찾을 수 없습니다: ' + itemName);
+        if (!components.length) {
+          throw new Error('세트 구성을 찾을 수 없습니다: ' + itemName +
+            ' ("' + bundledMaterialsSheetName_(site) + '" 시트의 세트명을 확인하세요)');
+        }
+        // 자재코드가 비었거나 수량이 숫자가 아닌 구성 행은 조용히 빼지 않고 오류로 알린다
+        // (일부 구성품만 빠진 채 세트가 등록되는 것을 막는다).
+        const invalid = components.filter(c =>
+          !String(c['자재코드'] || '').trim() || !(Number(c['수량']) > 0));
+        if (invalid.length) {
+          throw new Error('세트 구성 행의 자재코드/수량이 올바르지 않습니다: ' + itemName + ' (' +
+            bundledMaterialsSheetName_(site) + ' ' + invalid.map(c => c._row + '행').join(', ') + ')');
+        }
 
         components.forEach(comp => {
-          const compItemId = String(comp['자재코드'] || '').trim();
-          const compQty = qty * (Number(comp['수량']) || 0);
-          if (!compItemId || compQty <= 0) return;
-
-          registerNewItemIfMissing_(compItemId, comp['품명'] || '', comp['규격'] || '');
-
-          appendRow_(sheet, {
-            '요청일자': today,
-            '신청자': worker.name,
-            '라인': zone,
-            'BQMS': comp['BQMS'] || '',
-            '자재코드': compItemId,
-            '자재명': comp['품명'] || '',
-            '규격': comp['규격'] || '',
-            '필요일자': requiredDate,
-            '요청수량': compQty,
-            '현재고수량': stockMap[compItemId] !== undefined ? stockMap[compItemId] : 0,
-            '재고사용(O,X)': stockUsageDefault,
-            '누적입고수량': '',
-            '잔여수량': compQty,
-            '입고여부': '미입고',
-            '최종입고일': '',
-            '라인구매번호': lineOrderNo,
-            '비고': '[세트: ' + itemName + ']',
-            '특이사항1': note1,
-            '특이사항2': note2
+          const compItemId = String(comp['자재코드']).trim();
+          const compQty = qty * Number(comp['수량']);
+          pending.push({
+            itemId: compItemId, itemName: comp['품명'] || '', spec: comp['규격'] || '',
+            row: {
+              '요청일자': today,
+              '신청자': worker.name,
+              '라인': zone,
+              'BQMS': comp['BQMS'] || '',
+              '자재코드': compItemId,
+              '자재명': comp['품명'] || '',
+              '규격': comp['규격'] || '',
+              '필요일자': requiredDate,
+              '요청수량': compQty,
+              '현재고수량': stockMap[compItemId] !== undefined ? stockMap[compItemId] : 0,
+              '재고사용(O,X)': stockUsageDefault,
+              '누적입고수량': '',
+              '잔여수량': compQty,
+              '입고여부': '미입고',
+              '최종입고일': '',
+              '라인구매번호': lineOrderNo,
+              '비고': '[세트: ' + itemName + ']',
+              '특이사항1': note1,
+              '특이사항2': note2
+            }
           });
-          count++;
         });
         return;
       }
@@ -1416,32 +1453,38 @@ function submitPurchase_(body) {
       const itemId = String(it.itemId || '').trim();
       if (!itemId) return;
 
-      registerNewItemIfMissing_(itemId, itemName, it.spec || '');
-
-      appendRow_(sheet, {
-        '요청일자': today,
-        '신청자': worker.name,
-        '라인': zone,
-        'BQMS': it.bqms || '',
-        '자재코드': itemId,
-        '자재명': itemName,
-        '규격': it.spec || '',
-        '필요일자': requiredDate,
-        '요청수량': qty,
-        '현재고수량': stockMap[itemId] !== undefined ? stockMap[itemId] : 0,
-        '재고사용(O,X)': stockUsageDefault,
-        '누적입고수량': '',
-        '잔여수량': qty,
-        '입고여부': '미입고',
-        '최종입고일': '',
-        '라인구매번호': lineOrderNo,
-        '특이사항1': note1,
-        '특이사항2': note2
+      pending.push({
+        itemId, itemName, spec: it.spec || '',
+        row: {
+          '요청일자': today,
+          '신청자': worker.name,
+          '라인': zone,
+          'BQMS': it.bqms || '',
+          '자재코드': itemId,
+          '자재명': itemName,
+          '규격': it.spec || '',
+          '필요일자': requiredDate,
+          '요청수량': qty,
+          '현재고수량': stockMap[itemId] !== undefined ? stockMap[itemId] : 0,
+          '재고사용(O,X)': stockUsageDefault,
+          '누적입고수량': '',
+          '잔여수량': qty,
+          '입고여부': '미입고',
+          '최종입고일': '',
+          '라인구매번호': lineOrderNo,
+          '특이사항1': note1,
+          '특이사항2': note2
+        }
       });
-      count++;
     });
 
+    const count = pending.length;
     if (!count) throw new Error('등록할 수 있는 자재가 없습니다 (자재코드/수량을 확인하세요).');
+
+    pending.forEach(p => {
+      registerNewItemIfMissing_(p.itemId, p.itemName, p.spec);
+      appendRow_(sheet, p.row);
+    });
 
     // 장기보관 표시는 부가 기능이라, 실패해도 이미 저장된 구매요청은 그대로 성공 처리한다.
     try {

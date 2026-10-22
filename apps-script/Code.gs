@@ -747,12 +747,6 @@ function isCancelledRow_(r) {
   return String(r['재고사용(O,X)'] || '').trim() === '취소';
 }
 
-// 재고사용(O,X)이 '보류'로 표시된 행(자재담당자가 구매 진행을 보류한 요청)도 실제 구매/입고가
-// 진행되지 않는 상태이므로, 재고사용(O) 행과 마찬가지로 FIFO 입고 매칭 대상에서 제외한다.
-function isOnHoldRow_(r) {
-  return String(r['재고사용(O,X)'] || '').trim() === '보류';
-}
-
 // 라인 컬럼값이 "안전재고"인 행(안전재고구매로 등록된 구매요청). 입고확인 화면에서
 // 재고사용/구매필요/구매보류/출고 버튼은 막고, 입고/수량변경/취소만 허용한다.
 function isSafetyStockRow_(r) {
@@ -780,11 +774,32 @@ function isOutboundPartialRow_(r) {
   return shipped > 0 && shipped < requested;
 }
 
+// 입고 처리 대상 행인지: 입고확인 화면과 똑같이 computeInboundStatus_의 상태로 판단한다.
+// 구매완료/부분입고 건(안전재고 건은 구매요청번호 없이 등록되므로 구매대기 포함)이면서 아직 잔여수량이
+// 남은 행만 대상이다. 스캔 입고(stockIn_, QR/OCR 공통)와 입고확인 화면의 "입고" 버튼(inboundByManager_)이
+// 이 함수 하나를 함께 쓴다 — 예전에는 스캔 입고가 시트의 입고여부 컬럼만 보고 후보를 골라, 구매요청번호가
+// 없는(재고확인중/구매대기) 행에 입고수량이 먼저 채워지는 바람에 화면에서는 입고완료로 보이지 않았다.
+function isReceivableRow_(r) {
+  const status = computeInboundStatus_(r).status;
+  const allowed = status === '구매완료' || status === '부분입고' || (isSafetyStockRow_(r) && status === '구매대기');
+  if (!allowed) return false;
+  return (Number(r['요청수량']) || 0) > (Number(r['누적입고수량']) || 0);
+}
+
 function findOpenPurchaseOrders_(site, itemId) {
+  const code = normalizeMaterialCode_(itemId);
   const rows = readAll_(sheet_(poInSheetName_(site)));
   return rows
-    .filter(r => String(r['자재코드']) === String(itemId) && r['입고여부'] !== '입고완료' && !isStockCoveredRow_(r) && !isCancelledRow_(r) && !isOnHoldRow_(r) && !isOutboundDoneRow_(r))
+    .filter(r => normalizeMaterialCode_(r['자재코드']) === code && isReceivableRow_(r))
     .sort(poSortComparator_);
+}
+
+// 스캔(QR/OCR 공통)으로 들어온 자재코드로 Items 시트의 자재를 찾는다. 공백/대소문자 차이는 무시한다.
+function findItemByScanCode_(items, code) {
+  const normalized = normalizeMaterialCode_(code);
+  const item = items.find(it => normalizeMaterialCode_(it.ItemID) === normalized);
+  if (!item) throw new Error('코드 불일치: "' + String(code).trim() + '"는 Items 시트의 ItemID와 일치하지 않습니다.');
+  return item;
 }
 
 function poRowToView_(po) {
@@ -842,9 +857,7 @@ function scanLookupForStockIn_(site, code) {
   if (!items.length) {
     throw new Error('Items 시트에 등록된 자재가 없습니다. 자재 데이터를 먼저 업로드하세요.');
   }
-  const normalized = String(code).trim();
-  const item = items.find(it => String(it.ItemID).trim() === normalized);
-  if (!item) throw new Error('코드 불일치: "' + normalized + '"는 Items 시트의 ItemID와 일치하지 않습니다.');
+  const item = findItemByScanCode_(items, code);
 
   const openPos = findOpenPurchaseOrders_(site, item.ItemID).map(poRowToView_);
   return { item: stripRow_(item), openPos };
@@ -860,9 +873,7 @@ function scanLookupForStockOut_(site, code) {
   if (!items.length) {
     throw new Error('Items 시트에 등록된 자재가 없습니다. 자재 데이터를 먼저 업로드하세요.');
   }
-  const normalized = String(code).trim();
-  const item = items.find(it => String(it.ItemID).trim() === normalized);
-  if (!item) throw new Error('코드 불일치: "' + normalized + '"는 Items 시트의 ItemID와 일치하지 않습니다.');
+  const item = findItemByScanCode_(items, code);
 
   const stockRows = readAll_(sheet_(stockSheetName_(site)));
   const stockRow = stockRows.find(s => String(s['자재코드']) === String(item.ItemID));
@@ -1839,12 +1850,8 @@ function inboundByManager_(body) {
     if (!qty || qty <= 0) throw new Error('입고 수량은 0보다 커야 합니다.');
 
     const row = findPoRowByIndex_(site, body.rowIndex);
-    const info = computeInboundStatus_(row);
     const isSafety = isSafetyStockRow_(row);
-    const allowed = isSafety
-      ? (info.status === '구매대기' || info.status === '구매완료' || info.status === '부분입고')
-      : (info.status === '구매완료' || info.status === '부분입고');
-    if (!allowed) {
+    if (!isReceivableRow_(row)) {
       throw new Error(isSafety
         ? '안전재고 건은 구매대기/구매완료/부분입고 상태에서만 입고 처리할 수 있습니다.'
         : '구매완료(구매완료/부분입고) 상태에서만 입고 처리할 수 있습니다.');

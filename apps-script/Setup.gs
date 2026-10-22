@@ -254,6 +254,7 @@ function formatStockSheetNumberColumns_(sheet) {
 const SNAPSHOT_AUTO_START_MONTH = '2026-11';
 const NOTIFY_LOG_SHEET_NAME = '알림로그';
 const STOCK_RECONCILE_SHEET_NAME = '재고대사';
+const INBOUND_AUDIT_SHEET_NAME = '입고상태점검';
 // 스크립트 속성 키: 스냅샷이 완료된 마지막 달 / 안전망의 마지막 시도 시각(ms).
 const SNAPSHOT_DONE_PROP = 'STOCK_SNAPSHOT_DONE_MONTH';
 const SNAPSHOT_ATTEMPT_PROP = 'STOCK_SNAPSHOT_LAST_ATTEMPT';
@@ -480,6 +481,58 @@ function runStockReconciliationFromMenu() {
     '\n\n이력 기준 재고는 참고값입니다(월초재고 기준값 + 전체 입고 − 출고 + 반납 ± 이관). 현재고는 변경하지 않았습니다.');
 }
 
+// ------------------------- 입고 상태 점검 -------------------------
+
+// 예전 스캔 입고(QR/OCR 공통)는 시트의 입고여부 컬럼만 보고 FIFO 대상을 골라, 구매요청번호가 없는
+// (재고확인중/구매대기) 행에도 누적입고수량을 채웠다. 그런 행은 수량이 다 차도 입고확인 화면에서
+// 입고완료로 보이지 않고, 정작 구매완료 행은 입고가 안 된 채로 남는다. 이 점검은 누적입고수량이 있는데
+// 화면 상태(computeInboundStatus_)가 재고확인중/구매대기인 행(안전재고 건 제외)을 사이트별로 찾아
+// 입고상태점검 시트에 기록만 한다. 시트 값은 고치지 않는다 — 담당자가 목록을 보고 수량을 옮긴다.
+function runInboundStatusAudit_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const rows = [];
+  SITES.forEach(site => {
+    if (!ss.getSheetByName(poInSheetName_(site))) return;
+    const all = readAll_(sheet_(poInSheetName_(site)));
+    all.forEach(r => {
+      const cumulative = Number(r['누적입고수량']) || 0;
+      if (cumulative <= 0 || isSafetyStockRow_(r)) return;
+      const status = computeInboundStatus_(r).status;
+      if (status !== '재고확인중' && status !== '구매대기') return;
+      // 같은 자재코드의 구매완료/부분입고 행(입고가 들어갔어야 할 후보)을 시트 행 번호로 함께 적는다.
+      const code = normalizeMaterialCode_(r['자재코드']);
+      const targets = all
+        .filter(o => normalizeMaterialCode_(o['자재코드']) === code && isReceivableRow_(o))
+        .sort(poSortComparator_)
+        .map(o => o._row + '행(' + (o['구매요청번호'] || '') + ', 잔여 ' + ((Number(o['요청수량']) || 0) - (Number(o['누적입고수량']) || 0)) + ')');
+      rows.push([
+        site, r._row, r['자재코드'] || '', r['자재명'] || '', r['라인'] || '', r['신청자'] || '',
+        Number(r['요청수량']) || 0, cumulative, r['입고여부'] || '', status, r['최종입고일'] || '',
+        r['신청자'] ? '' : '발주없음 직접입고 행', targets.join(', ')
+      ]);
+    });
+  });
+
+  let sheet = ss.getSheetByName(INBOUND_AUDIT_SHEET_NAME);
+  if (!sheet) sheet = ss.insertSheet(INBOUND_AUDIT_SHEET_NAME);
+  sheet.clear();
+  const checkedAt = Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd HH:mm:ss');
+  const header = ['사이트', '시트 행', '자재코드', '자재명', '라인', '신청자', '요청수량', '누적입고수량',
+    '입고여부(시트)', '화면 상태', '최종입고일', '비고', '같은 자재 입고대상 행 ' + checkedAt];
+  sheet.getRange(1, 1, 1, header.length).setValues([header]).setFontWeight('bold').setBackground('#f1f3f4');
+  sheet.setFrozenRows(1);
+  if (rows.length) sheet.getRange(2, 1, rows.length, header.length).setValues(rows);
+  return rows.length;
+}
+
+// "자재관리 > 입고 상태 점검" 메뉴.
+function runInboundStatusAuditFromMenu() {
+  const count = runInboundStatusAudit_();
+  SpreadsheetApp.getUi().alert(count
+    ? '구매요청번호 없는 행에 입고된 건 ' + count + '건 — "' + INBOUND_AUDIT_SHEET_NAME + '" 시트 확인\n\n시트 값은 변경하지 않았습니다.'
+    : '점검 결과: 이상 없음');
+}
+
 // ------------------------- 알림 -------------------------
 
 // 알림로그 시트에 한 줄 남기고 메일을 보낸다. 둘 중 하나가 실패해도 다른 하나는 시도한다.
@@ -537,6 +590,7 @@ function onOpen() {
     .addSeparator()
     .addItem('이번 달 재고 스냅샷 생성', 'createStockSnapshotFromMenu')
     .addItem('재고 대사(검증)', 'runStockReconciliationFromMenu')
+    .addItem('입고 상태 점검', 'runInboundStatusAuditFromMenu')
     .addSeparator()
     .addItem('장기보관 표시 새로고침', 'refreshLongTermMarksFromMenu')
     .addToUi();

@@ -747,6 +747,16 @@ function isCancelledRow_(r) {
   return String(r['재고사용(O,X)'] || '').trim() === '취소';
 }
 
+// 구매요청번호 칸에 실제 번호 대신 자동으로 넣는 표시값: 재고사용(O) 확정 시 "재고사용",
+// 구매 취소 시 "취소". 실제 구매요청번호가 아니므로 상태 계산/구매 다운로드에서는 번호가 없는 것으로
+// 본다 — 시트에서 재고사용(O,X) 값만 지워져도 표시값 때문에 구매완료로 잘못 바뀌지 않게 한다.
+const PURCHASE_REQ_NO_MARKERS = ['재고사용', '취소'];
+
+function hasRealPurchaseReqNo_(r) {
+  const no = String(r['구매요청번호'] || '').trim();
+  return !!no && PURCHASE_REQ_NO_MARKERS.indexOf(no) === -1;
+}
+
 // 라인 컬럼값이 "안전재고"인 행(안전재고구매로 등록된 구매요청). 입고확인 화면에서
 // 재고사용/구매필요/구매보류/출고 버튼은 막고, 입고/수량변경/취소만 허용한다.
 function isSafetyStockRow_(r) {
@@ -1039,7 +1049,8 @@ function findItemIdsByHangulAlias_(site, lowerQuery) {
 //   4) 재고사용(O,X) = 보류    → 구매보류 (자재담당자가 구매 진행을 보류한 상태)
 //   5) 재고사용(O,X) = O       → 재고사용
 //   6) 구매요청번호 등록됨     → 구매완료/부분입고/입고완료 (누적입고수량 vs 요청수량으로 세분화;
-//                                아직 입고 전(누적입고수량 <= 0)이면 구매완료로 표시)
+//                                아직 입고 전(누적입고수량 <= 0)이면 구매완료로 표시.
+//                                "재고사용"/"취소" 표시값은 번호로 보지 않음 — hasRealPurchaseReqNo_)
 //   7) 재고사용(O,X) = X       → 구매대기 (자재담당자가 "구매필요"를 눌렀지만 아직 구매요청번호 미등록)
 //   8) 그 외(공란)             → 재고확인중
 // category는 상단 건수 필터가 사용하는 그룹 키로, status와 항상 같은 값이다(건마다 정확히 하나의
@@ -1047,7 +1058,6 @@ function findItemIdsByHangulAlias_(site, lowerQuery) {
 function computeInboundStatus_(po) {
   const stockUse = String(po['재고사용(O,X)'] || '').trim();
   const stockUseUpper = stockUse.toUpperCase();
-  const purchaseReqNo = String(po['구매요청번호'] || '').trim();
   const requested = Number(po['요청수량']) || 0;
   const cumulative = Number(po['누적입고수량']) || 0;
 
@@ -1056,7 +1066,7 @@ function computeInboundStatus_(po) {
   if (stockUse === '취소') return { status: '취소', category: '취소' };
   if (stockUse === '보류') return { status: '구매보류', category: '구매보류' };
   if (stockUseUpper === 'O') return { status: '재고사용', category: '재고사용' };
-  if (purchaseReqNo) {
+  if (hasRealPurchaseReqNo_(po)) {
     const status = cumulative <= 0 ? '구매완료' : (cumulative < requested ? '부분입고' : '입고완료');
     return { status, category: status };
   }
@@ -1699,6 +1709,9 @@ function registerNewItemIfMissing_(itemId, itemName, spec) {
 //    재고사용/구매필요(구매대기)/구매완료로 넘어간 건은 이미 절차가 진행된 것으로 보고 막는다.
 //  - Role이 자재담당자/관리자인 사용자: 재고확인중/재고사용/구매필요(구매대기) 건까지 취소 가능.
 //    구매완료(구매요청번호 등록, 구매완료/부분입고/입고완료)·출고완료로 넘어간 건은 취소를 막는다.
+// 취소되면 재고사용(O,X)에 "취소"를 넣고, 구매요청번호 칸에도 "취소"를 표시한다(재고사용 확정 시
+// "재고사용"을 넣는 것과 같은 방식). 구매요청번호 칸이 비어 있거나 자동 표시값("재고사용")일 때만
+// 바꾸고, 시트에서 직접 입력한 실제 번호가 있으면 덮어쓰지 않는다.
 function cancelPurchase_(body) {
   const lock = scriptLock_();
   lock.waitLock(30000);
@@ -1723,7 +1736,9 @@ function cancelPurchase_(body) {
       throw new Error('취소 권한이 없습니다. 신청자 본인 또는 자재담당자/관리자만 취소할 수 있습니다.');
     }
 
-    updateRow_(sheet_(poInSheetName_(site)), row._row, { '재고사용(O,X)': '취소' });
+    const updates = { '재고사용(O,X)': '취소' };
+    if (!hasRealPurchaseReqNo_(row)) updates['구매요청번호'] = '취소';
+    updateRow_(sheet_(poInSheetName_(site)), row._row, updates);
     return poRowToInboundView_(site, findPoRowByIndex_(site, body.rowIndex));
   } finally {
     lock.releaseLock();
@@ -1795,6 +1810,9 @@ function updateStockUsage_(body) {
     const info = computeInboundStatus_(row);
     if (STOCK_USAGE_LOCKED_STATUSES.indexOf(info.status) !== -1) {
       throw new Error('구매완료 이후에는 재고사용/구매필요/구매보류를 변경할 수 없습니다.');
+    }
+    if (info.status === '취소') {
+      throw new Error('취소된 요청은 재고사용/구매필요/구매보류를 변경할 수 없습니다.');
     }
 
     const updates = { '재고사용(O,X)': value };
@@ -2396,7 +2414,7 @@ function getPurchaseDownload_(site, startDate, endDate, zone) {
   const unitMap = buildItemUnitMap_();
 
   let rows = readAll_(sheet_(poInSheetName_(site)));
-  rows = rows.filter(r => String(r['재고사용(O,X)'] || '').trim().toUpperCase() === 'X' && !String(r['구매요청번호'] || '').trim());
+  rows = rows.filter(r => String(r['재고사용(O,X)'] || '').trim().toUpperCase() === 'X' && !hasRealPurchaseReqNo_(r));
   if (zoneQ) rows = rows.filter(r => String(r['라인'] || '').trim() === zoneQ);
   rows = filterByDateRange_(rows, '필요일자', startDate, endDate);
 

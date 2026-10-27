@@ -533,6 +533,43 @@ function runInboundStatusAuditFromMenu() {
     : '점검 결과: 이상 없음');
 }
 
+// ------------------------- 취소 건 구매요청번호 표시 -------------------------
+
+// "자재관리 > 취소 건 구매요청번호 표시 채우기" 메뉴.
+// 구매 취소 시 구매요청번호 칸에 "취소"를 넣게 되기 전에 취소된 기존 행(재고사용(O,X)=취소)에도 같은
+// 표시를 소급해 채운다. cancelPurchase_와 같은 규칙으로, 구매요청번호 칸이 비어 있거나 자동 표시값
+// ("재고사용")인 행만 바꾸고 실제 번호가 적힌 행은 건드리지 않은 채 건수만 알려준다.
+function fillCancelledPurchaseReqNoFromMenu() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const lines = [];
+  // 구매 취소/구매요청 저장과 겹치지 않도록 같은 스크립트 락을 잡는다.
+  const lock = scriptLock_();
+  lock.waitLock(60000);
+  try {
+    SITES.forEach(site => {
+      const sheet = ss.getSheetByName(poInSheetName_(site));
+      if (!sheet) { lines.push(site + ': 구매발주및입고 시트 없음 (건너뜀)'); return; }
+      const col = headers_(sheet).indexOf('구매요청번호') + 1;
+      if (!col) { lines.push(site + ': 구매요청번호 열 없음 (건너뜀)'); return; }
+      let filled = 0;
+      let kept = 0;
+      readAll_(sheet).forEach(r => {
+        if (!isCancelledRow_(r)) return;
+        const no = String(r['구매요청번호'] || '').trim();
+        if (no === '취소') return;
+        if (hasRealPurchaseReqNo_(r)) { kept++; return; }
+        sheet.getRange(r._row, col).setValue('취소');
+        filled++;
+      });
+      lines.push(site + ': 채움 ' + filled + '건' + (kept ? ', 실제 번호가 있어 그대로 둔 행 ' + kept + '건' : ''));
+    });
+    SpreadsheetApp.flush();
+  } finally {
+    lock.releaseLock();
+  }
+  SpreadsheetApp.getUi().alert('취소 건 구매요청번호 표시 결과\n\n' + lines.join('\n'));
+}
+
 // ------------------------- 알림 -------------------------
 
 // 알림로그 시트에 한 줄 남기고 메일을 보낸다. 둘 중 하나가 실패해도 다른 하나는 시도한다.
@@ -581,7 +618,7 @@ function setupTrigger() {
 
 /**
  * 스프레드시트를 열 때마다 자동으로 실행되는 심플 트리거(함수명 고정, Apps Script가 직접 호출).
- * 상단에 "자재관리" 메뉴(자재 동기화 / 이번 달 재고 스냅샷 생성 / 재고 대사 / 장기보관 표시 새로고침)를 추가한다.
+ * 상단에 "자재관리" 메뉴(자재 동기화 / 이번 달 재고 스냅샷 생성 / 재고 대사 / 입고 상태 점검 / 취소 건 구매요청번호 표시 채우기 / 장기보관 표시 새로고침)를 추가한다.
  */
 function onOpen() {
   SpreadsheetApp.getUi()
@@ -591,6 +628,7 @@ function onOpen() {
     .addItem('이번 달 재고 스냅샷 생성', 'createStockSnapshotFromMenu')
     .addItem('재고 대사(검증)', 'runStockReconciliationFromMenu')
     .addItem('입고 상태 점검', 'runInboundStatusAuditFromMenu')
+    .addItem('취소 건 구매요청번호 표시 채우기', 'fillCancelledPurchaseReqNoFromMenu')
     .addSeparator()
     .addItem('장기보관 표시 새로고침', 'refreshLongTermMarksFromMenu')
     .addToUi();

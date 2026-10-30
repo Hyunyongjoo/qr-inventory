@@ -714,5 +714,96 @@ function syncMaterials_() {
 
   const message = '동기화 완료: Items ' + itemsAdded + '개 추가, 사용자재 ' + usedMaterialsAdded + '개 추가';
   Logger.log(message);
-  SpreadsheetApp.getUi().alert(message);
+
+  // 위 구매발주및입고 → 사용자재/Items 동기화가 끝난 뒤 사용자재 → Items 경로를 이어서 실행한다.
+  const usedResult = syncUsedMaterialsToItems_(ss, itemsSheet);
+  Logger.log(usedResult.logText);
+  SpreadsheetApp.getUi().alert(message + '\n\n' + usedResult.summary);
+}
+
+// 팝업에 자재코드를 나열할 때 사이트별 최대 개수 (넘치면 "외 N건"으로 줄이고, 전체 목록은 로그에 남긴다)
+const USED_SYNC_POPUP_CODE_MAX = 30;
+
+/**
+ * 사이트별 사용자재 시트를 읽어 Items에 없는 자재코드를 Items에 한 줄씩 추가한다.
+ * 비교는 normalizeMaterialCode_(공백 제거 + 대문자) 기준이고, Items에 이미 있는 코드는 건드리지 않는다.
+ * 여러 사이트에 같은 코드가 있으면 SITES 순서상 처음 나온 행의 값으로 1행만 추가하고,
+ * 다른 사이트의 품명/규격이 다르면 결과에 어느 값을 썼는지 표시한다.
+ * 열 매핑: 자재코드 → ItemID, 품명 → ItemName, 규격 → Spec. 사용자재에 없는 Unit/Category는 비워 두고,
+ * CreatedAt/신규여부는 기존 동기화와 같게 오늘 날짜/'★신규'를 넣는다.
+ * 반환: { summary: 팝업용 문자열, logText: 로그용 전체 문자열 }
+ */
+function syncUsedMaterialsToItems_(ss, itemsSheet) {
+  const existing = new Set(
+    readAll_(itemsSheet).map(r => normalizeMaterialCode_(r['ItemID'])).filter(Boolean)
+  );
+  const today = Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd');
+
+  const picked = {};     // 정규화 코드 → { code, name, spec, site }
+  const order = [];      // 추가할 정규화 코드 (처음 나온 순서)
+  const conflicts = {};  // 정규화 코드 → ['화성: 품명/규격', ...]
+  const perSite = {};    // 사이트 → { added: [코드], skippedBlank: n, missing: bool }
+
+  SITES.forEach(site => {
+    const stat = { added: [], skippedBlank: 0, missing: false };
+    perSite[site] = stat;
+    const usedSheet = ss.getSheetByName(usedMaterialsSheetName_(site));
+    if (!usedSheet) { stat.missing = true; return; }
+
+    readAll_(usedSheet).forEach(r => {
+      const code = String(r['자재코드'] || '').trim();
+      if (!normalizeMaterialCode_(code)) { stat.skippedBlank++; return; }
+      const key = normalizeMaterialCode_(code);
+      if (existing.has(key)) return;
+
+      const name = String(r['품명'] || '').trim();
+      const spec = String(r['규격'] || '').trim();
+      const first = picked[key];
+      if (!first) {
+        picked[key] = { code, name, spec, site };
+        order.push(key);
+        stat.added.push(code);
+      } else if (first.name !== name || first.spec !== spec) {
+        (conflicts[key] = conflicts[key] || []).push(site + ': ' + (name || '(빈칸)') + ' / ' + (spec || '(빈칸)'));
+      }
+    });
+  });
+
+  if (order.length) {
+    const heads = headers_(itemsSheet);
+    const rows = order.map(key => {
+      const p = picked[key];
+      const obj = { ItemID: p.code, ItemName: p.name, Spec: p.spec, CreatedAt: today, '신규여부': '★신규' };
+      return heads.map(h => (obj[h] !== undefined ? obj[h] : ''));
+    });
+    itemsSheet.getRange(itemsSheet.getLastRow() + 1, 1, rows.length, heads.length).setValues(rows);
+  }
+
+  const listCodes = (codes, max) => codes.length <= max
+    ? codes.join(', ')
+    : codes.slice(0, max).join(', ') + ' 외 ' + (codes.length - max) + '건';
+
+  const build = max => {
+    const lines = ['사용자재 → Items 추가 ' + order.length + '건(사이트별)'];
+    SITES.forEach(site => {
+      const s = perSite[site];
+      if (s.missing) { lines.push('- ' + site + ': 사용자재 시트 없음 (건너뜀)'); return; }
+      lines.push('- ' + site + ': ' + s.added.length + '건' +
+        (s.skippedBlank ? ' (자재코드 빈칸 ' + s.skippedBlank + '행 건너뜀)' : ''));
+      if (s.added.length) lines.push('    ' + listCodes(s.added, max));
+    });
+    const conflictKeys = order.filter(k => conflicts[k]);
+    if (conflictKeys.length) {
+      lines.push('', '사이트마다 품명/규격이 다른 자재 ' + conflictKeys.length + '건 (Items에는 앞 사이트 값 사용):');
+      conflictKeys.slice(0, max).forEach(k => {
+        const p = picked[k];
+        lines.push('- ' + p.code + ' → ' + p.site + ' 값 사용: ' + (p.name || '(빈칸)') + ' / ' + (p.spec || '(빈칸)') +
+          ' | 다른 값: ' + conflicts[k].join(', '));
+      });
+      if (conflictKeys.length > max) lines.push('  외 ' + (conflictKeys.length - max) + '건 (전체는 실행 로그 참고)');
+    }
+    return lines.join('\n');
+  };
+
+  return { summary: build(USED_SYNC_POPUP_CODE_MAX), logText: build(Infinity) };
 }

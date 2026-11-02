@@ -2897,11 +2897,40 @@
     return !!(state.user && (state.user.role === '자재담당자' || state.user.role === '관리자'));
   }
 
-  // '최종입고일'/'최종출고일'(yyyy-MM-dd 문자열)이 오늘 날짜와 같은지 로컬 기준으로 확인한다.
-  // 입고완료/출고완료 건의 "수정" 버튼은 당일 건에서만 활성화한다(서버에서도 다시 검증).
+  // 입고/출고 2단계 처리에서 백그라운드 저장(inboundByManager/outboundComplete)이 아직 끝나지 않은
+  // 행(rowIndex). 화면은 이미 낙관적으로 바뀌었지만 시트는 그대로라, 그 사이 수정/입고/출고를 누르면
+  // 서버가 저장 전 상태로 판단한다 — 저장이 끝날 때까지 해당 카드의 버튼을 잠근다.
+  const inboundSavingRows = new Set();
+
+  // '최종입고일'/'최종출고일'이 오늘 날짜와 같은지 로컬 기준으로 확인한다.
+  // 입고완료/부분출고/출고완료 건의 "수정" 버튼은 당일 건에서만 활성화한다(서버에서도 다시 검증).
+  // 서버는 'yyyy-MM-dd' 문자열로 보내지만, 시트 Date가 JSON ISO 문자열(2026-11-01T15:00:00.000Z)로
+  // 오는 경우도 로컬 날짜로 바꿔 비교한다.
   function isTodayDateStr_(dateStr) {
     if (!dateStr) return false;
-    return String(dateStr).trim() === todayDateStr_();
+    const s = String(dateStr).trim();
+    if (s.indexOf('T') !== -1) {
+      const d = new Date(s);
+      if (!isNaN(d.getTime())) return localDateStr_(d) === todayDateStr_();
+    }
+    return s === todayDateStr_();
+  }
+
+  function localDateStr_(d) {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+
+  // 출고 가능 수량(누적 상한 - 누적출고수량). 서버 값이 없으면(구버전 응답) 같은 규칙으로 계산한다:
+  // 재고사용(O) 건은 요청수량, 그 외는 누적입고수량이 상한이다.
+  function shipLimitOf_(r) {
+    if (r.shipLimitQty != null) return Number(r.shipLimitQty) || 0;
+    const requested = Number(r.requestedQty) || 0;
+    if (String(r.stockUse || '').trim().toUpperCase() === 'O') return requested;
+    return Math.max(0, Math.min(Number(r.cumulativeQty) || 0, requested));
+  }
+
+  function shippableOf_(r) {
+    return Math.max(0, shipLimitOf_(r) - (Number(r.shippedQty) || 0));
   }
 
   // 오늘 날짜를 서버(Utilities.formatDate(..., 'yyyy-MM-dd'))와 같은 형식으로 반환한다.
@@ -3309,21 +3338,26 @@
     // 입고 버튼은 구매완료(구매요청번호 등록) 상태 중 구매완료/부분입고일 때만 활성화한다.
     // 재고확인중/구매대기/구매보류/재고사용/입고완료/부분출고/출고완료는 모두 비활성화.
     // 단, 안전재고 건은 구매요청번호 없이(구매대기 상태) 바로 입고하므로, 잔여수량이 남아 있으면 활성화한다.
-    const canReceive = isSafetyStock
+    // 백그라운드 저장 중인 카드는 입고/출고/수정을 모두 잠근다(inboundSavingRows 참고).
+    const isSaving = inboundSavingRows.has(r.rowIndex);
+    const canReceive = !isSaving && (isSafetyStock
       ? (r.requestedQty - r.cumulativeQty) > 0 && !r.outboundDone
-      : (r.status === '구매완료' || r.status === '부분입고');
+      : (r.status === '구매완료' || r.status === '부분입고'));
     // 출고 진행 상태(부분출고/출고완료)가 status 표시를 덮어쓸 수 있으므로, 출고완료 버튼 활성화
     // 여부는 status 문자열이 아니라 원본 입고수량(누적입고수량 > 0)으로 판단한다 — 일부라도
     // 입고되어 재고에 반영됐다면 그만큼은 출고할 수 있어야 한다.
     // 재고사용(O)/부분입고/입고완료/부분출고는 활성화하고, 출고완료(전량 출고됨)와 안전재고 건은 비활성화한다.
+    // 입고된 수량을 이미 다 출고한 건(출고 가능 수량 0)도 비활성화한다.
     const hasInboundQty = r.cumulativeQty > 0;
-    const canShipOut = !isSafetyStock && !r.outboundDone && (stockUseUpper === 'O' || hasInboundQty);
+    const canShipOut = !isSaving && !isSafetyStock && !r.outboundDone &&
+      (stockUseUpper === 'O' || hasInboundQty) && shippableOf_(r) > 0;
 
-    // "수정" 버튼: 입고완료/출고완료 건에만 표시하고, 그 건이 확정된 당일(최종입고일/최종출고일)에만
-    // 활성화한다. 입고완료 건은 입고수량을, 출고완료 건은 출고수량을 고친다(onInboundEditClick).
-    const isEditableStatus = r.status === '입고완료' || r.status === '출고완료';
+    // "수정" 버튼: 입고완료/부분출고/출고완료 건에만 표시하고, 그 건이 확정된 당일(최종입고일/최종출고일)에만
+    // 활성화한다. 입고완료 건은 입고수량을, 부분출고/출고완료 건은 출고수량을 고친다(onInboundEditClick).
+    const isEditableStatus = r.status === '입고완료' || r.status === '부분출고' || r.status === '출고완료';
     const editDateStr = r.status === '입고완료' ? r.lastInboundDate : r.lastOutboundDate;
     const isEditableToday = isEditableStatus && isTodayDateStr_(editDateStr);
+    const canEdit = isEditableToday && !isSaving;
 
     // 재고사용/구매필요/구매보류 활성화 규칙:
     //  - 구매완료 계열(STOCK_USAGE_LOCKED_STATUSES)로 넘어간 건은 이미 절차가 진행된 것으로 보고
@@ -3354,16 +3388,18 @@
     const receiveShipEditHtml = canManageInbound() ? `
       <button type="button" class="btn btn-small btn-secondary inbound-receive-btn" data-row-index="${r.rowIndex}" ${canReceive ? '' : 'disabled'}>입고</button>
       <button type="button" class="btn btn-small btn-primary inbound-outbound-btn" data-row-index="${r.rowIndex}" ${canShipOut ? '' : 'disabled'}>출고</button>
-      ${isEditableStatus ? `<button type="button" class="btn btn-small btn-secondary inbound-edit-btn" data-row-index="${r.rowIndex}" ${isEditableToday ? '' : 'disabled'} title="${isEditableToday ? '' : '당일 건만 수정 가능합니다'}">수정</button>` : ''}
+      ${isEditableStatus ? `<button type="button" class="btn btn-small btn-secondary inbound-edit-btn" data-row-index="${r.rowIndex}" ${canEdit ? '' : 'disabled'} title="${isEditableToday ? '' : '당일 건만 수정 가능합니다'}">수정</button>` : ''}
     ` : '';
 
     const cancelHtml = canCancelInbound(r)
       ? `<button type="button" class="btn btn-small inbound-cancel-btn btn-danger" data-row-index="${r.rowIndex}">취소</button>`
       : '';
 
-    const editHintHtml = (isEditableStatus && !isEditableToday)
-      ? `<div class="inbound-edit-hint muted">당일 건만 수정 가능합니다</div>`
-      : '';
+    const editHintHtml = isSaving
+      ? `<div class="inbound-edit-hint muted">저장 중입니다. 잠시 후 다시 시도하세요</div>`
+      : ((isEditableStatus && !isEditableToday)
+        ? `<div class="inbound-edit-hint muted">당일 건만 수정 가능합니다</div>`
+        : '');
 
     const row1Html = (stockButtonsHtml || qtyEditHtml)
       ? `<div class="inbound-card-actions inbound-card-actions-row1">${stockButtonsHtml}${qtyEditHtml}</div>`
@@ -3456,7 +3492,8 @@
       remainingQty: Math.max(0, check.requestedQty - check.cumulativeAfter),
       status: check.status,
       category: check.status,
-      lastInboundDate: todayDateStr_()
+      lastInboundDate: todayDateStr_(),
+      shipLimitQty: undefined // 누적입고수량이 바뀌었으므로 shipLimitOf_가 새 값으로 다시 계산하게 한다
     });
   }
 
@@ -3467,6 +3504,8 @@
     return Object.assign({}, row, {
       shippedQty: check.shippedCumulative,
       remainingShipQty: Math.max(0, check.requestedQty - check.shippedCumulative),
+      shipLimitQty: check.shipLimitQty,
+      shippableQty: check.shippableQty,
       status: check.status,
       category: check.status,
       outboundDone: check.status === '출고완료',
@@ -3571,14 +3610,19 @@
         const check = await Api.post('checkInboundQty', { site: state.site, rowIndex: row.rowIndex, quantity: qty, pin: state.user.pin });
         closeModal();
         const original = state.inboundRows.find((r) => r.rowIndex === row.rowIndex);
+        inboundSavingRows.add(row.rowIndex);
         if (original) updateInboundRowInPlace(buildOptimisticInboundRow_(original, check));
         toast('입고 처리되었습니다.', 'success');
 
         // 2단계(백그라운드): 실제 반영(입고수량 갱신 + 재고 증가)은 화면 갱신 뒤에 진행하고,
-        // 실패하면 방금 바꾼 카드를 원래 상태로 되돌린다.
+        // 실패하면 방금 바꾼 카드를 원래 상태로 되돌린다. 끝날 때까지 카드 버튼은 잠겨 있다.
         Api.post('inboundByManager', { site: state.site, rowIndex: row.rowIndex, quantity: qty, pin: state.user.pin })
-          .then((updatedRow) => updateInboundRowInPlace(updatedRow))
+          .then((updatedRow) => {
+            inboundSavingRows.delete(row.rowIndex);
+            updateInboundRowInPlace(updatedRow);
+          })
           .catch((err) => {
+            inboundSavingRows.delete(row.rowIndex);
             if (original) updateInboundRowInPlace(original);
             toast(err.message || '입고 처리 중 오류가 발생했습니다.', 'error');
           });
@@ -3604,36 +3648,52 @@
   // 2단계(백그라운드): outboundComplete로 실제 반영(출고 이력 기록 + 재고 차감 + 출고수량 갱신)을
   //   진행하고, 실패하면 화면을 원래 상태로 되돌리고 오류 메시지를 띄운다.
   // 그 요청 건에만(다른 건은 건드리지 않고) 입력한 수량만큼 누적출고수량을 더한다. 선입선출은
-  // 적용하지 않는다(QR 스캔 출고 전용 로직). 출고 수량은 실제 재고수량을 초과할 수 없다:
-  // 재고수량 < 출고수량이면 1단계에서 거부하고 "재고 부족: 현재고 N개, 출고 요청 N개" 오류를
-  // 띄운다(부분 출고로 조용히 줄이지 않음).
+  // 적용하지 않는다(QR 스캔 출고 전용 로직). 출고 수량은 출고 가능 수량(일반 건: 누적입고수량 -
+  // 누적출고수량, 재고사용 건: 요청수량 - 누적출고수량)과 실제 재고수량을 둘 다 넘을 수 없다 —
+  // 넘으면 확인을 막고, 서버도 1·2단계에서 같은 기준으로 다시 거부한다(부분 출고로 조용히 줄이지 않음).
   function openInboundShipModal(row) {
-    const remaining = Math.max(0, Number(row.remainingShipQty) || 0);
+    const available = shippableOf_(row);
     const stockQty = Math.max(0, Number(row.stockQty) || 0);
-    const shippable = Math.min(remaining, stockQty);
+    const shippable = Math.min(available, stockQty);
+    const isStockUse = String(row.stockUse || '').trim().toUpperCase() === 'O';
+    const basis = isStockUse
+      ? `요청 ${Number(row.requestedQty).toLocaleString()}`
+      : `입고 ${Number(row.cumulativeQty).toLocaleString()}`;
     const html = `
       <div class="modal-sheet">
         <h3>출고완료 처리</h3>
         <p class="muted">${escapeHtml(row.itemName)} (${escapeHtml(row.itemId)})</p>
-        <p class="muted">요청수량 ${Number(row.requestedQty).toLocaleString()} · 재고수량 ${stockQty.toLocaleString()} · 출고수량 ${Number(row.shippedQty).toLocaleString()}</p>
-        <p class="muted">출고 가능 수량 ${shippable.toLocaleString()}${shippable < remaining ? ' (재고 부족으로 일부만 출고 가능)' : ''}</p>
+        <p class="muted">요청수량 ${Number(row.requestedQty).toLocaleString()} · 입고수량 ${Number(row.cumulativeQty).toLocaleString()} · 재고수량 ${stockQty.toLocaleString()} · 출고수량 ${Number(row.shippedQty).toLocaleString()}</p>
+        <p class="muted">출고 가능 수량: ${shippable.toLocaleString()} (${basis} − 기출고 ${Number(row.shippedQty).toLocaleString()}${shippable < available ? ', 재고 부족으로 재고수량까지만' : ''})</p>
         <label class="field-label">출고 수량</label>
-        <input type="number" id="inbound-ship-qty" class="input" min="1" max="${shippable || ''}" step="1" inputmode="numeric" placeholder="수량" />
+        <input type="number" id="inbound-ship-qty" class="input" min="1" max="${shippable}" step="1" inputmode="numeric" placeholder="수량" ${shippable > 0 ? '' : 'disabled'} />
         <div class="modal-actions">
           <button class="btn btn-secondary" id="inbound-ship-cancel">취소</button>
-          <button class="btn btn-primary" id="inbound-ship-confirm">확인</button>
+          <button class="btn btn-primary" id="inbound-ship-confirm" ${shippable > 0 ? '' : 'disabled'}>확인</button>
         </div>
       </div>
     `;
     openModal(html);
+    const shipQtyInput = $('#inbound-ship-qty');
     const shipConfirmBtn = $('#inbound-ship-confirm');
     let shipSubmitting = false;
     $('#inbound-ship-cancel').addEventListener('click', closeModal);
+    shipQtyInput.addEventListener('input', () => {
+      if (Number(shipQtyInput.value) > shippable) {
+        shipQtyInput.value = shippable;
+        toast(`출고 가능 수량: ${shippable.toLocaleString()}`, 'error');
+      }
+    });
     shipConfirmBtn.addEventListener('click', async () => {
       if (shipSubmitting) return;
-      const qty = Number($('#inbound-ship-qty').value);
-      if (!qty || qty <= 0) {
+      const raw = shipQtyInput.value.trim();
+      const qty = Number(raw);
+      if (raw === '' || !isFinite(qty) || qty <= 0) {
         toast('올바른 수량을 입력하세요.', 'error');
+        return;
+      }
+      if (qty > shippable) {
+        toast(`출고 가능 수량(${shippable.toLocaleString()})을 넘어 출고할 수 없습니다.`, 'error');
         return;
       }
       shipSubmitting = true;
@@ -3644,14 +3704,20 @@
         const check = await Api.post('checkOutboundQty', { site: state.site, rowIndex: row.rowIndex, quantity: qty, pin: state.user.pin });
         closeModal();
         const original = state.inboundRows.find((r) => r.rowIndex === row.rowIndex);
+        inboundSavingRows.add(row.rowIndex);
         if (original) updateInboundRowInPlace(buildOptimisticOutboundRow_(original, check));
         toast('출고완료 처리되었습니다.', 'success');
 
         // 2단계(백그라운드): 실제 반영(출고 이력 기록 + 재고 차감 + 출고수량 갱신)은 화면 갱신
-        // 뒤에 진행하고, 실패하면 방금 바꾼 카드를 원래 상태로 되돌린다.
+        // 뒤에 진행하고, 실패하면 방금 바꾼 카드를 원래 상태로 되돌린다. 끝날 때까지 카드 버튼은
+        // 잠겨 있다 — 저장 전에 수정을 누르면 서버가 아직 출고 전 상태로 판단하기 때문.
         Api.post('outboundComplete', { site: state.site, rowIndex: row.rowIndex, quantity: qty, pin: state.user.pin })
-          .then((updatedRow) => updateInboundRowInPlace(updatedRow))
+          .then((updatedRow) => {
+            inboundSavingRows.delete(row.rowIndex);
+            updateInboundRowInPlace(updatedRow);
+          })
           .catch((err) => {
+            inboundSavingRows.delete(row.rowIndex);
             if (original) updateInboundRowInPlace(original);
             toast(err.message || '출고완료 처리 중 오류가 발생했습니다.', 'error');
           });
@@ -3670,21 +3736,28 @@
     if (row) openInboundEditModal(row);
   }
 
-  // "수정" 버튼: 입고완료 건은 입고수량(누적입고수량), 출고완료 건은 출고수량(누적출고수량)을
-  // 새 값으로 통째로 고친다(기존 값에 더하는 것이 아님). 요청수량을 넘지 않도록 자르고,
-  // 서버에서 입고여부/출고여부를 새 값 기준으로 다시 판정하고, 현재고는 수정 전후 차이만큼 직접 증감한다.
+  // "수정" 버튼: 입고완료 건은 입고수량(누적입고수량), 부분출고/출고완료 건은 출고수량(누적출고수량)을
+  // 새 값으로 통째로 고친다(기존 값에 더하는 것이 아님). 입고는 요청수량, 출고는 출고 상한(일반 건:
+  // 누적입고수량, 재고사용 건: 요청수량)과 "현재 출고수량 + 재고수량"을 넘지 않아야 한다. 서버에서
+  // 입고여부/출고여부를 새 값 기준으로 다시 판정하고, 현재고는 수정 전후 차이만큼 직접 증감한다.
   function openInboundEditModal(row) {
     const isInboundEdit = row.status === '입고완료';
     const requested = Math.max(0, Number(row.requestedQty) || 0);
     const currentQty = isInboundEdit ? Number(row.cumulativeQty) || 0 : Number(row.shippedQty) || 0;
     const label = isInboundEdit ? '입고 수량' : '출고 수량';
+    const maxQty = isInboundEdit
+      ? requested
+      : Math.min(shipLimitOf_(row), currentQty + Math.max(0, Number(row.stockQty) || 0));
+    const limitHint = isInboundEdit
+      ? `요청수량 ${requested.toLocaleString()}`
+      : `요청수량 ${requested.toLocaleString()} · 입고수량 ${Number(row.cumulativeQty).toLocaleString()} · 출고 가능 수량(누적): ${maxQty.toLocaleString()}`;
     const html = `
       <div class="modal-sheet">
         <h3>${isInboundEdit ? '입고수량 수정' : '출고수량 수정'}</h3>
         <p class="muted">${escapeHtml(row.itemName)} (${escapeHtml(row.itemId)})</p>
-        <p class="muted">요청수량 ${requested.toLocaleString()}</p>
+        <p class="muted">${limitHint}</p>
         <label class="field-label">${label}</label>
-        <input type="number" id="inbound-edit-qty" class="input" min="0" max="${requested}" step="1" inputmode="numeric" value="${currentQty}" />
+        <input type="number" id="inbound-edit-qty" class="input" min="0" max="${maxQty}" step="1" inputmode="numeric" value="${currentQty}" />
         <div class="modal-actions">
           <button class="btn btn-secondary" id="inbound-edit-cancel">취소</button>
           <button class="btn btn-primary" id="inbound-edit-confirm">확인</button>
@@ -3698,27 +3771,32 @@
     $('#inbound-edit-cancel').addEventListener('click', closeModal);
     qtyInput.addEventListener('input', () => {
       const val = Number(qtyInput.value);
-      if (val > requested) {
-        qtyInput.value = requested;
-        toast(`최대 ${requested.toLocaleString()}개까지 입력 가능합니다.`, 'error');
+      if (val > maxQty) {
+        qtyInput.value = maxQty;
+        toast(`최대 ${maxQty.toLocaleString()}개까지 입력 가능합니다.`, 'error');
       }
     });
     confirmBtn.addEventListener('click', async () => {
       if (submitting) return;
-      let qty = Number(qtyInput.value);
-      if (qtyInput.value === '' || isNaN(qty) || qty < 0) {
+      const raw = qtyInput.value.trim();
+      const qty = Number(raw);
+      if (raw === '' || !isFinite(qty) || qty < 0) {
         toast('올바른 수량을 입력하세요.', 'error');
         return;
       }
-      if (qty > requested) {
-        qty = requested;
-        qtyInput.value = requested;
-        toast(`최대 ${requested.toLocaleString()}개까지 입력 가능합니다.`, 'error');
+      if (qty > maxQty) {
+        toast(isInboundEdit
+          ? `최대 ${maxQty.toLocaleString()}개까지 입력 가능합니다.`
+          : `출고 가능 수량(${maxQty.toLocaleString()})을 넘어 수정할 수 없습니다.`, 'error');
+        return;
       }
       submitting = true;
       confirmBtn.disabled = true;
       try {
-        await Api.post('editInboundQty', { site: state.site, rowIndex: row.rowIndex, quantity: qty, pin: state.user.pin });
+        await Api.post('editInboundQty', {
+          site: state.site, rowIndex: row.rowIndex, quantity: qty, pin: state.user.pin,
+          target: isInboundEdit ? 'inbound' : 'outbound'
+        });
         toast('수정되었습니다.', 'success');
         closeModal();
         await fetchInboundRows();

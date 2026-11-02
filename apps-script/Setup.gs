@@ -255,6 +255,7 @@ const SNAPSHOT_AUTO_START_MONTH = '2026-11';
 const NOTIFY_LOG_SHEET_NAME = '알림로그';
 const STOCK_RECONCILE_SHEET_NAME = '재고대사';
 const INBOUND_AUDIT_SHEET_NAME = '입고상태점검';
+const OUTBOUND_OVER_AUDIT_SHEET_NAME = '출고초과점검';
 // 스크립트 속성 키: 스냅샷이 완료된 마지막 달 / 안전망의 마지막 시도 시각(ms).
 const SNAPSHOT_DONE_PROP = 'STOCK_SNAPSHOT_DONE_MONTH';
 const SNAPSHOT_ATTEMPT_PROP = 'STOCK_SNAPSHOT_LAST_ATTEMPT';
@@ -533,6 +534,52 @@ function runInboundStatusAuditFromMenu() {
     : '점검 결과: 이상 없음');
 }
 
+// ------------------------- 출고 초과 점검 -------------------------
+
+// 입고확인 화면 출고에 상한 검증(outboundLimitQty_)이 들어가기 전에 처리된 건, QR 스캔 출고(요청수량
+// 기준 선입선출) 등으로 누적출고수량이 출고 상한(일반 건: 누적입고수량, 재고사용 건: 요청수량)을 넘은
+// 행을 사이트별로 찾아 출고초과점검 시트에 기록만 한다. 시트 값은 고치지 않는다. 안전재고 건은 이 화면에서
+// 출고하지 않으므로 출고수량이 있으면 그대로 목록에 올린다(상한 0).
+function runOutboundOverAudit_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const rows = [];
+  SITES.forEach(site => {
+    if (!ss.getSheetByName(poInSheetName_(site))) return;
+    readAll_(sheet_(poInSheetName_(site))).forEach(r => {
+      const shipped = Number(r['누적출고수량']) || 0;
+      if (shipped <= 0) return;
+      const isSafety = isSafetyStockRow_(r);
+      const limit = isSafety ? 0 : outboundLimitQty_(r);
+      if (shipped <= limit) return;
+      rows.push([
+        site, r._row, r['자재코드'] || '', r['자재명'] || '', r['라인'] || '', r['구매요청번호'] || '',
+        Number(r['요청수량']) || 0, Number(r['누적입고수량']) || 0, shipped, shipped - limit,
+        isSafety ? '안전재고 건(이 화면 출고 대상 아님)' : outboundLimitBasis_(r) + ' ' + limit,
+        computeInboundStatus_(r).status, sheetDateStr_(r['최종출고일'])
+      ]);
+    });
+  });
+
+  let sheet = ss.getSheetByName(OUTBOUND_OVER_AUDIT_SHEET_NAME);
+  if (!sheet) sheet = ss.insertSheet(OUTBOUND_OVER_AUDIT_SHEET_NAME);
+  sheet.clear();
+  const checkedAt = Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd HH:mm:ss');
+  const header = ['사이트', '시트 행', '자재코드', '자재명', '라인', '구매요청번호', '요청수량', '누적입고',
+    '누적출고', '초과 수량', '출고 상한', '화면 상태', '최종출고일 ' + checkedAt];
+  sheet.getRange(1, 1, 1, header.length).setValues([header]).setFontWeight('bold').setBackground('#f1f3f4');
+  sheet.setFrozenRows(1);
+  if (rows.length) sheet.getRange(2, 1, rows.length, header.length).setValues(rows);
+  return rows.length;
+}
+
+// "자재관리 > 출고 초과 점검" 메뉴.
+function runOutboundOverAuditFromMenu() {
+  const count = runOutboundOverAudit_();
+  SpreadsheetApp.getUi().alert(count
+    ? '출고수량이 입고(출고 상한)를 넘은 행 ' + count + '건 — "' + OUTBOUND_OVER_AUDIT_SHEET_NAME + '" 시트 확인\n\n시트 값은 변경하지 않았습니다.'
+    : '점검 결과: 이상 없음');
+}
+
 // ------------------------- 취소 건 구매요청번호 표시 -------------------------
 
 // "자재관리 > 취소 건 구매요청번호 표시 채우기" 메뉴.
@@ -618,7 +665,7 @@ function setupTrigger() {
 
 /**
  * 스프레드시트를 열 때마다 자동으로 실행되는 심플 트리거(함수명 고정, Apps Script가 직접 호출).
- * 상단에 "자재관리" 메뉴(자재 동기화 / 이번 달 재고 스냅샷 생성 / 재고 대사 / 입고 상태 점검 / 취소 건 구매요청번호 표시 채우기 / 장기보관 표시 새로고침)를 추가한다.
+ * 상단에 "자재관리" 메뉴(자재 동기화 / 이번 달 재고 스냅샷 생성 / 재고 대사 / 입고 상태 점검 / 출고 초과 점검 / 취소 건 구매요청번호 표시 채우기 / 장기보관 표시 새로고침)를 추가한다.
  */
 function onOpen() {
   SpreadsheetApp.getUi()
@@ -628,6 +675,7 @@ function onOpen() {
     .addItem('이번 달 재고 스냅샷 생성', 'createStockSnapshotFromMenu')
     .addItem('재고 대사(검증)', 'runStockReconciliationFromMenu')
     .addItem('입고 상태 점검', 'runInboundStatusAuditFromMenu')
+    .addItem('출고 초과 점검', 'runOutboundOverAuditFromMenu')
     .addItem('취소 건 구매요청번호 표시 채우기', 'fillCancelledPurchaseReqNoFromMenu')
     .addSeparator()
     .addItem('장기보관 표시 새로고침', 'refreshLongTermMarksFromMenu')

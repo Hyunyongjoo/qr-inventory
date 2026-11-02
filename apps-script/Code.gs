@@ -784,6 +784,57 @@ function isOutboundPartialRow_(r) {
   return shipped > 0 && shipped < requested;
 }
 
+// 입고확인 화면에서 이 행이 누적으로 출고할 수 있는 상한(출고 가능 수량 = 상한 - 누적출고수량).
+// 일반 구매 건은 실제로 입고된 누적입고수량까지만, 재고사용(O) 건은 입고 없이 기존 재고로 충당하므로
+// 요청수량까지 출고할 수 있다. 어느 쪽이든 요청수량은 넘지 않는다(요청수량만큼 출고되면 출고완료로 마감).
+// 안전재고 건은 이 화면에서 출고하지 않으므로 호출부에서 먼저 막는다.
+function outboundLimitQty_(r) {
+  const requested = Number(r['요청수량']) || 0;
+  if (isStockCoveredRow_(r)) return requested;
+  return Math.max(0, Math.min(Number(r['누적입고수량']) || 0, requested));
+}
+
+// 상한 설명 문구(오류 메시지/점검 시트 공용).
+function outboundLimitBasis_(r) {
+  return isStockCoveredRow_(r) ? '재고사용: 요청수량 기준' : '누적입고수량 기준';
+}
+
+// 출고 수량 입력값 검증: 빈 값/숫자가 아닌 값/0 이하를 막는다.
+function parseOutboundQty_(value) {
+  if (value === '' || value == null || String(value).trim() === '') throw new Error('출고 수량을 입력하세요.');
+  const qty = Number(value);
+  if (!isFinite(qty)) throw new Error('출고 수량은 숫자로 입력하세요.');
+  if (qty <= 0) throw new Error('출고 수량은 0보다 커야 합니다.');
+  return qty;
+}
+
+// 이 행의 누적출고수량을 newShipped로 만들었을 때 상한을 넘으면 거부한다. 출고(기존 누적 + 이번 수량)와
+// 수정(새 누적값) 모두 이 함수로 검증하므로, 다른 날 출고분/QR 선입선출 출고분까지 포함해 비교된다.
+function assertWithinOutboundLimit_(r, newShipped) {
+  const limit = outboundLimitQty_(r);
+  if (newShipped <= limit) return;
+  const shipped = Number(r['누적출고수량']) || 0;
+  const available = Math.max(0, limit - shipped);
+  throw new Error(`출고 가능 수량 초과: 출고 가능 수량 ${available} (${outboundLimitBasis_(r)} ${limit} − 기출고 ${shipped}), ` +
+    `요청 후 누적출고 ${newShipped}`);
+}
+
+// 시트 날짜 셀 값을 'yyyy-MM-dd' 문자열로 맞춘다. 스크립트가 'yyyy-MM-dd' 문자열로 써도 시트가 자동으로
+// Date로 바꿔 저장하므로(서식이 일반 텍스트가 아닌 열), 읽을 때 Date 객체가 돌아온다 — 그대로 String()하면
+// "Mon Nov 02 2026 ..."이 되어 당일 비교가 항상 실패한다. 시트의 날짜는 스프레드시트 시간대 자정이므로
+// 그 시간대로 포맷해야 날짜가 밀리지 않는다.
+let spreadsheetTimeZoneCache_ = null;
+function sheetDateStr_(v) {
+  if (v instanceof Date) {
+    if (isNaN(v.getTime())) return '';
+    if (!spreadsheetTimeZoneCache_) {
+      spreadsheetTimeZoneCache_ = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone() || 'Asia/Seoul';
+    }
+    return Utilities.formatDate(v, spreadsheetTimeZoneCache_, 'yyyy-MM-dd');
+  }
+  return String(v == null ? '' : v).trim();
+}
+
 // 입고 처리 대상 행인지: 입고확인 화면과 똑같이 computeInboundStatus_의 상태로 판단한다.
 // 구매완료/부분입고 건(안전재고 건은 구매요청번호 없이 등록되므로 구매대기 포함)이면서 아직 잔여수량이
 // 남은 행만 대상이다. 스캔 입고(stockIn_, QR/OCR 공통)와 입고확인 화면의 "입고" 버튼(inboundByManager_)이
@@ -1099,6 +1150,8 @@ function poRowToInboundView_(site, po, stockMap, pendingMap) {
     remainingQty: requested - cumulative,
     shippedQty: shipped,
     remainingShipQty: requested - shipped,
+    shipLimitQty: outboundLimitQty_(po),
+    shippableQty: Math.max(0, outboundLimitQty_(po) - shipped),
     dueDate: po['필요일자'] || '',
     status: info.status,
     category: info.category,
@@ -1110,8 +1163,8 @@ function poRowToInboundView_(site, po, stockMap, pendingMap) {
     note2: po['특이사항2'] || '',
     lineOrderNo: po['라인구매번호'] || '',
     purchaseReqNo: po['구매요청번호'] || '',
-    lastInboundDate: po['최종입고일'] || '',
-    lastOutboundDate: po['최종출고일'] || ''
+    lastInboundDate: sheetDateStr_(po['최종입고일']),
+    lastOutboundDate: sheetDateStr_(po['최종출고일'])
   };
 }
 
@@ -1908,16 +1961,19 @@ function inboundByManager_(body) {
 }
 
 // 입고확인 화면의 "출고완료" 버튼 1단계: 실제로 반영하지 않고 재고 시트 현재고만 빠르게 읽어,
-// 출고 수량이 현재고를 넘는지만 먼저 확인한다. 출고 이력 기록/재고 차감/구매발주및입고 시트
-// 출고수량 갱신을 모두 처리하는 outboundComplete_(2단계)보다 훨씬 빨리 끝난다. 화면은 이 결과로
-// 출고완료/부분출고 상태를 먼저 낙관적으로 보여주고, outboundComplete_는 화면이 이미 갱신된 뒤
-// 백그라운드로 호출해 실제 시트에 반영한다(실패 시 화면에서 원래 상태로 복구).
+// 출고 수량이 출고 가능 수량(outboundLimitQty_ - 누적출고수량)과 현재고를 넘는지만 먼저 확인한다.
+// 출고 이력 기록/재고 차감/구매발주및입고 시트 출고수량 갱신을 모두 처리하는 outboundComplete_(2단계)
+// 보다 훨씬 빨리 끝난다. 화면은 이 결과로 출고완료/부분출고 상태를 먼저 낙관적으로 보여주고,
+// outboundComplete_는 화면이 이미 갱신된 뒤 백그라운드로 호출해 실제 시트에 반영한다(실패 시 화면에서
+// 원래 상태로 복구). 락 밖의 사전 확인이므로 최종 검증은 outboundComplete_가 락 안에서 다시 한다.
 function checkOutboundQty_(body) {
   const site = assertSite_(body.site);
   assertManagerRole_(body.pin);
   const row = findPoRowByIndex_(site, body.rowIndex);
-  const qty = Number(body.quantity);
-  if (!qty || qty <= 0) throw new Error('출고 수량은 0보다 커야 합니다.');
+  if (isSafetyStockRow_(row)) throw new Error('안전재고 건은 이 화면에서 출고할 수 없습니다.');
+  if (isOutboundDoneRow_(row)) throw new Error('이미 출고완료 처리된 요청입니다.');
+  const qty = parseOutboundQty_(body.quantity);
+  assertWithinOutboundLimit_(row, (Number(row['누적출고수량']) || 0) + qty);
 
   const itemId = row['자재코드'];
   const stockQty = getStockQty_(site, itemId);
@@ -1929,7 +1985,9 @@ function checkOutboundQty_(body) {
   const shippedBefore = Number(row['누적출고수량']) || 0;
   const shippedCumulative = shippedBefore + qty;
   const status = shippedCumulative < requestedQty ? '부분출고' : '출고완료';
-  return { stockQty, requestedQty, shippedBefore, shippedCumulative, status };
+  const shipLimitQty = outboundLimitQty_(row);
+  return { stockQty, requestedQty, shippedBefore, shippedCumulative, status,
+    shipLimitQty, shippableQty: Math.max(0, shipLimitQty - shippedCumulative) };
 }
 
 // 입고확인 화면의 "출고완료" 버튼: 재고사용(O) 또는 입고완료 상태인 요청을 그 라인으로 출고 처리한다.
@@ -1954,8 +2012,10 @@ function outboundComplete_(body) {
       throw new Error('재고사용 또는 입고(부분입고 포함) 상태에서만 출고완료 처리할 수 있습니다.');
     }
 
-    const qty = Number(body.quantity);
-    if (!qty || qty <= 0) throw new Error('출고 수량은 0보다 커야 합니다.');
+    // 락 안에서 방금 읽은 최신 행 기준으로, 이번 수량을 더한 누적출고수량이 상한(일반 건: 누적입고수량,
+    // 재고사용 건: 요청수량)을 넘으면 거부한다. 부분출고 건은 이미 출고된 수량만큼 출고 가능 수량이 줄어든다.
+    const qty = parseOutboundQty_(body.quantity);
+    assertWithinOutboundLimit_(row, (Number(row['누적출고수량']) || 0) + qty);
 
     const itemId = row['자재코드'];
     let item;
@@ -2001,12 +2061,13 @@ function outboundComplete_(body) {
   }
 }
 
-// 입고확인 화면의 "수정" 버튼: 입고완료/출고완료로 이미 확정된 건의 수량을 당일에 한해 고친다.
-// 대상 컬럼은 현재 상태(computeInboundStatus_)로 판단한다 — 입고완료면 누적입고수량, 출고완료면
-// 누적출고수량. 두 상태는 서로 배타적으로만 표시되므로(출고완료가 입고완료보다 우선 판정됨)
-// 카드에 뜬 상태와 항상 일치한다. 입력값은 요청수량을 넘지 않게 자르고(잔여수량이 마이너스가
-// 되지 않도록), 저장 후 입고여부/출고여부를 새 수량 기준으로 다시 계산한다. 재고 시트 현재고
-// 반영 방식은 입고/출고가 서로 다르다(각 분기 주석 참고).
+// 입고확인 화면의 "수정" 버튼: 입고완료/부분출고/출고완료로 이미 확정된 건의 수량을 당일에 한해 고친다.
+// 대상 컬럼은 현재 상태(computeInboundStatus_)로 판단한다 — 입고완료면 누적입고수량, 부분출고/출고완료면
+// 누적출고수량. 출고 상태가 입고 상태보다 우선 판정되므로 카드에 뜬 상태와 항상 일치하고, 화면이 보낸
+// target(inbound/outbound)이 시트의 최신 상태와 다르면(예: 백그라운드 저장 전 화면) 거부한다.
+// 입고 수량은 요청수량을 넘지 않게 자르고(잔여수량이 마이너스가 되지 않도록), 출고 수량은 출고 상한
+// (assertWithinOutboundLimit_)을 넘으면 거부한다. 저장 후 입고여부/출고여부를 새 수량 기준으로 다시
+// 계산한다. 재고 시트 현재고 반영 방식은 입고/출고가 서로 다르다(각 분기 주석 참고).
 function editInboundQty_(body) {
   const lock = scriptLock_();
   lock.waitLock(30000);
@@ -2017,16 +2078,22 @@ function editInboundQty_(body) {
     const info = computeInboundStatus_(row);
     const today = Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd');
     const requested = Number(row['요청수량']) || 0;
+    const isOutboundEdit = info.status === '출고완료' || info.status === '부분출고';
+    const target = isOutboundEdit ? 'outbound' : (info.status === '입고완료' ? 'inbound' : '');
+    if (body.target && target && body.target !== target) {
+      throw new Error('화면 상태와 시트 상태가 다릅니다(현재 ' + info.status + '). 새로고침 후 다시 시도하세요.');
+    }
 
     let qty = Number(body.quantity);
-    if (body.quantity === '' || body.quantity == null || isNaN(qty) || qty < 0) {
+    if (body.quantity === '' || body.quantity == null || String(body.quantity).trim() === '' ||
+        !isFinite(qty) || qty < 0) {
       throw new Error('올바른 수량을 입력하세요.');
     }
-    if (qty > requested) qty = requested;
     const item = assertItemExists_(row['자재코드']);
 
     if (info.status === '입고완료') {
-      const lastDate = String(row['최종입고일'] || '').trim();
+      if (qty > requested) qty = requested;
+      const lastDate = sheetDateStr_(row['최종입고일']);
       if (lastDate !== today) throw new Error('당일 건만 수정 가능합니다.');
       const receivedBefore = Number(row['누적입고수량']) || 0;
       const remaining = Math.max(0, requested - qty);
@@ -2040,11 +2107,21 @@ function editInboundQty_(body) {
       // 차이(delta)만큼만 현재고에 추가로 더하거나 뺀다.
       const delta = qty - receivedBefore;
       incrementStockQuantity_(site, row['자재코드'], delta, item);
-    } else if (info.status === '출고완료') {
-      const lastDate = String(row['최종출고일'] || '').trim();
+    } else if (isOutboundEdit) {
+      const lastDate = sheetDateStr_(row['최종출고일']);
       if (lastDate !== today) throw new Error('당일 건만 수정 가능합니다.');
-      const outboundStatus = qty <= 0 ? '' : (qty < requested ? '부분출고' : '출고완료');
+      // 수정 후 누적출고수량(다른 날/QR 출고분 포함 전체)이 출고 상한을 넘으면 거부한다.
+      assertWithinOutboundLimit_(row, qty);
       const shippedBefore = Number(row['누적출고수량']) || 0;
+      // 출고를 늘리는 수정은 늘어난 만큼 재고가 있어야 한다(출고 처리와 동일한 재고 검증).
+      const increase = qty - shippedBefore;
+      if (increase > 0) {
+        const current = getStockQty_(site, row['자재코드']);
+        if (current < increase) {
+          throw new Error(`재고 부족: 현재고 ${current}${item.Unit || ''}, 추가 출고 ${increase}${item.Unit || ''}`);
+        }
+      }
+      const outboundStatus = qty <= 0 ? '' : (qty < requested ? '부분출고' : '출고완료');
       updateRow_(sheet_(poInSheetName_(site)), row._row, {
         '누적출고수량': qty,
         '출고여부': outboundStatus
@@ -2055,7 +2132,7 @@ function editInboundQty_(body) {
       const delta = qty - shippedBefore;
       decrementStockQuantity_(site, row['자재코드'], delta, item);
     } else {
-      throw new Error('입고완료 또는 출고완료 상태에서만 수정할 수 있습니다.');
+      throw new Error('입고완료, 부분출고 또는 출고완료 상태에서만 수정할 수 있습니다.');
     }
 
     return poRowToInboundView_(site, findPoRowByIndex_(site, body.rowIndex));

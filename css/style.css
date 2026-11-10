@@ -928,3 +928,55 @@ html, body {
   #view-container { max-width: 560px; margin: 0 auto; width: 100%; }
   #bottom-nav { max-width: 560px; left: 50%; transform: translateX(-50%); border-radius: 16px 16px 0 0; }
 }
+
+/* ---------- 청구서 관리 (구매유형 · ERP 등록) ---------- */
+.action-btn-erp { border-color: var(--teal); color: var(--teal); }
+.erp-bot-status {
+  font-size: 13px; padding: 8px 12px; margin-bottom: 10px;
+  border-radius: var(--radius); background: var(--surface); border: 1px solid var(--border); color: var(--text-muted);
+}
+.erp-bot-status:empty { display: none; }
+.erp-bot-status.is-offline { color: var(--danger); border-color: var(--danger); }
+.erp-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.erp-filters .select { flex: 1 1 140px; width: auto; margin-bottom: 0; }
+.erp-tabs { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.erp-tab-btn {
+  flex: 1; min-height: 44px; border-radius: var(--radius); border: 1px solid var(--border);
+  background: var(--surface); color: var(--text); font-size: 14px;
+}
+.erp-tab-btn.is-active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.erp-row { padding: 12px; }
+.erp-row.is-urgent { border-color: var(--danger); box-shadow: inset 4px 0 0 var(--danger); }
+.erp-row.is-selected { background: var(--surface-2); }
+.erp-row-head { display: flex; align-items: center; gap: 10px; }
+.erp-row-check { width: 22px; height: 22px; flex-shrink: 0; }
+.erp-row-title { font-weight: 600; font-size: 15px; word-break: break-all; }
+.erp-row-sub { font-size: 13px; color: var(--text-muted); margin-top: 4px; word-break: break-all; }
+.erp-row-note { font-size: 13px; margin-top: 4px; color: var(--warn); word-break: break-all; }
+.erp-row-type { font-size: 13px; margin-top: 6px; }
+.erp-urgent-badge {
+  display: inline-block; background: var(--danger); color: #fff; font-size: 11px; font-weight: 700;
+  border-radius: 6px; padding: 1px 6px; margin-right: 6px; vertical-align: middle;
+}
+.erp-chip { display: inline-block; font-size: 11px; border-radius: 6px; padding: 1px 6px; margin-left: 4px; border: 1px solid var(--border); }
+.erp-chip-proposed { color: var(--text-muted); border-style: dashed; }
+.erp-chip-fixed { color: var(--success); border-color: var(--success); }
+.erp-chip-warn { color: var(--warn); border-color: var(--warn); }
+.erp-status { font-size: 13px; margin-top: 6px; font-weight: 600; word-break: break-all; }
+.erp-status-wait { color: var(--warn); }
+.erp-status-run { color: var(--accent); }
+.erp-status-done { color: var(--success); }
+.erp-status-fail { color: var(--danger); }
+.erp-footer { max-height: 62vh; overflow-y: auto; }
+.erp-footer .select { margin-bottom: 8px; }
+.erp-vars { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 6px 8px; margin-bottom: 8px; }
+.erp-var { display: flex; flex-direction: column; font-size: 12px; color: var(--text-muted); gap: 2px; }
+.erp-var .input { margin-bottom: 0; padding: 10px; }
+.erp-weekly-hint { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 13px; margin-bottom: 8px; color: var(--warn); }
+.erp-footer-warn { font-size: 13px; color: var(--danger); margin-bottom: 8px; }
+.erp-footer-actions { display: flex; gap: 8px; }
+.erp-footer-actions .btn { flex: 1; min-height: 48px; padding-left: 6px; padding-right: 6px; }
+.erp-footer-actions .btn:disabled { opacity: .45; }
+.erp-confirm-main { font-size: 16px; font-weight: 600; }
+.erp-confirm-bot { font-size: 13px; color: var(--text-muted); margin: 8px 0; }
+.erp-confirm-bot.is-offline { color: var(--danger); }

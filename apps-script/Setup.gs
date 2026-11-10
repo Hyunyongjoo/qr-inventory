@@ -90,6 +90,9 @@ function setupSpreadsheet() {
   // 평택_묶음자재 구성표 데이터는 스프레드시트에 직접 업로드해 관리한다.
   seedPyeongtaekSetUsedMaterials_(ss);
 
+  // 구매유형 조건표 시트 (없거나 비어 있을 때만 초안 데이터로 채움)
+  setupPurchaseTypeSheet();
+
   // 매월 1일 00시에 현재고를 "YY-MM-DD 재고"(생성일) 열로 기록하는 스냅샷 트리거 (이전 롤오버 트리거는 제거됨)
   setupMonthlySnapshotTrigger();
 
@@ -679,7 +682,81 @@ function onOpen() {
     .addItem('취소 건 구매요청번호 표시 채우기', 'fillCancelledPurchaseReqNoFromMenu')
     .addSeparator()
     .addItem('장기보관 표시 새로고침', 'refreshLongTermMarksFromMenu')
+    .addSeparator()
+    .addItem('구매유형 시트 만들기', 'setupPurchaseTypeSheetFromMenu')
+    .addItem('구매유형 캐시 새로고침', 'refreshPurchaseTypeCacheFromMenu')
     .addToUi();
+}
+
+/**
+ * 심플 트리거: 구매유형 시트를 편집하면 조건표 캐시(10분)를 지워 PWA에 바로 반영되게 한다.
+ * 다른 시트 편집에는 아무 것도 하지 않는다.
+ */
+function onEdit(e) {
+  try {
+    if (e && e.range && e.range.getSheet().getName() === PURCHASE_TYPE_SHEET_NAME) clearPurchaseTypeCache_();
+  } catch (err) {
+    // 심플 트리거 실패는 무시 (캐시는 10분 뒤 자동 만료)
+  }
+}
+
+// ------------------------- 구매유형 조건표 -------------------------
+
+// 구매유형_조건표_초안.xlsx의 행 (설비구분 기본값 SCRUBBER, 기본값: 화성 H-01 / 평택 P-02,
+// 등록단위 "주 1회 묶음"은 "주간묶음"으로 통일). 열 순서는 Erp.gs PURCHASE_TYPE_HEADERS와 같다.
+const PURCHASE_TYPE_SEED_ROWS = [
+    ["화성", "H-01", "유상 A/S 일반", "A/S 자재", "유상", "FIELD유상자재", "CS유상", "고객판매", "SCRUBBER", "[SCR] 삼성 화성 A/S {SITE} {PART} ({버전})({공정}) {전체/부분} 구매", "SITE, PART, 버전, 공정, 전체/부분", "건별", "Y", "Y", ""],
+    ["화성", "H-02", "유상 폐수 BOTTLE", "A/S 자재", "유상", "FIELD유상자재", "CS유상", "고객판매", "SCRUBBER", "[SCR] 삼성 화성 A/S 폐수 BOTTLE 구매", "없음(고정)", "건별", "", "Y", "유상 코드 그대로 쓰는지"],
+    ["화성", "H-03", "유상 안전재고", "A/S 자재", "유상", "FIELD유상자재", "CS유상", "고객판매", "SCRUBBER", "[SCR] 삼성 화성 A/S 안전재고 구매", "없음(고정)", "건별", "", "Y", "유상 코드 그대로 쓰는지"],
+    ["화성", "H-04", "유상 사외세정", "A/S 자재", "유상", "FIELD유상자재", "CS유상", "고객판매", "SCRUBBER", "[SCR] 삼성 화성 A/S 사외세정-{업체명} ({반출일}) -{PART} 구매", "업체명, 반출일(여러 개 가능), PART", "건별", "", "Y", "반출일 표기 형식 통일(251217 / 12월23일 / 25.01.02 혼용)"],
+    ["화성", "H-05", "CS무상 (W/O)", "A/S 자재", "무상", "PART 보증기간 무상", "CS귀책 무상", "설비 WTY OUT 고장 대응", "SCRUBBER", "[SCR] 삼성 화성 {MM}월 {N}주차 CS무상 자재 구매 요청 件", "월·주차(날짜로 자동)", "주간묶음", "", "Y", ""],
+    ["화성", "H-06", "무상 소모품", "A/S 자재", "무상", "유지보수(소모자재)", "부자재", "소모성자재(볼트장갑,가스,포장지 등)", "SCRUBBER", "[SCR] 삼성 화성 A/S(무상)-소모품 {SITE} {PART} 구매", "SITE, PART", "건별", "", "Y", ""],
+    ["화성", "H-07", "무상 환경안전용품", "A/S 자재", "무상", "환경안전용품", "점검관리", "안전용품", "SCRUBBER", "[SCR] 삼성 화성 A/S(무상)-환경안전용품 {SITE} {PART} 구매", "SITE, PART", "건별", "", "Y", ""],
+    ["화성", "H-08", "무상 공구/JIG", "A/S 자재", "무상", "환경안전용품", "부자재", "계측기 치공구 JIG", "SCRUBBER", "[SCR] 삼성 화성 A/S(무상)-환경안전용품 {SITE} {PART} 구매", "SITE, PART", "건별", "", "Y", "유무상 상세와 명칭이 환경안전용품과 같은지"],
+    ["평택", "P-01", "적정재고 / DEMO", "A/S 자재", "확인필요", "확인필요", "CS유상", "안전재고(긴급/대량수주시)유지", "SCRUBBER", "[SCR] 삼성평택 {PART} 件", "PART", "건별", "", "Y", "유상/무상 및 상세"],
+    ["평택", "P-02", "개조개선", "A/S 자재", "유상", "자재판매 / FIELD유상자재", "확인필요", "확인필요", "SCRUBBER", "[SCR] 삼성평택 {PART} 件", "PART", "건별", "Y", "Y", "상세 2개 중 구분 기준, 용도·사유"],
+    ["평택", "P-03", "W/I PART 무상", "A/S 자재", "무상", "W/I 설비보증기간 무상", "영업귀책 무상", "설비 WTY IN 고장부품 대응", "SCRUBBER", "[SCR] 삼성평택 {PART} 件", "PART", "건별", "", "Y", "용도 A/S 자재 맞는지"],
+    ["평택", "P-04", "CS무상 (W/O)", "A/S 자재", "무상", "PART 보증기간 무상", "CS귀책 무상", "설비 WTY OUT 고장 대응", "SCRUBBER", "[SCR] 삼성평택 {PART} 件", "PART", "건별", "", "Y", "용도 A/S 자재 맞는지"],
+    ["평택", "P-05", "환경안전용품", "환경안전용품", "무상", "환경안전용품", "점검관리", "안전용품", "SCRUBBER", "[SCR] 삼성평택 {PART} 件", "PART", "건별", "", "Y", ""],
+    ["평택", "P-06", "JIG / 계측기", "환경안전용품", "무상", "환경안전용품", "점검관리", "JIG,치공구,계측기등 수리", "SCRUBBER", "[SCR] 삼성평택 {PART} 件", "PART", "건별", "", "Y", ""],
+    ["평택", "P-07", "신규 SET-UP (소모성)", "신규SETUP자재", "확인필요", "확인필요", "확인필요", "확인필요", "SCRUBBER", "[SCR] 삼성평택 {PART} 件", "PART", "건별", "", "Y", "유무상·사유 조합"]
+];
+
+/**
+ * 구매유형 시트를 만든다. 시트가 없으면 만들고, 데이터가 없을 때만 초안 데이터를 넣는다.
+ * 이미 데이터가 있으면 아무 것도 바꾸지 않는다. 편집기에서 한 번 실행하면 ERP 기능에 필요한
+ * 권한(외부 요청 등) 승인 창도 함께 뜬다.
+ */
+function setupPurchaseTypeSheet() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(PURCHASE_TYPE_SHEET_NAME);
+  if (!sheet) sheet = ss.insertSheet(PURCHASE_TYPE_SHEET_NAME);
+  if (sheet.getLastRow() >= 2) {
+    Logger.log('구매유형 시트에 이미 데이터가 있어 그대로 두었습니다.');
+    clearPurchaseTypeCache_();
+    return '구매유형 시트에 이미 데이터가 있어 그대로 두었습니다.';
+  }
+  sheet.clear();
+  writeSheetHeader_(sheet, PURCHASE_TYPE_HEADERS, []);
+  sheet.getRange(2, 1, PURCHASE_TYPE_SEED_ROWS.length, PURCHASE_TYPE_HEADERS.length)
+    .setNumberFormat('@')
+    .setValues(PURCHASE_TYPE_SEED_ROWS);
+  clearPurchaseTypeCache_();
+  const msg = '구매유형 시트 생성: ' + PURCHASE_TYPE_SEED_ROWS.length + '개 유형 입력';
+  Logger.log(msg);
+  return msg;
+}
+
+function setupPurchaseTypeSheetFromMenu() {
+  SpreadsheetApp.getUi().alert(setupPurchaseTypeSheet());
+}
+
+function refreshPurchaseTypeCacheFromMenu() {
+  clearPurchaseTypeCache_();
+  const types = loadPurchaseTypes_();
+  const incomplete = types.filter(t => t.incomplete);
+  SpreadsheetApp.getUi().alert('구매유형 ' + types.length + '개를 다시 읽었습니다.' +
+    (incomplete.length ? '\n\n조건 미완성: ' + incomplete.map(t => t.code + '(' + t.missing.join(', ') + ')').join(', ') : ''));
 }
 
 /**

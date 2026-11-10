@@ -66,6 +66,14 @@ const ensuredColumnsCache_ = {};
 // ------------------------- 라우터 -------------------------
 
 function doGet(e) {
+  // ERP 자동등록 PC 전용(Erp.gs): 응답 형식이 {ok, ...}로 PWA용 {success, data}와 다르다.
+  if ((e.parameter.action || '') === 'pending') {
+    try {
+      return jsonResponse_(erpPending_(e.parameter));
+    } catch (err) {
+      return jsonResponse_({ ok: false, error: String(err.message || err) });
+    }
+  }
   try {
     const action = e.parameter.action || 'ping';
     let result;
@@ -141,6 +149,9 @@ function doGet(e) {
       case 'getTransferDownload':
         result = getTransferDownload_(e.parameter.startDate || '', e.parameter.endDate || '', e.parameter.supplySite || '');
         break;
+      case 'erpBotStatus':
+        result = erpBotStatus_(assertSite_(e.parameter.site || ''));
+        break;
       default:
         throw new Error('알 수 없는 action: ' + action);
     }
@@ -155,7 +166,7 @@ function doGet(e) {
 const IDEMPOTENT_ACTIONS = [
   'stockIn', 'stockOut', 'submitPurchase', 'stockReturn', 'cancelPurchase', 'updateRequestedQty',
   'stockOutByOrder', 'updateStockUsage', 'inboundByManager', 'outboundComplete', 'editInboundQty',
-  'requestTransfer', 'approveTransfer', 'rejectTransfer', 'returnTransfer'
+  'requestTransfer', 'approveTransfer', 'rejectTransfer', 'returnTransfer', 'erpUpdateRequests'
 ];
 // 처리 완료된 requestId의 응답을 보관하는 시간(초). CacheService 최대값(6시간).
 const IDEMPOTENCY_TTL_SEC = 21600;
@@ -164,6 +175,14 @@ function doPost(e) {
   try {
     const body = JSON.parse(e.postData.contents || '{}');
     const action = body.action;
+    // ERP 자동등록 PC 전용(Erp.gs): 응답 형식 {ok, ...}
+    if (action === 'result' || action === 'heartbeat') {
+      try {
+        return jsonResponse_(action === 'result' ? erpResult_(body) : erpHeartbeat_(body));
+      } catch (err) {
+        return jsonResponse_({ ok: false, error: String(err.message || err) });
+      }
+    }
     const requestId = String(body.requestId || '').trim();
     if (requestId && IDEMPOTENT_ACTIONS.indexOf(action) !== -1) {
       return jsonResponse_({ success: true, data: runIdempotent_(action, requestId, () => dispatchPost_(action, body)) });
@@ -284,6 +303,13 @@ function dispatchPost_(action, body) {
     case 'returnTransfer':
       result = returnTransfer_(body);
       break;
+    case 'erpRequestList':
+      // 사번(pin)이 URL에 남지 않도록 조회지만 POST로 받는다(재고를 바꾸지 않으므로 중복 방지 대상 아님).
+      result = erpRequestList_(body.site || '', body.pin || '');
+      break;
+    case 'erpUpdateRequests':
+      result = erpUpdateRequests_(body);
+      break;
     default:
       throw new Error('알 수 없는 action: ' + action);
   }
@@ -318,7 +344,8 @@ function sheet_(name) {
   // 기존 스프레드시트에 이미 데이터가 있어 Setup.gs가 헤더를 새로 쓰지 못하는 경우를 위해,
   // 입고확인 화면 개편(재고사용/입고/출고완료 버튼)에 필요한 컬럼이 없으면 여기서 안전하게 추가한다.
   if (name.slice(-8) === '_구매발주및입고') {
-    ensureColumnsOnce_(sheet, name, ['누적출고수량', '출고여부', '최종출고일', '비고', '특이사항1', '특이사항2']);
+    // 구매유형/ERP 등록 열(Erp.gs ERP_COLUMNS)은 기존 열 뒤 맨 오른쪽에 붙는다.
+    ensureColumnsOnce_(sheet, name, ['누적출고수량', '출고여부', '최종출고일', '비고', '특이사항1', '특이사항2'].concat(ERP_COLUMNS));
   } else if (name.slice(-3) === '_출고') {
     ensureColumnsOnce_(sheet, name, ['라인구매번호']);
   }
@@ -1555,6 +1582,21 @@ function submitPurchase_(body) {
     const count = pending.length;
     if (!count) throw new Error('등록할 수 있는 자재가 없습니다 (자재코드/수량을 확인하세요).');
 
+    // 구매유형 제안값(Erp.gs): 사이트 기본 유형, 안전용품구매는 환경안전용품 유형. 요청자 화면에는
+    // 보이지 않는 열이고, 조건표가 없거나 읽기에 실패해도 구매요청 저장은 그대로 진행한다.
+    let proposedType = '';
+    try {
+      proposedType = proposePurchaseTypeCode_(site, isSafetySupply);
+    } catch (err) {
+      Logger.log('구매유형 제안 실패 [' + site + ']: ' + (err && err.message || err));
+    }
+    if (proposedType) {
+      pending.forEach(p => {
+        p.row['구매유형코드'] = proposedType;
+        p.row['유형상태'] = TYPE_STATE.PROPOSED;
+      });
+    }
+
     pending.forEach(p => {
       registerNewItemIfMissing_(p.itemId, p.itemName, p.spec);
       appendRow_(sheet, p.row);
@@ -1788,6 +1830,11 @@ function cancelPurchase_(body) {
     } else {
       throw new Error('취소 권한이 없습니다. 신청자 본인 또는 자재담당자/관리자만 취소할 수 있습니다.');
     }
+    // 청구서 등록(ERP 대기/등록중/완료)된 건은 취소하면 ERP와 어긋나므로 막는다(실패 건은 취소 가능).
+    const erpStatus = String(row['ERP상태'] || '').trim();
+    if (ERP_LOCKED_STATUSES.indexOf(erpStatus) !== -1) {
+      throw new Error('ERP 청구서 ' + erpStatus + ' 상태라 취소할 수 없습니다.');
+    }
 
     const updates = { '재고사용(O,X)': '취소' };
     if (!hasRealPurchaseReqNo_(row)) updates['구매요청번호'] = '취소';
@@ -1818,6 +1865,11 @@ function updateRequestedQty_(body) {
     const info = computeInboundStatus_(row);
     if (info.status !== '재고확인중' && info.status !== '구매대기') {
       throw new Error('재고확인중 또는 구매대기 상태에서만 수량을 변경할 수 있습니다.');
+    }
+    // 청구서 등록(ERP 대기/등록중/완료)된 건은 수량을 잠근다(실패 건은 수정 후 재처리 가능).
+    const erpStatus = String(row['ERP상태'] || '').trim();
+    if (ERP_LOCKED_STATUSES.indexOf(erpStatus) !== -1) {
+      throw new Error('ERP 청구서 ' + erpStatus + ' 상태라 수량을 변경할 수 없습니다.');
     }
 
     const qty = Number(body.quantity);
@@ -2494,7 +2546,11 @@ function getPurchaseDownload_(site, startDate, endDate, zone) {
   rows = rows.filter(r => String(r['재고사용(O,X)'] || '').trim().toUpperCase() === 'X' && !hasRealPurchaseReqNo_(r));
   if (zoneQ) rows = rows.filter(r => String(r['라인'] || '').trim() === zoneQ);
   rows = filterByDateRange_(rows, '필요일자', startDate, endDate);
+  return buildPurchaseDownloadRows_(rows, unitMap);
+}
 
+// 구매 다운로드 행 생성(자재코드별 합산). 구매 다운로드 화면과 ERP 배치 xlsx(Erp.gs)가 함께 쓴다.
+function buildPurchaseDownloadRows_(rows, unitMap) {
   const merged = {};
   rows.forEach(r => {
     const itemId = String(r['자재코드'] || '').trim();

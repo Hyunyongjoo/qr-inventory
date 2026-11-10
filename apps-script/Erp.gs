@@ -1,0 +1,784 @@
+/**
+ * Erp.gs — 구매유형 지정 · 청구서/긴급 등록 · ERP 자동등록 PC용 API
+ *
+ * 흐름
+ *  1) 구매요청이 들어오면(submitPurchase_) 구매발주및입고 시트 맨 오른쪽 신규 열의 구매유형코드에
+ *     사이트 기본 유형(안전용품구매는 환경안전용품 유형)을 넣고 유형상태=제안으로 둔다.
+ *  2) 자재담당자/관리자가 PWA "청구서 관리" 화면에서 구매대기(구매필요 확정) 건을 골라
+ *     유형 저장 / 청구서 등록 / 긴급 등록을 누른다(erpUpdateRequests_). 등록 버튼은 ERP상태=대기로만 바꾼다.
+ *  3) 사이트별 사무실 PC의 등록 프로그램이 GET ?action=pending 으로 대기 건을 배치 단위로 가져가고
+ *     (ERP상태=등록중), ERP 등록 후 POST action=result 로 완료/실패를 돌려준다.
+ *  4) PC는 POST action=heartbeat 로 살아 있음을 알린다(스크립트 속성에만 저장, 시트 쓰기 없음).
+ *
+ * ERP 등록은 관리자가 버튼을 눌렀을 때만 진행된다. 시간 기반 트리거는 만들지 않는다.
+ *
+ * 스크립트 속성
+ *  - ERP_BOT_TOKEN            : PC 프로그램 인증 토큰 (필수, 비어 있으면 모든 PC 요청 거부)
+ *  - ERP_ALERT_EMAIL          : 실패/로그인필요 알림 메일 기본 수신자
+ *  - ERP_ALERT_EMAIL_<사이트> : 사이트별 수신자 (예: ERP_ALERT_EMAIL_화성). 없으면 ERP_ALERT_EMAIL
+ *  - ERP_BOT_LAST_<사이트>    : heartbeat가 자동 기록 (직접 설정하지 않음)
+ */
+
+const PURCHASE_TYPE_SHEET_NAME = '구매유형';
+// 1~14열은 요청 명세의 열 구성 그대로, 15열 '확인필요'는 조건표 초안의 확인 메모를 보존하기 위한 참고 열이다.
+const PURCHASE_TYPE_HEADERS = [
+  '사이트', '유형코드', '구매유형', '용도', '유무상', '유무상상세', '사유1', '사유2', '설비구분',
+  '명칭템플릿', '입력항목', '등록단위', '기본값', '사용', '확인필요'
+];
+// 이 중 하나라도 비어 있거나 '확인필요'로 적혀 있으면 조건 미완성 유형으로 보고 등록을 막는다.
+const PURCHASE_TYPE_REQUIRED_FIELDS = ['용도', '유무상', '유무상상세', '사유1', '사유2', '명칭템플릿'];
+const PURCHASE_TYPE_PLACEHOLDER = '확인필요';
+const PURCHASE_TYPE_CACHE_KEY = 'purchaseTypes:v1';
+const PURCHASE_TYPE_CACHE_SEC = 600;
+const PURCHASE_TYPE_DEFAULT_EQUIPMENT = 'SCRUBBER';
+// 안전용품구매로 들어온 건에 제안할 유형: 구매유형 이름에 이 단어가 들어간 그 사이트의 첫 유형.
+const SAFETY_SUPPLY_TYPE_KEYWORD = '환경안전용품';
+
+// 구매발주및입고 시트 맨 오른쪽에 추가하는 열(기존 열 위치 불변 — sheet_()의 ensureColumns_가 끝에 덧붙인다).
+const ERP_COLUMNS = [
+  '구매유형코드', '유형상태', '긴급', '명칭변수', 'ERP상태', 'ERP명칭', 'ERP처리일시', 'ERP메시지', '배치ID', '처리자'
+];
+const ERP_STATUS = { WAITING: '대기', RUNNING: '등록중', DONE: '완료', FAILED: '실패' };
+// 이 상태의 행은 유형·명칭변수·요청수량을 바꿀 수 없다(실패 행은 수정 후 재처리 가능).
+const ERP_LOCKED_STATUSES = [ERP_STATUS.WAITING, ERP_STATUS.RUNNING, ERP_STATUS.DONE];
+const TYPE_STATE = { PROPOSED: '제안', CONFIRMED: '확정' };
+// 명칭템플릿 변수 중 입력칸 없이 자동으로 채우는 것.
+const ERP_AUTO_VARS = ['SITE', 'MM', 'N'];
+// 등록중인데 이 시간 동안 결과가 없으면 대기로 되돌린다(PC 중단 대비).
+const ERP_STALE_MS = 20 * 60 * 1000;
+// heartbeat가 이 시간 이상 끊기면 PWA에서 빨간색/경고로 표시한다.
+const ERP_BOT_OFFLINE_MS = 10 * 60 * 1000;
+// 로그인필요 알림 메일은 같은 상태가 반복되면 이 간격에 1회까지만 보낸다.
+const ERP_ALERT_INTERVAL_MS = 60 * 60 * 1000;
+// pending 빠른 경로용 캐시 플래그 수명(CacheService 최대값). 사라지면 시트를 한 번 읽어 다시 계산한다.
+const ERP_FLAG_TTL_SEC = 21600;
+// 청구서 관리 화면 "진행·완료" 탭에 보여 줄 완료 건 기간.
+const ERP_DONE_VIEW_DAYS = 7;
+const ERP_URGENT_NOTE_KEYWORD = '긴급';
+
+// ------------------------- 구매유형 조건표 -------------------------
+
+function isPurchaseTypeBlank_(v) {
+  const s = String(v == null ? '' : v).trim();
+  return !s || s.indexOf(PURCHASE_TYPE_PLACEHOLDER) !== -1;
+}
+
+function templateVars_(template) {
+  const out = [];
+  String(template || '').replace(/\{([^}]+)\}/g, (m, v) => {
+    const name = v.trim();
+    if (name && out.indexOf(name) === -1) out.push(name);
+    return m;
+  });
+  return out;
+}
+
+// 입력칸으로 보여 줄 변수 목록. 입력항목 열의 순서를 따르되(괄호 설명 제거), 명칭템플릿에 실제로 있는
+// 변수만 쓰고 {SITE}/{MM}/{N}은 자동이라 뺀다. 입력항목에 빠진 템플릿 변수도 뒤에 덧붙인다.
+function typeInputVars_(t) {
+  const tplVars = templateVars_(t['명칭템플릿']).filter(v => ERP_AUTO_VARS.indexOf(v) === -1);
+  const vars = [];
+  String(t['입력항목'] || '').split(/[,，]/).forEach(tok => {
+    const name = tok.replace(/\(.*?\)/g, '').trim();
+    if (tplVars.indexOf(name) !== -1 && vars.indexOf(name) === -1) vars.push(name);
+  });
+  tplVars.forEach(v => { if (vars.indexOf(v) === -1) vars.push(v); });
+  return vars;
+}
+
+// 구매유형 시트 전체를 읽어 유형 객체 배열로 돌려준다(10분 캐시). 시트가 없으면 빈 배열.
+// 시트를 편집하면 onEdit(Setup.gs)가 캐시를 지워 바로 반영된다.
+function loadPurchaseTypes_() {
+  const cache = CacheService.getScriptCache();
+  const cached = cache.get(PURCHASE_TYPE_CACHE_KEY);
+  if (cached) {
+    try { return JSON.parse(cached); } catch (e) { /* 다시 읽는다 */ }
+  }
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(PURCHASE_TYPE_SHEET_NAME);
+  let types = [];
+  if (sheet && sheet.getLastRow() >= 2) {
+    const heads = headers_(sheet).map(h => String(h || '').trim());
+    const values = sheet.getRange(2, 1, sheet.getLastRow() - 1, heads.length).getValues();
+    types = values
+      .map(row => {
+        const t = {};
+        PURCHASE_TYPE_HEADERS.forEach(h => {
+          const i = heads.indexOf(h);
+          t[h] = i === -1 ? '' : String(row[i] == null ? '' : row[i]).trim();
+        });
+        return t;
+      })
+      .filter(t => t['사이트'] && t['유형코드'])
+      .map(t => ({
+        site: t['사이트'],
+        code: t['유형코드'],
+        name: t['구매유형'],
+        fields: {
+          '설비구분': t['설비구분'] || PURCHASE_TYPE_DEFAULT_EQUIPMENT,
+          '용도': t['용도'],
+          '유무상': t['유무상'],
+          '유무상상세': t['유무상상세'],
+          '사유1': t['사유1'],
+          '사유2': t['사유2']
+        },
+        template: t['명칭템플릿'],
+        inputVars: typeInputVars_(t),
+        weekly: String(t['등록단위']).replace(/\s/g, '').indexOf('묶음') !== -1,
+        unit: t['등록단위'],
+        isDefault: t['기본값'].toUpperCase() === 'Y',
+        enabled: t['사용'].toUpperCase() !== 'N',
+        incomplete: PURCHASE_TYPE_REQUIRED_FIELDS.some(h => isPurchaseTypeBlank_(t[h])),
+        missing: PURCHASE_TYPE_REQUIRED_FIELDS.filter(h => isPurchaseTypeBlank_(t[h]))
+      }));
+  }
+  try {
+    cache.put(PURCHASE_TYPE_CACHE_KEY, JSON.stringify(types), PURCHASE_TYPE_CACHE_SEC);
+  } catch (e) {
+    Logger.log('구매유형 캐시 저장 실패: ' + (e && e.message || e));
+  }
+  return types;
+}
+
+function clearPurchaseTypeCache_() {
+  CacheService.getScriptCache().remove(PURCHASE_TYPE_CACHE_KEY);
+}
+
+function purchaseTypesForSite_(site) {
+  return loadPurchaseTypes_().filter(t => t.site === site);
+}
+
+function findPurchaseType_(site, code) {
+  const c = String(code || '').trim();
+  if (!c) return null;
+  return purchaseTypesForSite_(site).find(t => t.code === c) || null;
+}
+
+function defaultPurchaseType_(site) {
+  return purchaseTypesForSite_(site).find(t => t.isDefault && t.enabled) || null;
+}
+
+// 신규 구매요청에 넣을 제안 유형코드. 조건표가 없거나 맞는 유형이 없으면 ''.
+function proposePurchaseTypeCode_(site, isSafetySupply) {
+  const types = purchaseTypesForSite_(site).filter(t => t.enabled);
+  if (isSafetySupply) {
+    const safety = types.find(t => String(t.name).indexOf(SAFETY_SUPPLY_TYPE_KEYWORD) !== -1);
+    if (safety) return safety.code;
+  }
+  const def = types.find(t => t.isDefault);
+  return def ? def.code : '';
+}
+
+// ------------------------- 명칭 생성 -------------------------
+
+// 해당 월의 주차: 월요일 시작, 1일이 속한 주 = 1주차.
+function weekOfMonth_(date) {
+  const y = Number(Utilities.formatDate(date, 'Asia/Seoul', 'yyyy'));
+  const m = Number(Utilities.formatDate(date, 'Asia/Seoul', 'M'));
+  const d = Number(Utilities.formatDate(date, 'Asia/Seoul', 'd'));
+  const firstDow = new Date(y, m - 1, 1).getDay(); // 스크립트 시간대 = Asia/Seoul
+  const offset = (firstDow + 6) % 7; // 월요일=0
+  return Math.floor((d - 1 + offset) / 7) + 1;
+}
+
+/**
+ * ERP 구매요청서 명칭을 만든다.
+ *  - typeRow: 유형 객체(loadPurchaseTypes_) 또는 { '명칭템플릿': ... } / { template: ... }
+ *  - rows: 묶음에 포함된 구매발주및입고 행들 ({SITE} = 라인 값 중복 제거 후 ', ' 연결)
+ *  - vars: 입력 변수 { PART: 'PRE-WET', 버전: 'V2', ... }
+ *  - date: 등록일 ({MM} = 월, {N} = 월 주차)
+ * 값이 빈 괄호 변수("({버전})")는 괄호째 지우고 연속 공백을 정리한다.
+ */
+function buildErpTitle(typeRow, rows, vars, date) {
+  const d = date || new Date();
+  const template = String((typeRow && (typeRow.template || typeRow['명칭템플릿'])) || '');
+  const lines = [];
+  (rows || []).forEach(r => {
+    const z = String(r['라인'] || '').trim();
+    if (z && lines.indexOf(z) === -1) lines.push(z);
+  });
+  const values = Object.assign({}, vars || {});
+  values.SITE = lines.join(', ');
+  values.MM = Utilities.formatDate(d, 'Asia/Seoul', 'M');
+  values.N = String(weekOfMonth_(d));
+  const valueOf = name => String(values[name.trim()] == null ? '' : values[name.trim()]).trim();
+
+  let s = template.replace(/\(\s*\{([^}]+)\}\s*\)/g, (m, v) => {
+    const val = valueOf(v);
+    return val ? '(' + val + ')' : '';
+  });
+  s = s.replace(/\{([^}]+)\}/g, (m, v) => valueOf(v));
+  return s.replace(/\s{2,}/g, ' ').trim();
+}
+
+// ------------------------- 공용 헬퍼 -------------------------
+
+function erpStatusOf_(r) {
+  return String(r['ERP상태'] || '').trim();
+}
+
+function isErpUrgentRow_(r) {
+  return String(r['긴급'] || '').trim().toUpperCase() === 'Y';
+}
+
+function hasUrgentNote_(r) {
+  return (String(r['특이사항1'] || '') + ' ' + String(r['특이사항2'] || '')).indexOf(ERP_URGENT_NOTE_KEYWORD) !== -1;
+}
+
+// 청구서 관리 대상: 입고확인에서 구매필요(X)로 확정됐고 아직 구매요청번호가 없는 건(=구매 다운로드 대상과 동일).
+function isErpCandidateRow_(r) {
+  return computeInboundStatus_(r).status === '구매대기';
+}
+
+function parseErpVars_(v) {
+  if (!v) return {};
+  try {
+    const o = JSON.parse(String(v));
+    return o && typeof o === 'object' && !Array.isArray(o) ? o : {};
+  } catch (e) {
+    return {};
+  }
+}
+
+function toTimeMs_(v) {
+  if (v instanceof Date) return isNaN(v.getTime()) ? 0 : v.getTime();
+  const s = String(v || '').trim();
+  if (!s) return 0;
+  const t = new Date(s.replace(' ', 'T')).getTime();
+  return isNaN(t) ? 0 : t;
+}
+
+function fmtDateTime_(v) {
+  const t = toTimeMs_(v);
+  return t ? Utilities.formatDate(new Date(t), 'Asia/Seoul', 'yyyy-MM-dd HH:mm') : '';
+}
+
+// 여러 행의 ERP 열 값을 한 번의 getValues/setValues로 쓴다. updates = { 행번호: { 열이름: 값 } }.
+// 범위 안에 ERP 열이 아닌 열이 끼어 있으면(수식 보호) 행별 쓰기로 대신한다.
+function writeErpUpdates_(sheet, heads, updates) {
+  const rowIdxs = Object.keys(updates).map(Number).filter(n => n >= 2);
+  if (!rowIdxs.length) return;
+  const colIdxs = [];
+  rowIdxs.forEach(ri => Object.keys(updates[ri]).forEach(name => {
+    const c = heads.indexOf(name);
+    if (c === -1) throw new Error('"' + sheet.getName() + '" 시트에서 "' + name + '" 열을 찾을 수 없습니다.');
+    if (colIdxs.indexOf(c) === -1) colIdxs.push(c);
+  }));
+  const minR = Math.min.apply(null, rowIdxs);
+  const maxR = Math.max.apply(null, rowIdxs);
+  const minC = Math.min.apply(null, colIdxs);
+  const maxC = Math.max.apply(null, colIdxs);
+  const spanHeads = heads.slice(minC, maxC + 1);
+  if (spanHeads.some(h => ERP_COLUMNS.indexOf(h) === -1)) {
+    rowIdxs.forEach(ri => updateRow_(sheet, ri, updates[ri]));
+    return;
+  }
+  const range = sheet.getRange(minR, minC + 1, maxR - minR + 1, maxC - minC + 1);
+  const values = range.getValues();
+  rowIdxs.forEach(ri => {
+    const u = updates[ri];
+    Object.keys(u).forEach(name => { values[ri - minR][heads.indexOf(name) - minC] = u[name]; });
+  });
+  range.setValues(values);
+}
+
+function erpFlagKey_(scope, site) {
+  return (scope === 'urgent' ? 'ERP_PENDING_URGENT_' : 'ERP_PENDING_ALL_') + site;
+}
+
+function erpInflightKey_(site) {
+  return 'ERP_INFLIGHT_' + site;
+}
+
+// 시트 행 기준으로 사이트의 pending 플래그를 다시 계산해 캐시에 넣는다.
+//  - URGENT: 긴급=Y 대기 건이 있으면 1 / ALL: 대기 건이 있으면 1
+//  - INFLIGHT: 가장 오래된 등록중 건의 ERP처리일시(ms), 없으면 0 (20분 초과 되돌림 확인용)
+function refreshErpFlags_(site, rows) {
+  let urgent = false;
+  let all = false;
+  let oldestRunning = 0;
+  rows.forEach(r => {
+    const st = erpStatusOf_(r);
+    if (st === ERP_STATUS.WAITING) {
+      all = true;
+      if (isErpUrgentRow_(r)) urgent = true;
+    } else if (st === ERP_STATUS.RUNNING) {
+      const t = toTimeMs_(r['ERP처리일시']) || 1;
+      if (!oldestRunning || t < oldestRunning) oldestRunning = t;
+    }
+  });
+  const flags = {};
+  flags[erpFlagKey_('urgent', site)] = urgent ? '1' : '0';
+  flags[erpFlagKey_('all', site)] = all ? '1' : '0';
+  flags[erpInflightKey_(site)] = String(oldestRunning || 0);
+  CacheService.getScriptCache().putAll(flags, ERP_FLAG_TTL_SEC);
+}
+
+function setErpPendingFlags_(site, urgent) {
+  const flags = {};
+  flags[erpFlagKey_('all', site)] = '1';
+  if (urgent) flags[erpFlagKey_('urgent', site)] = '1';
+  CacheService.getScriptCache().putAll(flags, ERP_FLAG_TTL_SEC);
+}
+
+function erpAlertEmail_(site) {
+  const props = PropertiesService.getScriptProperties();
+  return props.getProperty('ERP_ALERT_EMAIL_' + site) || props.getProperty('ERP_ALERT_EMAIL') || '';
+}
+
+function sendErpAlert_(site, subject, body) {
+  const to = erpAlertEmail_(site);
+  if (!to) {
+    Logger.log('ERP 알림 수신자 미설정(' + site + '): ' + subject);
+    return false;
+  }
+  try {
+    MailApp.sendEmail(to, subject, body);
+    return true;
+  } catch (e) {
+    Logger.log('ERP 알림 메일 실패: ' + (e && e.message || e));
+    return false;
+  }
+}
+
+function erpTokenOk_(token) {
+  const expected = PropertiesService.getScriptProperties().getProperty('ERP_BOT_TOKEN') || '';
+  return !!expected && String(token || '') === expected;
+}
+
+function parseErpSites_(v) {
+  const list = Array.isArray(v) ? v : String(v || '').split(',');
+  const sites = list.map(s => String(s || '').trim()).filter(s => SITES.indexOf(s) !== -1);
+  return sites.length ? sites.filter((s, i) => sites.indexOf(s) === i) : SITES.slice();
+}
+
+// ------------------------- PWA: 청구서 관리 -------------------------
+
+function erpBotStatus_(site) {
+  const raw = PropertiesService.getScriptProperties().getProperty('ERP_BOT_LAST_' + site);
+  let last = null;
+  try { last = raw ? JSON.parse(raw) : null; } catch (e) { last = null; }
+  if (!last || !last.at) return { site, at: 0, time: '', state: '', pc: '', message: '', offline: true, never: true };
+  return {
+    site,
+    at: last.at,
+    time: Utilities.formatDate(new Date(last.at), 'Asia/Seoul', 'MM-dd HH:mm'),
+    state: last.state || '',
+    pc: last.pc || '',
+    message: last.message || '',
+    offline: Date.now() - last.at > ERP_BOT_OFFLINE_MS,
+    never: false
+  };
+}
+
+function erpRowToView_(r, defaultType) {
+  const storedCode = String(r['구매유형코드'] || '').trim();
+  const storedState = String(r['유형상태'] || '').trim();
+  return {
+    rowIndex: r._row,
+    requestDate: sheetDateStr_(r['요청일자']),
+    dueDate: sheetDateStr_(r['필요일자']),
+    requester: r['신청자'] || '',
+    zone: r['라인'] || '',
+    itemId: String(r['자재코드'] || ''),
+    itemName: r['자재명'] || '',
+    spec: r['규격'] || '',
+    qty: Number(r['요청수량']) || 0,
+    note1: r['특이사항1'] || '',
+    note2: r['특이사항2'] || '',
+    lineOrderNo: r['라인구매번호'] || '',
+    typeCode: storedCode || (defaultType ? defaultType.code : ''),
+    typeState: storedCode ? (storedState || TYPE_STATE.PROPOSED) : (defaultType ? TYPE_STATE.PROPOSED : ''),
+    vars: parseErpVars_(r['명칭변수']),
+    urgent: isErpUrgentRow_(r),
+    urgentNote: hasUrgentNote_(r),
+    erpStatus: erpStatusOf_(r),
+    erpTitle: r['ERP명칭'] || '',
+    erpMessage: r['ERP메시지'] || '',
+    erpAt: fmtDateTime_(r['ERP처리일시']),
+    batchId: r['배치ID'] || '',
+    handler: r['처리자'] || ''
+  };
+}
+
+function compareErpRows_(a, b) {
+  if (a.urgentNote !== b.urgentNote) return a.urgentNote ? -1 : 1;
+  if (a.requestDate !== b.requestDate) return a.requestDate < b.requestDate ? 1 : -1;
+  return b.rowIndex - a.rowIndex;
+}
+
+// 청구서 관리 화면 데이터. rows = 미등록(ERP상태 빈값/실패) 구매대기 건, progress = 대기/등록중 + 최근 완료 건.
+function erpRequestList_(site, pin) {
+  assertSite_(site);
+  const user = assertManagerRole_(pin);
+  const types = purchaseTypesForSite_(site);
+  const defaultType = types.find(t => t.isDefault && t.enabled) || null;
+  const all = readAll_(sheet_(poInSheetName_(site)));
+  const doneSince = Date.now() - ERP_DONE_VIEW_DAYS * 24 * 60 * 60 * 1000;
+
+  const rows = [];
+  const progress = [];
+  all.forEach(r => {
+    const st = erpStatusOf_(r);
+    if (st === '' || st === ERP_STATUS.FAILED) {
+      if (!isCancelledRow_(r) && isErpCandidateRow_(r)) rows.push(erpRowToView_(r, defaultType));
+    } else if (st === ERP_STATUS.WAITING || st === ERP_STATUS.RUNNING ||
+      (st === ERP_STATUS.DONE && toTimeMs_(r['ERP처리일시']) >= doneSince)) {
+      progress.push(erpRowToView_(r, defaultType));
+    }
+  });
+  rows.sort(compareErpRows_);
+  progress.sort((a, b) => (a.erpAt < b.erpAt ? 1 : a.erpAt > b.erpAt ? -1 : b.rowIndex - a.rowIndex));
+
+  return {
+    site,
+    types,
+    rows,
+    progress,
+    bot: erpBotStatus_(site),
+    canSelectSite: user.role === '관리자'
+  };
+}
+
+/**
+ * 청구서 관리 화면의 버튼 3개.
+ * body: { site, pin, mode: 'save'|'register'|'urgent', items: [{rowIndex, itemId}], typeCode?, vars? }
+ *  - typeCode가 있으면 선택한 모든 행에 그 유형을, 없으면 각 행의 현재(제안/확정) 유형을 쓴다.
+ *  - vars가 있으면(객체) 그 유형의 입력 변수만 골라 명칭변수에 저장하고, 없으면 각 행의 기존 값을 유지한다.
+ *  - save    : 유형상태=확정, 명칭변수 저장 (ERP상태 그대로)
+ *  - register: + ERP상태=대기, 긴급=빈값
+ *  - urgent  : + ERP상태=대기, 긴급=Y
+ */
+function erpUpdateRequests_(body) {
+  const lock = scriptLock_();
+  lock.waitLock(30000);
+  try {
+    const site = assertSite_(body.site);
+    const user = assertManagerRole_(body.pin);
+    const mode = String(body.mode || '');
+    if (['save', 'register', 'urgent'].indexOf(mode) === -1) throw new Error('올바르지 않은 처리 방식입니다.');
+    const items = Array.isArray(body.items) ? body.items : [];
+    if (!items.length) throw new Error('선택한 행이 없습니다.');
+
+    const typeCode = String(body.typeCode || '').trim();
+    const forcedType = typeCode ? findPurchaseType_(site, typeCode) : null;
+    if (typeCode && !forcedType) throw new Error('구매유형을 찾을 수 없습니다: ' + typeCode);
+    const defaultType = defaultPurchaseType_(site);
+    const hasVars = body.vars && typeof body.vars === 'object' && !Array.isArray(body.vars);
+
+    const sheet = sheet_(poInSheetName_(site));
+    const heads = headers_(sheet);
+    const byRow = {};
+    readAll_(sheet).forEach(r => { byRow[r._row] = r; });
+
+    const now = new Date();
+    const handler = user.name + ' ' + Utilities.formatDate(now, 'Asia/Seoul', 'yyyy-MM-dd HH:mm:ss');
+    const updates = {};
+    const touched = [];
+    items.forEach(it => {
+      const r = byRow[Number(it.rowIndex)];
+      if (!r || normalizeMaterialCode_(r['자재코드']) !== normalizeMaterialCode_(it.itemId)) {
+        throw new Error('요청을 찾을 수 없습니다(시트가 바뀌었을 수 있습니다). 목록을 새로고침하세요.');
+      }
+      const label = (r['자재명'] || r['자재코드']) + ' (' + r._row + '행)';
+      const st = erpStatusOf_(r);
+      if (ERP_LOCKED_STATUSES.indexOf(st) !== -1) throw new Error('이미 ERP ' + st + ' 상태라 수정할 수 없습니다: ' + label);
+      if (isCancelledRow_(r) || !isErpCandidateRow_(r)) throw new Error('구매대기 상태가 아니라 처리할 수 없습니다: ' + label);
+
+      const type = forcedType || findPurchaseType_(site, r['구매유형코드']) || defaultType;
+      if (!type) throw new Error('구매유형을 선택하세요: ' + label);
+      if (!type.enabled) throw new Error('사용하지 않는 구매유형입니다(' + type.code + '): ' + label);
+      if (mode !== 'save' && type.incomplete) {
+        throw new Error(type.code + ' ' + type.name + ': 구매유형 시트에서 조건을 채워주세요 (' + type.missing.join(', ') + ')');
+      }
+
+      let vars = parseErpVars_(r['명칭변수']);
+      if (hasVars) {
+        vars = {};
+        type.inputVars.forEach(v => {
+          const val = String(body.vars[v] == null ? '' : body.vars[v]).trim();
+          if (val) vars[v] = val;
+        });
+      }
+
+      const u = {
+        '구매유형코드': type.code,
+        '유형상태': TYPE_STATE.CONFIRMED,
+        '명칭변수': Object.keys(vars).length ? JSON.stringify(vars) : '',
+        '처리자': handler
+      };
+      if (mode !== 'save') {
+        u['ERP상태'] = ERP_STATUS.WAITING;
+        u['긴급'] = mode === 'urgent' ? 'Y' : '';
+        u['ERP명칭'] = '';
+        u['ERP메시지'] = '';
+        u['ERP처리일시'] = '';
+        u['배치ID'] = '';
+      }
+      updates[r._row] = u;
+      Object.keys(u).forEach(k => { r[k] = u[k]; });
+      touched.push(r);
+    });
+
+    writeErpUpdates_(sheet, heads, updates);
+    if (mode !== 'save') setErpPendingFlags_(site, mode === 'urgent');
+
+    const viewDefault = defaultPurchaseType_(site);
+    return { count: touched.length, mode, rows: touched.map(r => erpRowToView_(r, viewDefault)), bot: erpBotStatus_(site) };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// ------------------------- ERP 자동등록 PC API -------------------------
+
+/**
+ * GET ?action=pending&token=...&scope=urgent|all&sites=화성,평택&pc=화성PC
+ * 처리할 건이 없으면 캐시 플래그만 보고 바로 {ok:true,batches:[]}를 돌려준다(시트 읽기 없음).
+ */
+function erpPending_(p) {
+  if (!erpTokenOk_(p.token)) return { ok: false, error: 'unauthorized' };
+  const scope = p.scope === 'urgent' ? 'urgent' : 'all';
+  const sites = parseErpSites_(p.sites);
+  const pc = String(p.pc || '').trim();
+  const now = Date.now();
+
+  // 1) 빠른 경로: 요청한 사이트의 플래그가 모두 0이고, 20분 넘은 등록중 건도 없으면 즉시 응답.
+  const cache = CacheService.getScriptCache();
+  const keys = [];
+  sites.forEach(s => { keys.push(erpFlagKey_(scope, s), erpInflightKey_(s)); });
+  const flags = cache.getAll(keys);
+  const idle = sites.every(s => {
+    const flag = flags[erpFlagKey_(scope, s)];
+    const inflight = flags[erpInflightKey_(s)];
+    if (flag !== '0' || inflight === undefined || inflight === null) return false;
+    const t = Number(inflight) || 0;
+    return !t || now - t < ERP_STALE_MS;
+  });
+  if (idle) return { ok: true, batches: [] };
+
+  // 2) 느린 경로: 잠그고 대기 건을 배치로 묶어 등록중으로 바꾼다.
+  const claimed = [];
+  const stamp = Utilities.formatDate(new Date(now), 'Asia/Seoul', 'yyyyMMdd-HHmmss');
+  const lock = scriptLock_();
+  lock.waitLock(20000);
+  try {
+    sites.forEach(site => {
+      const sheet = sheet_(poInSheetName_(site));
+      const heads = headers_(sheet);
+      const rows = readAll_(sheet);
+      const updates = {};
+
+      // 등록중인데 20분 넘게 결과가 없는 행은 대기로 되돌린다. 배치ID는 남겨 두어, 늦게 도착한
+      // 결과도 다시 가져가기 전까지는 받아들인다(중복 등록 방지).
+      rows.forEach(r => {
+        if (erpStatusOf_(r) !== ERP_STATUS.RUNNING) return;
+        const t = toTimeMs_(r['ERP처리일시']);
+        if (t && now - t <= ERP_STALE_MS) return;
+        updates[r._row] = { 'ERP상태': ERP_STATUS.WAITING, 'ERP메시지': '20분 동안 결과가 없어 대기로 되돌림' };
+        r['ERP상태'] = ERP_STATUS.WAITING;
+      });
+
+      const waiting = rows.filter(r => erpStatusOf_(r) === ERP_STATUS.WAITING && (scope === 'all' || isErpUrgentRow_(r)));
+      // 같은 버튼 클릭(처리자 = 이름 + 처리 시각) + 같은 유형코드끼리 한 배치. 긴급은 일반과 섞지 않는다.
+      const groups = {};
+      const order = [];
+      waiting.forEach(r => {
+        const key = (isErpUrgentRow_(r) ? 'U' : 'G') + '|' + String(r['처리자'] || '') + '|' + String(r['구매유형코드'] || '');
+        if (!groups[key]) { groups[key] = []; order.push(key); }
+        groups[key].push(r);
+      });
+      order.sort((a, b) => {
+        if (a[0] !== b[0]) return a[0] === 'U' ? -1 : 1;
+        return a < b ? -1 : a > b ? 1 : 0;
+      });
+
+      order.forEach(key => {
+        const groupRows = groups[key];
+        const batchId = 'B' + stamp + '-' + SITE_CODES[site] + ('0' + (claimed.length + 1)).slice(-2);
+        groupRows.forEach(r => {
+          updates[r._row] = Object.assign(updates[r._row] || {}, {
+            'ERP상태': ERP_STATUS.RUNNING, '배치ID': batchId, 'ERP처리일시': new Date(now), 'ERP메시지': ''
+          });
+          r['ERP상태'] = ERP_STATUS.RUNNING;
+          r['ERP처리일시'] = new Date(now);
+        });
+        claimed.push({ site, batchId, urgent: key[0] === 'U', rows: groupRows });
+      });
+
+      writeErpUpdates_(sheet, heads, updates);
+      refreshErpFlags_(site, rows);
+    });
+  } finally {
+    lock.releaseLock();
+  }
+  if (claimed.length) Logger.log('ERP pending [' + (pc || '?') + ' / ' + scope + ']: ' + claimed.map(c => c.batchId).join(', '));
+
+  // 3) 배치마다 구매 다운로드와 같은 형식의 xlsx를 만든다(잠금 밖). 실패한 배치는 실패로 기록하고 빼낸다.
+  const batches = [];
+  const unitMap = claimed.length ? buildItemUnitMap_() : {};
+  claimed.forEach(c => {
+    try {
+      const typeCode = String(c.rows[0]['구매유형코드'] || '').trim();
+      const type = findPurchaseType_(c.site, typeCode);
+      if (!type) throw new Error('구매유형을 찾을 수 없습니다: ' + (typeCode || '(빈값)'));
+      if (type.incomplete) throw new Error(type.code + ' 조건 미완성 (' + type.missing.join(', ') + ')');
+      const vars = {};
+      c.rows.forEach(r => {
+        const v = parseErpVars_(r['명칭변수']);
+        Object.keys(v).forEach(k => { if (!vars[k] && v[k]) vars[k] = v[k]; });
+      });
+      const fileName = c.batchId + '.xlsx';
+      batches.push({
+        batch_id: c.batchId,
+        site: c.site,
+        type_code: type.code,
+        type_name: type.name,
+        urgent: c.urgent,
+        fields: type.fields,
+        title: buildErpTitle(type, c.rows, vars, new Date(now)),
+        row_count: c.rows.length,
+        file_name: fileName,
+        file_b64: buildPurchaseXlsxBase64_(c.batchId, buildPurchaseDownloadRows_(c.rows, unitMap))
+      });
+    } catch (err) {
+      const message = '배치 준비 실패: ' + (err && err.message || err);
+      Logger.log(c.batchId + ' ' + message);
+      try {
+        markErpBatch_(c.site, c.batchId, ERP_STATUS.FAILED, '', message);
+        sendErpAlert_(c.site, '[QR 재고] ERP 등록 실패 ' + c.site + ' ' + c.batchId,
+          '배치ID: ' + c.batchId + '\n사이트: ' + c.site + '\n유형: ' + (c.rows[0]['구매유형코드'] || '') + '\n메시지: ' + message);
+      } catch (e) {
+        Logger.log('배치 실패 기록 오류: ' + (e && e.message || e));
+      }
+    }
+  });
+  return { ok: true, batches };
+}
+
+// 구매 다운로드와 같은 열/시트명('구매')으로 임시 스프레드시트를 만들어 xlsx로 내보낸 뒤 base64로 돌려준다.
+function buildPurchaseXlsxBase64_(name, downloadRows) {
+  const columns = ['자재코드', '자재명', '규격', '단위', '필요일자', '요청수량', '라인'];
+  const aoa = [columns].concat(downloadRows.map(r => [r.itemId, r.itemName, r.spec, r.unit, r.dueDate, r.qty, r.zone]));
+  const ss = SpreadsheetApp.create('ERP_' + name);
+  const fileId = ss.getId();
+  try {
+    const sh = ss.getSheets()[0];
+    sh.setName('구매');
+    // 브라우저 다운로드(SheetJS)처럼 자재코드/날짜는 문자 그대로, 요청수량만 숫자로 둔다.
+    sh.getRange(1, 1, aoa.length, columns.length).setNumberFormat('@');
+    if (aoa.length > 1) sh.getRange(2, 6, aoa.length - 1, 1).setNumberFormat('General');
+    sh.getRange(1, 1, aoa.length, columns.length).setValues(aoa);
+    SpreadsheetApp.flush();
+    const resp = UrlFetchApp.fetch('https://docs.google.com/spreadsheets/d/' + fileId + '/export?format=xlsx', {
+      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+      muteHttpExceptions: true
+    });
+    if (resp.getResponseCode() !== 200) throw new Error('xlsx 내보내기 실패 (HTTP ' + resp.getResponseCode() + ')');
+    return Utilities.base64Encode(resp.getBlob().getBytes());
+  } finally {
+    try {
+      DriveApp.getFileById(fileId).setTrashed(true);
+    } catch (e) {
+      Logger.log('임시 파일 삭제 실패(' + fileId + '): ' + (e && e.message || e));
+    }
+  }
+}
+
+// 배치ID로 행을 찾아 결과를 기록한다. 등록중/대기 행만 바꾼다(되돌린 뒤 다른 배치로 다시 가져간 행은 배치ID가 달라 제외됨).
+function markErpBatch_(site, batchId, status, erpTitle, message) {
+  const lock = scriptLock_();
+  lock.waitLock(20000);
+  try {
+    const sheet = sheet_(poInSheetName_(site));
+    const heads = headers_(sheet);
+    const rows = readAll_(sheet);
+    const updates = {};
+    const matched = [];
+    rows.forEach(r => {
+      if (String(r['배치ID'] || '').trim() !== batchId) return;
+      const st = erpStatusOf_(r);
+      if (st !== ERP_STATUS.RUNNING && st !== ERP_STATUS.WAITING) return;
+      updates[r._row] = { 'ERP상태': status, 'ERP명칭': erpTitle || '', 'ERP메시지': message || '', 'ERP처리일시': new Date() };
+      r['ERP상태'] = status;
+      matched.push(r);
+    });
+    writeErpUpdates_(sheet, heads, updates);
+    refreshErpFlags_(site, rows);
+    return matched;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// 배치ID가 어느 사이트 시트에 있는지 배치ID 열만 읽어 찾는다.
+function findErpBatchSite_(batchId) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  for (let i = 0; i < SITES.length; i++) {
+    const sheet = ss.getSheetByName(poInSheetName_(SITES[i]));
+    if (!sheet || sheet.getLastRow() < 2) continue;
+    const col = headers_(sheet).indexOf('배치ID');
+    if (col === -1) continue;
+    const values = sheet.getRange(2, col + 1, sheet.getLastRow() - 1, 1).getValues();
+    if (values.some(v => String(v[0] || '').trim() === batchId)) return SITES[i];
+  }
+  return '';
+}
+
+/**
+ * POST { token, action:"result", batch_id, status:"완료"|"실패", erp_title, message }
+ */
+function erpResult_(body) {
+  if (!erpTokenOk_(body.token)) return { ok: false, error: 'unauthorized' };
+  const batchId = String(body.batch_id || '').trim();
+  const status = String(body.status || '').trim();
+  if (!batchId) return { ok: false, error: 'batch_id가 없습니다.' };
+  if (status !== ERP_STATUS.DONE && status !== ERP_STATUS.FAILED) return { ok: false, error: 'status는 완료 또는 실패여야 합니다.' };
+
+  const site = findErpBatchSite_(batchId);
+  if (!site) return { ok: false, error: '배치를 찾을 수 없습니다: ' + batchId };
+  const message = String(body.message || '').trim();
+  const matched = markErpBatch_(site, batchId, status, String(body.erp_title || '').trim(), message);
+
+  if (status === ERP_STATUS.FAILED && matched.length) {
+    const handler = String(matched[0]['처리자'] || '');
+    sendErpAlert_(site, '[QR 재고] ERP 등록 실패 ' + site + ' ' + batchId,
+      '배치ID: ' + batchId + '\n사이트: ' + site + '\n유형: ' + (matched[0]['구매유형코드'] || '') +
+      '\n품목 수: ' + matched.length + '\n처리자: ' + handler + '\n메시지: ' + (message || '(없음)') +
+      '\n\nPWA 청구서 관리 화면에서 수정 후 다시 등록할 수 있습니다.');
+  }
+  return { ok: true, updated: matched.length };
+}
+
+/**
+ * POST { token, action:"heartbeat", pc, sites:["화성"], state:"정상"|"로그인필요", message }
+ * 사이트별 스크립트 속성 ERP_BOT_LAST_<사이트>에만 기록한다(시트 쓰기 없음).
+ */
+function erpHeartbeat_(body) {
+  if (!erpTokenOk_(body.token)) return { ok: false, error: 'unauthorized' };
+  const sites = parseErpSites_(body.sites);
+  const state = String(body.state || '정상').trim();
+  const pc = String(body.pc || '').trim();
+  const message = String(body.message || '').trim();
+  const now = Date.now();
+  const props = PropertiesService.getScriptProperties();
+  const toSet = {};
+
+  sites.forEach(site => {
+    toSet['ERP_BOT_LAST_' + site] = JSON.stringify({ at: now, state, pc, message });
+    const alertKey = 'ERP_BOT_ALERT_' + site;
+    if (state === '로그인필요') {
+      let prev = null;
+      try { prev = JSON.parse(props.getProperty(alertKey) || 'null'); } catch (e) { prev = null; }
+      if (!prev || prev.state !== state || now - (prev.at || 0) >= ERP_ALERT_INTERVAL_MS) {
+        sendErpAlert_(site, '[QR 재고] ERP 자동등록 PC 로그인 필요 (' + site + ')',
+          '사이트: ' + site + '\nPC: ' + (pc || '(미상)') + '\n시각: ' +
+          Utilities.formatDate(new Date(now), 'Asia/Seoul', 'yyyy-MM-dd HH:mm') + '\n메시지: ' + (message || '(없음)'));
+        toSet[alertKey] = JSON.stringify({ state, at: now });
+      }
+    } else if (props.getProperty(alertKey)) {
+      props.deleteProperty(alertKey);
+    }
+  });
+  props.setProperties(toSet);
+  return { ok: true };
+}

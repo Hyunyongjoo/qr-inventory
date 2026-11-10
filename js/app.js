@@ -69,7 +69,9 @@
     ocrScanning: false,
     ocrScanTimer: null,
     ocrStartAt: 0,
-    ocrCandidate: null
+    ocrCandidate: null,
+    // 청구서 관리 화면. site: 조회 중인 사이트(관리자는 다른 사이트 선택 가능), baseSite: 진입 시점의 state.site
+    erp: { site: null, baseSite: null, data: null, tab: 'pending', selected: new Set(), typeCode: '', varsDraft: {}, busy: false }
   };
 
   // popstate(뒤로가기) 처리 중 switchView가 다시 history.pushState를 호출해
@@ -104,7 +106,7 @@
     // 새로 받아온 경우)에서 특정 화면의 요소를 찾지 못해 bindXxx() 하나가 실패하더라도,
     // 그 뒤에 이어지는 다른 화면 바인딩과 로그인 화면 진입까지는 막히지 않게 각각 감싸서 실행한다.
     [bindLogin, bindSite, bindNav, bindActions, bindLine, bindOutMode, bindOrderOut, bindHome, bindScan,
-      bindPurchase, bindReturn, bindTransfer, bindItems, bindInboundCheck, bindHistory, bindDownload, bindLogout, bindHardRefresh,
+      bindPurchase, bindReturn, bindTransfer, bindErp, bindItems, bindInboundCheck, bindHistory, bindDownload, bindLogout, bindHardRefresh,
       bindBackNavigation, bindPullToRefreshGuard, bindOcr
     ].forEach((bindFn) => {
       try {
@@ -241,6 +243,7 @@
     $('#view-login').classList.add('hidden');
     $('#worker-name').textContent = state.user.name + (state.user.role ? ` (${state.user.role})` : '');
     $('#action-transfer-btn').classList.toggle('hidden', !canManageInbound());
+    $('#action-erp-btn').classList.toggle('hidden', !canManageInbound());
 
     const savedSite = localStorage.getItem(SITE_KEY);
     state.site = SITES.includes(savedSite) ? savedSite : null;
@@ -456,6 +459,8 @@
     if (name === 'download') enterDownloadView();
 
     state.currentView = name;
+    if (name === 'erp') enterErp();
+    else hideErpFooter();
 
     // 뒤로가기(popstate)에 반응해 화면을 맞추는 중에는 다시 히스토리를 쌓지 않는다
     // (브라우저가 이미 그 방향으로 이동을 완료한 상태라 여기서 또 push하면 앞으로 가기가 꼬인다).
@@ -4099,6 +4104,451 @@
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, meta.label);
     XLSX.writeFile(wb, buildDownloadFilename_(meta.label));
+  }
+
+  // ------------------------- 청구서 관리 (구매유형 · ERP 청구서/긴급 등록) -------------------------
+  // 자재담당자/관리자 전용. 구매대기(구매필요 확정) 건에 구매유형을 지정하고, 버튼을 눌렀을 때만
+  // ERP상태=대기로 바꾼다. 실제 ERP 등록은 사이트별 사무실 PC 프로그램이 가져가서 처리한다(Erp.gs).
+
+  const ERP_STATUS_CLASS = { '대기': 'wait', '등록중': 'run', '완료': 'done', '실패': 'fail' };
+
+  function bindErp() {
+    $('#action-erp-btn').addEventListener('click', () => switchView('erp'));
+    $('#erp-back-btn').addEventListener('click', () => switchView('actions'));
+    $('#erp-refresh-btn').addEventListener('click', () => loadErpList());
+    $('#erp-site-select').addEventListener('change', (e) => {
+      state.erp.site = e.target.value;
+      resetErpSelection();
+      loadErpList();
+    });
+    $('#erp-state-filter').addEventListener('change', renderErp);
+    $('#erp-urgent-filter').addEventListener('change', renderErp);
+    $$('.erp-tab-btn').forEach((btn) => btn.addEventListener('click', () => {
+      state.erp.tab = btn.dataset.tab;
+      renderErp();
+    }));
+    $('#erp-select-all').addEventListener('change', (e) => {
+      erpVisibleRows().forEach((r) => {
+        if (e.target.checked) state.erp.selected.add(r.rowIndex);
+        else state.erp.selected.delete(r.rowIndex);
+      });
+      renderErp();
+    });
+    $('#erp-list').addEventListener('change', (e) => {
+      const cb = e.target.closest('.erp-row-check');
+      if (!cb) return;
+      const rowIndex = Number(cb.dataset.row);
+      if (cb.checked) state.erp.selected.add(rowIndex);
+      else state.erp.selected.delete(rowIndex);
+      cb.closest('.erp-row').classList.toggle('is-selected', cb.checked);
+      renderErpSelectRow();
+      renderErpFooter();
+    });
+    $('#erp-type-select').addEventListener('change', (e) => {
+      state.erp.typeCode = e.target.value;
+      renderErpFooter();
+    });
+    $('#erp-vars').addEventListener('input', (e) => {
+      const input = e.target.closest('.erp-var-input');
+      if (input) state.erp.varsDraft[input.dataset.var] = input.value;
+    });
+    $('#erp-weekly-select-btn').addEventListener('click', () => {
+      erpWeeklyCandidates().forEach((r) => state.erp.selected.add(r.rowIndex));
+      renderErp();
+    });
+    $('#erp-save-btn').addEventListener('click', () => submitErp('save'));
+    $('#erp-register-btn').addEventListener('click', () => submitErp('register'));
+    $('#erp-urgent-btn').addEventListener('click', () => submitErp('urgent'));
+  }
+
+  function resetErpSelection() {
+    state.erp.selected = new Set();
+    state.erp.typeCode = '';
+    state.erp.varsDraft = {};
+  }
+
+  function enterErp() {
+    if (!canManageInbound()) {
+      $('#erp-list').innerHTML = `<div class="empty-state">자재담당자/관리자만 사용할 수 있습니다.</div>`;
+      hideErpFooter();
+      return;
+    }
+    // 사이트를 바꿔 다시 들어오면 그 사이트 기준으로 초기화한다.
+    if (state.erp.baseSite !== state.site) {
+      state.erp.baseSite = state.site;
+      state.erp.site = state.site;
+      state.erp.data = null;
+      resetErpSelection();
+    }
+    renderErp();
+    loadErpList();
+  }
+
+  async function loadErpList() {
+    if (!state.erp.site || !state.user) return;
+    const listEl = $('#erp-list');
+    if (!state.erp.data) listEl.innerHTML = `<div class="empty-state">불러오는 중...</div>`;
+    try {
+      const data = await Api.post('erpRequestList', { site: state.erp.site, pin: state.user.pin });
+      if (data.site !== state.erp.site) return; // 그 사이 사이트를 바꾼 경우
+      state.erp.data = data;
+      const valid = new Set(data.rows.map((r) => r.rowIndex));
+      state.erp.selected = new Set([...state.erp.selected].filter((i) => valid.has(i)));
+      renderErp();
+    } catch (err) {
+      state.erp.data = null;
+      renderApiError_(listEl, err, loadErpList);
+      renderErpBot();
+      renderErpFooter();
+    }
+  }
+
+  function erpTypes() {
+    return (state.erp.data && state.erp.data.types) || [];
+  }
+
+  function erpTypeByCode(code) {
+    return erpTypes().find((t) => t.code === code) || null;
+  }
+
+  function erpTypeLabel(t) {
+    if (!t) return '';
+    const cond = [t.fields['유무상'], t.fields['사유1']].filter((v) => v && v.indexOf('확인필요') === -1).join('/');
+    return `${t.code} ${t.name}${cond ? ' · ' + cond : ''}${t.incomplete ? ' (조건 미완성)' : ''}`;
+  }
+
+  function erpIsUrgentView(r) {
+    return r.urgentNote || r.urgent;
+  }
+
+  function erpVisibleRows() {
+    const data = state.erp.data;
+    if (!data) return [];
+    const typeState = $('#erp-state-filter').value;
+    const urgent = $('#erp-urgent-filter').value;
+    const rows = state.erp.tab === 'pending' ? data.rows : data.progress;
+    return rows.filter((r) => {
+      if (typeState && r.typeState !== typeState) return false;
+      if (urgent === 'Y' && !erpIsUrgentView(r)) return false;
+      if (urgent === 'N' && erpIsUrgentView(r)) return false;
+      return true;
+    });
+  }
+
+  function erpSelectedRows() {
+    const data = state.erp.data;
+    if (!data) return [];
+    return data.rows.filter((r) => state.erp.selected.has(r.rowIndex));
+  }
+
+  function renderErp() {
+    const data = state.erp.data;
+    const siteSel = $('#erp-site-select');
+    const canSelect = !!(data && data.canSelectSite);
+    siteSel.classList.toggle('hidden', !canSelect);
+    if (canSelect) {
+      siteSel.innerHTML = SITES.map((s) => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('');
+      siteSel.value = state.erp.site;
+    }
+    $$('.erp-tab-btn').forEach((b) => b.classList.toggle('is-active', b.dataset.tab === state.erp.tab));
+    renderErpBot();
+    if (data) renderErpList();
+    renderErpSelectRow();
+    renderErpFooter();
+  }
+
+  function renderErpBot() {
+    const el = $('#erp-bot-status');
+    const b = state.erp.data && state.erp.data.bot;
+    if (!b) { el.textContent = ''; el.classList.remove('is-offline'); return; }
+    let text;
+    if (b.never) {
+      text = `자동등록 PC (${b.site}): 확인 기록 없음`;
+    } else {
+      const d = new Date(b.at);
+      const hhmm = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+      const sameDay = d.toDateString() === new Date().toDateString();
+      const when = sameDay ? hhmm : `${d.getMonth() + 1}/${d.getDate()} ${hhmm}`;
+      text = `자동등록 PC (${b.site}): 마지막 확인 ${when}` + (b.pc ? ` · ${b.pc}` : '') +
+        (b.state && b.state !== '정상' ? ` · ${b.state}` : '');
+    }
+    el.textContent = text;
+    el.classList.toggle('is-offline', !!(b.offline || b.state === '로그인필요'));
+  }
+
+  function renderErpSelectRow() {
+    const pendingTab = state.erp.tab === 'pending';
+    $('#erp-select-row').classList.toggle('hidden', !pendingTab || !state.erp.data);
+    if (!pendingTab) return;
+    const visible = erpVisibleRows();
+    const all = $('#erp-select-all');
+    all.checked = visible.length > 0 && visible.every((r) => state.erp.selected.has(r.rowIndex));
+    const n = state.erp.selected.size;
+    $('#erp-selected-count').textContent = n ? `${n}건 선택` : `${visible.length}건`;
+  }
+
+  function renderErpList() {
+    const listEl = $('#erp-list');
+    const rows = erpVisibleRows();
+    const pendingTab = state.erp.tab === 'pending';
+    if (!rows.length) {
+      const msg = pendingTab ? '미등록 구매대기 건이 없습니다.' : '진행 중이거나 최근 완료된 건이 없습니다.';
+      const noTypes = !erpTypes().length ? '<br>이 사이트에 등록된 구매유형이 없습니다(구매유형 시트 확인).' : '';
+      listEl.innerHTML = `<div class="empty-state">${msg}${noTypes}</div>`;
+      return;
+    }
+    listEl.innerHTML = rows.map((r) => {
+      const t = erpTypeByCode(r.typeCode);
+      const typeText = r.typeCode ? (t ? `${t.code} ${t.name}` : r.typeCode) : '유형 미지정';
+      const typeChip = r.typeState ? `<span class="erp-chip erp-chip-${r.typeState === '확정' ? 'fixed' : 'proposed'}">${escapeHtml(r.typeState)}</span>` : '';
+      const incompleteChip = t && t.incomplete ? `<span class="erp-chip erp-chip-warn">조건 미완성</span>` : '';
+      const statusCls = ERP_STATUS_CLASS[r.erpStatus] || '';
+      const statusDetail = r.erpStatus === '완료' ? r.erpTitle : (r.erpStatus === '실패' ? r.erpMessage : '');
+      const statusChip = r.erpStatus
+        ? `<div class="erp-status erp-status-${statusCls}">${escapeHtml(r.erpStatus)}${r.urgent ? ' (긴급)' : ''}${statusDetail ? ' · ' + escapeHtml(statusDetail) : ''}${r.erpAt ? ` <span class="muted">${escapeHtml(r.erpAt)}</span>` : ''}</div>`
+        : '';
+      const notes = [r.note1, r.note2].filter(Boolean).join(' / ');
+      const checked = state.erp.selected.has(r.rowIndex);
+      return `
+        <div class="card erp-row${erpIsUrgentView(r) ? ' is-urgent' : ''}${checked ? ' is-selected' : ''}">
+          <label class="erp-row-head">
+            ${pendingTab ? `<input type="checkbox" class="erp-row-check" data-row="${r.rowIndex}" ${checked ? 'checked' : ''} />` : ''}
+            <span class="erp-row-title">${erpIsUrgentView(r) ? '<span class="erp-urgent-badge">긴급</span>' : ''}${escapeHtml(r.itemName || r.itemId)}</span>
+          </label>
+          <div class="erp-row-sub">${escapeHtml(r.itemId)}${r.spec ? ' · ' + escapeHtml(r.spec) : ''}</div>
+          <div class="erp-row-sub">${escapeHtml(r.requestDate)} · ${escapeHtml(r.zone)} · 수량 <strong>${escapeHtml(r.qty)}</strong> · ${escapeHtml(r.requester)}</div>
+          ${notes ? `<div class="erp-row-note">특이사항: ${escapeHtml(notes)}</div>` : ''}
+          <div class="erp-row-type">${escapeHtml(typeText)} ${typeChip}${incompleteChip}</div>
+          ${statusChip}
+        </div>
+      `;
+    }).join('');
+  }
+
+  // 선택 행마다 실제로 적용될 유형코드(드롭다운에서 고르면 그 유형, 아니면 각 행의 현재 유형).
+  function erpEffectiveCodes(rows) {
+    return rows.map((r) => state.erp.typeCode || r.typeCode || '');
+  }
+
+  // 선택 행 전체에 같은 유형 하나가 적용되면 그 유형(입력칸 표시/명칭 미리보기 대상), 아니면 null.
+  function erpSingleType(rows) {
+    const codes = [...new Set(erpEffectiveCodes(rows))];
+    return codes.length === 1 && codes[0] ? erpTypeByCode(codes[0]) : null;
+  }
+
+  function erpWeekStart(d) {
+    const s = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    s.setDate(s.getDate() - ((s.getDay() + 6) % 7));
+    return s;
+  }
+
+  function erpDateKey(d) {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+
+  // 주간묶음 유형을 고른 경우: 이번 주(월~일) 요청 중 같은 유형인데 아직 선택하지 않은 미등록 건.
+  function erpWeeklyCandidates() {
+    const rows = erpSelectedRows();
+    const type = erpSingleType(rows);
+    if (!type || !type.weekly || !state.erp.data) return [];
+    const start = erpWeekStart(new Date());
+    const end = new Date(start);
+    end.setDate(end.getDate() + 6);
+    const from = erpDateKey(start);
+    const to = erpDateKey(end);
+    return state.erp.data.rows.filter((r) => !state.erp.selected.has(r.rowIndex) &&
+      r.typeCode === type.code && r.requestDate >= from && r.requestDate <= to);
+  }
+
+  function erpWeekOfMonth(d) {
+    const offset = (new Date(d.getFullYear(), d.getMonth(), 1).getDay() + 6) % 7;
+    return Math.floor((d.getDate() - 1 + offset) / 7) + 1;
+  }
+
+  // 서버 buildErpTitle(Erp.gs)과 같은 규칙의 미리보기용 명칭.
+  function erpBuildTitle(type, rows, vars, date) {
+    const lines = [...new Set(rows.map((r) => String(r.zone || '').trim()).filter(Boolean))];
+    const values = Object.assign({}, vars, { SITE: lines.join(', '), MM: String(date.getMonth() + 1), N: String(erpWeekOfMonth(date)) });
+    const val = (n) => String(values[n.trim()] == null ? '' : values[n.trim()]).trim();
+    return String(type.template || '')
+      .replace(/\(\s*\{([^}]+)\}\s*\)/g, (m, v) => (val(v) ? `(${val(v)})` : ''))
+      .replace(/\{([^}]+)\}/g, (m, v) => val(v))
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+  }
+
+  function erpVarValue(name, rows) {
+    if (state.erp.varsDraft[name] !== undefined) return state.erp.varsDraft[name];
+    const stored = rows.map((r) => r.vars && r.vars[name]).find(Boolean);
+    if (stored) return stored;
+    // {PART}는 특이사항2에 적혀 있으면 그 값으로 미리 채운다(조건표 '입력 항목 정의').
+    if (name === 'PART') return (rows.map((r) => r.note2).find(Boolean)) || '';
+    return '';
+  }
+
+  function erpCollectVars(type, rows) {
+    const vars = {};
+    type.inputVars.forEach((v) => {
+      const val = String(erpVarValue(v, rows) || '').trim();
+      if (val) vars[v] = val;
+    });
+    return vars;
+  }
+
+  // 등록(청구서/긴급)을 막아야 하는 이유. 없으면 ''.
+  function erpRegisterBlockReason(rows) {
+    const codes = erpEffectiveCodes(rows);
+    if (codes.some((c) => !c)) return '구매유형이 지정되지 않은 행이 있습니다. 유형을 선택하세요.';
+    const bad = [...new Set(codes)].map(erpTypeByCode);
+    if (bad.some((t) => !t)) return '구매유형 시트에 없는 유형이 있습니다. 유형을 다시 선택하세요.';
+    const disabled = bad.filter((t) => !t.enabled);
+    if (disabled.length) return `사용하지 않는 유형입니다: ${disabled.map((t) => t.code).join(', ')}`;
+    const incomplete = bad.filter((t) => t.incomplete);
+    if (incomplete.length) {
+      return '구매유형 시트에서 조건을 채워주세요: ' + incomplete.map((t) => `${t.code}(${t.missing.join(', ')})`).join(', ');
+    }
+    return '';
+  }
+
+  function hideErpFooter() {
+    const footer = $('#erp-footer');
+    if (!footer || footer.classList.contains('hidden')) return;
+    footer.classList.add('hidden');
+    $('#view-container').style.paddingBottom = '';
+  }
+
+  function renderErpFooter() {
+    const footer = $('#erp-footer');
+    const rows = erpSelectedRows();
+    const show = state.currentView === 'erp' && state.erp.tab === 'pending' && rows.length > 0;
+    if (!show) { hideErpFooter(); return; }
+    footer.classList.remove('hidden');
+
+    // 구매유형 드롭다운: 이 사이트의 사용 중인 유형만. 첫 항목은 "각 행 현재 유형 유지".
+    const types = erpTypes().filter((t) => t.enabled);
+    if (state.erp.typeCode && !types.some((t) => t.code === state.erp.typeCode)) state.erp.typeCode = '';
+    const rowCodes = [...new Set(rows.map((r) => r.typeCode || ''))];
+    const keepLabel = rowCodes.length === 1 && rowCodes[0]
+      ? `현재 유형 유지 (${(erpTypeByCode(rowCodes[0]) || { name: rowCodes[0] }).name})`
+      : '각 행의 현재 유형 유지';
+    const sel = $('#erp-type-select');
+    sel.innerHTML = `<option value="">${escapeHtml(keepLabel)}</option>` +
+      types.map((t) => `<option value="${escapeHtml(t.code)}">${escapeHtml(erpTypeLabel(t))}</option>`).join('');
+    sel.value = state.erp.typeCode;
+
+    // 입력칸: 선택 행 전체에 같은 유형이 적용될 때만 그 유형의 입력항목을 보여 준다({SITE}/{MM}/{N}은 자동).
+    const single = erpSingleType(rows);
+    const varsEl = $('#erp-vars');
+    if (single && single.inputVars.length) {
+      varsEl.innerHTML = single.inputVars.map((v) => `
+        <label class="erp-var">
+          <span>${escapeHtml(v)}</span>
+          <input type="text" class="input erp-var-input" data-var="${escapeHtml(v)}" value="${escapeHtml(erpVarValue(v, rows))}" />
+        </label>`).join('');
+    } else if (!single && rowCodes.length > 1 && !state.erp.typeCode) {
+      varsEl.innerHTML = `<div class="muted">유형이 섞여 있어 각 행에 저장된 명칭 변수를 그대로 씁니다.</div>`;
+    } else {
+      varsEl.innerHTML = '';
+    }
+
+    // 주간묶음 안내
+    const weekly = erpWeeklyCandidates();
+    $('#erp-weekly-hint').classList.toggle('hidden', !weekly.length);
+    if (weekly.length) $('#erp-weekly-text').textContent = `이번 주 같은 유형 미등록 ${weekly.length}건이 더 있습니다`;
+
+    const block = erpRegisterBlockReason(rows);
+    const warn = $('#erp-footer-warn');
+    warn.classList.toggle('hidden', !block);
+    warn.textContent = block;
+    $('#erp-save-btn').disabled = state.erp.busy;
+    $('#erp-register-btn').disabled = state.erp.busy || !!block;
+    $('#erp-urgent-btn').disabled = state.erp.busy || !!block;
+
+    // 하단 고정 패널에 목록 끝이 가려지지 않게 스크롤 여백을 패널 높이만큼 늘린다.
+    $('#view-container').style.paddingBottom = (footer.offsetHeight + 80) + 'px';
+  }
+
+  function erpConfirm(mode, rows, bot) {
+    return new Promise((resolve) => {
+      const site = state.erp.site;
+      const codes = [...new Set(erpEffectiveCodes(rows))];
+      const types = codes.map(erpTypeByCode).filter(Boolean);
+      const typeLabel = types.length === 1 ? types[0].name : `${types[0].name} 외 ${types.length - 1}개 유형`;
+      const single = erpSingleType(rows);
+      const title = single ? erpBuildTitle(single, rows, erpCollectVars(single, rows), new Date()) : '';
+      let botLine = '';
+      if (bot) {
+        const offline = bot.never || bot.offline;
+        botLine = `<div class="erp-confirm-bot${offline || bot.state === '로그인필요' ? ' is-offline' : ''}">자동등록 PC: ${bot.never ? '확인 기록 없음' : '마지막 확인 ' + escapeHtml(bot.time)}${bot.state && bot.state !== '정상' ? ' · ' + escapeHtml(bot.state) : ''}</div>`;
+        if (mode === 'urgent' && offline) {
+          botLine += `<div class="erp-footer-warn">${escapeHtml(site)} 대기 모드 PC가 꺼져 있어 바로 등록되지 않을 수 있습니다.</div>`;
+        } else if (bot.state === '로그인필요') {
+          botLine += `<div class="erp-footer-warn">${escapeHtml(site)} 자동등록 PC가 ERP 로그인을 기다리고 있습니다.</div>`;
+        }
+      }
+      openModal(`
+        <div class="modal-sheet">
+          <h3>${mode === 'urgent' ? '긴급 등록' : '청구서 등록'}</h3>
+          <p class="erp-confirm-main">${escapeHtml(site)} / ${escapeHtml(typeLabel)} / ${rows.length}품목 / ${mode === 'urgent' ? '긴급 — ' : ''}즉시 ERP 등록합니다</p>
+          ${title ? `<p class="muted">명칭 미리보기: ${escapeHtml(title)}</p>` : ''}
+          ${mode === 'register' ? '<p class="muted">사무실 PC에서 등록 프로그램을 실행하면 등록됩니다.</p>' : ''}
+          ${botLine}
+          <div class="modal-actions">
+            <button class="btn btn-secondary" id="erp-confirm-cancel">취소</button>
+            <button class="btn ${mode === 'urgent' ? 'btn-danger' : 'btn-primary'}" id="erp-confirm-ok">등록</button>
+          </div>
+        </div>
+      `);
+      $('#erp-confirm-cancel').addEventListener('click', () => { closeModal(); resolve(false); });
+      $('#erp-confirm-ok').addEventListener('click', () => { closeModal(); resolve(true); });
+      $('#modal-overlay').addEventListener('click', (e) => { if (e.target.id === 'modal-overlay') resolve(false); });
+    });
+  }
+
+  async function submitErp(mode) {
+    if (state.erp.busy) return;
+    const rows = erpSelectedRows();
+    if (!rows.length) { toast('행을 선택하세요.', 'error'); return; }
+    if (mode !== 'save') {
+      const block = erpRegisterBlockReason(rows);
+      if (block) { toast(block, 'error'); return; }
+      let bot = state.erp.data && state.erp.data.bot;
+      try {
+        bot = await Api.get('erpBotStatus', { site: state.erp.site });
+        state.erp.data.bot = bot;
+        renderErpBot();
+      } catch (_) { /* 마지막으로 받은 상태로 표시 */ }
+      if (!(await erpConfirm(mode, rows, bot))) return;
+    } else if (rows.some((r) => !(state.erp.typeCode || r.typeCode))) {
+      toast('구매유형을 선택하세요.', 'error');
+      return;
+    }
+
+    const body = {
+      site: state.erp.site,
+      pin: state.user.pin,
+      mode,
+      items: rows.map((r) => ({ rowIndex: r.rowIndex, itemId: r.itemId }))
+    };
+    if (state.erp.typeCode) body.typeCode = state.erp.typeCode;
+    const single = erpSingleType(rows);
+    if (single) body.vars = erpCollectVars(single, rows);
+
+    state.erp.busy = true;
+    renderErpFooter();
+    try {
+      const res = await Api.post('erpUpdateRequests', body);
+      const label = mode === 'save' ? '유형 저장' : (mode === 'urgent' ? '긴급 등록 대기' : '청구서 등록 대기');
+      toast(`${res.count}건 ${label} 완료`, 'success');
+      resetErpSelection();
+      if (mode !== 'save') state.erp.tab = 'progress';
+      await loadErpList();
+    } catch (err) {
+      toast(err.message || '처리 중 오류가 발생했습니다.', 'error');
+    } finally {
+      state.erp.busy = false;
+      renderErpFooter();
+    }
   }
 
   // ------------------------- 모달 -------------------------

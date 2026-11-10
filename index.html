@@ -94,6 +94,10 @@
           <span class="action-icon">🔀</span>
           <span class="action-label">이관</span>
         </button>
+        <button class="action-btn action-btn-erp hidden" id="action-erp-btn">
+          <span class="action-icon">📑</span>
+          <span class="action-label">청구서 관리</span>
+        </button>
       </div>
     </section>
 
@@ -457,6 +461,41 @@
       <div id="transfer-returnable-list" class="list"></div>
     </section>
 
+    <!-- 청구서 관리 (자재담당자/관리자 전용: 구매유형 지정 · ERP 청구서/긴급 등록) -->
+    <section id="view-erp" class="view hidden">
+      <div class="view-header">
+        <h2>청구서 관리</h2>
+        <button class="btn-link" id="erp-back-btn">← 뒤로</button>
+      </div>
+      <div id="erp-bot-status" class="erp-bot-status"></div>
+      <div class="erp-filters">
+        <select id="erp-site-select" class="select hidden"></select>
+        <select id="erp-state-filter" class="select">
+          <option value="">유형상태 전체</option>
+          <option value="제안">제안</option>
+          <option value="확정">확정</option>
+        </select>
+        <select id="erp-urgent-filter" class="select">
+          <option value="">긴급 여부 전체</option>
+          <option value="Y">긴급만</option>
+          <option value="N">긴급 제외</option>
+        </select>
+      </div>
+      <div class="erp-tabs">
+        <button type="button" class="erp-tab-btn is-active" data-tab="pending">미등록</button>
+        <button type="button" class="erp-tab-btn" data-tab="progress">진행·완료</button>
+        <button type="button" class="btn-link" id="erp-refresh-btn">새로고침</button>
+      </div>
+      <div id="erp-select-row" class="select-all-row">
+        <label class="checkbox-label">
+          <input type="checkbox" id="erp-select-all" />
+          전체 선택
+        </label>
+        <span id="erp-selected-count" class="muted"></span>
+      </div>
+      <div id="erp-list" class="list"></div>
+    </section>
+
     <!-- 자재 -->
     <section id="view-items" class="view hidden">
       <div id="items-search-sticky" class="search-sticky">
@@ -584,6 +623,22 @@
     <button id="transfer-submit-btn" class="btn btn-primary btn-block">
       이관 요청 완료 (<span id="transfer-submit-count">0</span>건)
     </button>
+  </div>
+
+  <div id="erp-footer" class="cart-footer erp-footer hidden">
+    <label class="field-label" for="erp-type-select">구매유형</label>
+    <select id="erp-type-select" class="select"></select>
+    <div id="erp-vars" class="erp-vars"></div>
+    <div id="erp-weekly-hint" class="erp-weekly-hint hidden">
+      <span id="erp-weekly-text"></span>
+      <button type="button" class="btn btn-secondary btn-small" id="erp-weekly-select-btn">함께 선택</button>
+    </div>
+    <div id="erp-footer-warn" class="erp-footer-warn hidden"></div>
+    <div class="erp-footer-actions">
+      <button type="button" id="erp-save-btn" class="btn btn-secondary">유형 저장</button>
+      <button type="button" id="erp-register-btn" class="btn btn-primary">청구서 등록</button>
+      <button type="button" id="erp-urgent-btn" class="btn btn-danger">긴급 등록</button>
+    </div>
   </div>
 
   <div id="order-out-cart-footer" class="cart-footer hidden">

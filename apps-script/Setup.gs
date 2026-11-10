@@ -21,7 +21,7 @@ function setupSpreadsheet() {
   ], [6]); // CreatedAt
 
   createSheetIfMissing_(ss, 'Users', [
-    'PIN', 'Name', 'Role'
+    'PIN', 'Name', 'Role', '사이트' // 사이트: 청구서 관리 담당 사이트(화성/평택/기흥/전체)
   ], []);
 
   SITES.forEach(site => {

@@ -34,7 +34,8 @@ const SAFETY_STOCK_ZONE = '안전재고';
 const SAFETY_SUPPLY_ZONE = '안전용품';
 const SAFETY_SUPPLY_KEYWORD = '안전용품';
 // 입고확인 화면의 재고사용/구매필요/입고/출고완료 버튼을 사용할 수 있는 Role (Users 시트 Role 컬럼 값).
-const MANAGER_ROLES = ['자재담당자', '관리자'];
+// 자재관리자는 자재담당자 권한 전부 + 청구서 관리(Erp.gs, Users 시트 '사이트' 열로 담당 사이트 지정)를 쓴다.
+const MANAGER_ROLES = ['자재담당자', '관리자', '자재관리자'];
 // 구매요청번호가 등록되어(구매완료 계열) 이후로 넘어간 상태에서는 재고사용/구매필요/구매보류
 // 3개 버튼을 모두 잠근다 — 입고확인 화면 버튼 활성화 조건과 동일한 목록(js/app.js의
 // STOCK_USAGE_LOCKED_STATUSES와 대응).
@@ -348,6 +349,9 @@ function sheet_(name) {
     ensureColumnsOnce_(sheet, name, ['누적출고수량', '출고여부', '최종출고일', '비고', '특이사항1', '특이사항2'].concat(ERP_COLUMNS));
   } else if (name.slice(-3) === '_출고') {
     ensureColumnsOnce_(sheet, name, ['라인구매번호']);
+  } else if (name === 'Users') {
+    // 청구서 관리 담당 사이트(화성/평택/기흥/전체). 청구서 관리 기능에서만 쓰고 기존 화면은 쓰지 않는다.
+    ensureColumnsOnce_(sheet, name, ['사이트']);
   }
   return sheet;
 }
@@ -543,7 +547,7 @@ function handleLogin_(pin) {
   const users = readAll_(sheet_('Users'));
   const user = users.find(u => String(u.PIN) === String(pin));
   if (!user) throw new Error('사번이 올바르지 않습니다.');
-  return { name: user.Name, role: user.Role, pin: String(user.PIN) };
+  return { name: user.Name, role: user.Role, pin: String(user.PIN), site: String(user['사이트'] || '').trim() };
 }
 
 // ------------------------- 자재(Items) -------------------------

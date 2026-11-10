@@ -70,8 +70,8 @@
     ocrScanTimer: null,
     ocrStartAt: 0,
     ocrCandidate: null,
-    // 청구서 관리 화면. site: 조회 중인 사이트(관리자는 다른 사이트 선택 가능), baseSite: 진입 시점의 state.site
-    erp: { site: null, baseSite: null, data: null, tab: 'pending', selected: new Set(), typeCode: '', varsDraft: {}, busy: false }
+    // 청구서 관리 화면. site: 조회 중인 사이트(서버가 권한으로 결정, 관리자는 선택 가능), pin: 그 화면을 연 사용자
+    erp: { site: null, pin: null, data: null, tab: 'pending', selected: new Set(), typeCode: '', varsDraft: {}, busy: false, loadSeq: 0 }
   };
 
   // popstate(뒤로가기) 처리 중 switchView가 다시 history.pushState를 호출해
@@ -243,7 +243,7 @@
     $('#view-login').classList.add('hidden');
     $('#worker-name').textContent = state.user.name + (state.user.role ? ` (${state.user.role})` : '');
     $('#action-transfer-btn').classList.toggle('hidden', !canManageInbound());
-    $('#action-erp-btn').classList.toggle('hidden', !canManageInbound());
+    $('#action-erp-btn').classList.toggle('hidden', !canUseErp());
 
     const savedSite = localStorage.getItem(SITE_KEY);
     state.site = SITES.includes(savedSite) ? savedSite : null;
@@ -260,6 +260,23 @@
     }
     updateOfflineBadge();
     flushQueue(false);
+    refreshUserInfo();
+  }
+
+  // 로그인 정보는 기기에 저장돼 있어 Users 시트에서 Role/사이트를 바꿔도(예: 자재담당자 → 자재관리자)
+  // 다시 로그인하기 전까지 반영되지 않는다. 앱을 열 때 뒤에서 한 번 다시 조회해 메뉴 표시만 갱신한다.
+  // 실패(오프라인 등)하면 저장된 정보를 그대로 쓴다.
+  async function refreshUserInfo() {
+    if (!state.user || !state.user.pin) return;
+    try {
+      const user = await Api.post('verifyPin', { pin: state.user.pin });
+      if (!state.user || String(user.pin) !== String(state.user.pin)) return;
+      state.user = user;
+      localStorage.setItem(USER_KEY, JSON.stringify(user));
+      $('#worker-name').textContent = user.name + (user.role ? ` (${user.role})` : '');
+      $('#action-transfer-btn').classList.toggle('hidden', !canManageInbound());
+      $('#action-erp-btn').classList.toggle('hidden', !canUseErp());
+    } catch (_) { /* 저장된 로그인 정보 유지 */ }
   }
 
   // ------------------------- 사이트 선택 -------------------------
@@ -2899,7 +2916,12 @@
   const STOCK_USAGE_LOCKED_STATUSES = ['구매완료', '부분입고', '입고완료', '부분출고', '출고완료'];
 
   function canManageInbound() {
-    return !!(state.user && (state.user.role === '자재담당자' || state.user.role === '관리자'));
+    return !!(state.user && (state.user.role === '자재담당자' || state.user.role === '관리자' || state.user.role === '자재관리자'));
+  }
+
+  // 청구서 관리 메뉴: 관리자(전체 사이트) / 자재관리자(Users 시트 '사이트' 열의 사이트). 서버(Erp.gs erpAccess_)가 다시 검증한다.
+  function canUseErp() {
+    return !!(state.user && (state.user.role === '관리자' || state.user.role === '자재관리자'));
   }
 
   // 입고/출고 2단계 처리에서 백그라운드 저장(inboundByManager/outboundComplete)이 아직 끝나지 않은
@@ -4168,15 +4190,16 @@
   }
 
   function enterErp() {
-    if (!canManageInbound()) {
-      $('#erp-list').innerHTML = `<div class="empty-state">자재담당자/관리자만 사용할 수 있습니다.</div>`;
+    if (!canUseErp()) {
+      $('#erp-list').innerHTML = `<div class="empty-state">관리자와 자재관리자만 사용할 수 있습니다.</div>`;
       hideErpFooter();
       return;
     }
-    // 사이트를 바꿔 다시 들어오면 그 사이트 기준으로 초기화한다.
-    if (state.erp.baseSite !== state.site) {
-      state.erp.baseSite = state.site;
-      state.erp.site = state.site;
+    // 청구서 관리의 사이트는 화면 상단에서 고른 사이트가 아니라 Users 시트의 담당 사이트로 서버가 정한다.
+    // 다른 사용자로 다시 로그인했으면 처음부터 다시 불러온다.
+    if (state.erp.pin !== state.user.pin) {
+      state.erp.pin = state.user.pin;
+      state.erp.site = null;
       state.erp.data = null;
       resetErpSelection();
     }
@@ -4185,17 +4208,20 @@
   }
 
   async function loadErpList() {
-    if (!state.erp.site || !state.user) return;
+    if (!state.user) return;
     const listEl = $('#erp-list');
+    const seq = ++state.erp.loadSeq;
     if (!state.erp.data) listEl.innerHTML = `<div class="empty-state">불러오는 중...</div>`;
     try {
-      const data = await Api.post('erpRequestList', { site: state.erp.site, pin: state.user.pin });
-      if (data.site !== state.erp.site) return; // 그 사이 사이트를 바꾼 경우
+      const data = await Api.post('erpRequestList', { site: state.erp.site || '', pin: state.user.pin });
+      if (seq !== state.erp.loadSeq) return; // 그 사이 다시 불러온 경우(사이트 변경 등)
+      state.erp.site = data.site;
       state.erp.data = data;
       const valid = new Set(data.rows.map((r) => r.rowIndex));
       state.erp.selected = new Set([...state.erp.selected].filter((i) => valid.has(i)));
       renderErp();
     } catch (err) {
+      if (seq !== state.erp.loadSeq) return;
       state.erp.data = null;
       renderApiError_(listEl, err, loadErpList);
       renderErpBot();
@@ -4247,7 +4273,7 @@
     const canSelect = !!(data && data.canSelectSite);
     siteSel.classList.toggle('hidden', !canSelect);
     if (canSelect) {
-      siteSel.innerHTML = SITES.map((s) => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('');
+      siteSel.innerHTML = (data.sites || []).map((s) => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('');
       siteSel.value = state.erp.site;
     }
     $$('.erp-tab-btn').forEach((b) => b.classList.toggle('is-active', b.dataset.tab === state.erp.tab));
@@ -4257,23 +4283,30 @@
     renderErpFooter();
   }
 
+  function erpBotIsBad(b) {
+    return !!(b.never || b.offline || b.state === '로그인필요');
+  }
+
+  // 예: "화성PC 15:22 정상". 10분 이상 끊겼거나 로그인필요면 빨간색.
+  function erpBotText(b) {
+    const name = b.pc || `${b.site}PC`;
+    if (b.never) return `${name} 확인 기록 없음`;
+    const d = new Date(b.at);
+    const hhmm = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+    const sameDay = d.toDateString() === new Date().toDateString();
+    const when = sameDay ? hhmm : `${d.getMonth() + 1}/${d.getDate()} ${hhmm}`;
+    return `${name} ${when} ${b.state || ''}`.trim();
+  }
+
+  // 자재관리자: 자기 사이트 PC 1대 / 관리자: 모든 사이트 PC를 " / "로 이어 표시.
   function renderErpBot() {
     const el = $('#erp-bot-status');
-    const b = state.erp.data && state.erp.data.bot;
-    if (!b) { el.textContent = ''; el.classList.remove('is-offline'); return; }
-    let text;
-    if (b.never) {
-      text = `자동등록 PC (${b.site}): 확인 기록 없음`;
-    } else {
-      const d = new Date(b.at);
-      const hhmm = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
-      const sameDay = d.toDateString() === new Date().toDateString();
-      const when = sameDay ? hhmm : `${d.getMonth() + 1}/${d.getDate()} ${hhmm}`;
-      text = `자동등록 PC (${b.site}): 마지막 확인 ${when}` + (b.pc ? ` · ${b.pc}` : '') +
-        (b.state && b.state !== '정상' ? ` · ${b.state}` : '');
-    }
-    el.textContent = text;
-    el.classList.toggle('is-offline', !!(b.offline || b.state === '로그인필요'));
+    const data = state.erp.data;
+    const bots = (data && (data.bots || (data.bot ? [data.bot] : []))) || [];
+    if (!bots.length) { el.innerHTML = ''; el.classList.remove('is-offline'); return; }
+    el.innerHTML = '자동등록 PC: ' + bots.map((b) =>
+      `<span class="erp-bot-item${erpBotIsBad(b) ? ' is-offline' : ''}">${escapeHtml(erpBotText(b))}</span>`).join(' / ');
+    el.classList.toggle('is-offline', bots.some(erpBotIsBad));
   }
 
   function renderErpSelectRow() {
@@ -4516,6 +4549,7 @@
       try {
         bot = await Api.get('erpBotStatus', { site: state.erp.site });
         state.erp.data.bot = bot;
+        if (state.erp.data.bots) state.erp.data.bots = state.erp.data.bots.map((b) => (b.site === bot.site ? bot : b));
         renderErpBot();
       } catch (_) { /* 마지막으로 받은 상태로 표시 */ }
       if (!(await erpConfirm(mode, rows, bot))) return;

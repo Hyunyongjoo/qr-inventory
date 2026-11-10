@@ -4,7 +4,7 @@
  * 흐름
  *  1) 구매요청이 들어오면(submitPurchase_) 구매발주및입고 시트 맨 오른쪽 신규 열의 구매유형코드에
  *     사이트 기본 유형(안전용품구매는 환경안전용품 유형)을 넣고 유형상태=제안으로 둔다.
- *  2) 자재담당자/관리자가 PWA "청구서 관리" 화면에서 구매대기(구매필요 확정) 건을 골라
+ *  2) 관리자/자재관리자(Users 시트 '사이트' 열로 담당 사이트 지정)가 PWA "청구서 관리" 화면에서 구매대기(구매필요 확정) 건을 골라
  *     유형 저장 / 청구서 등록 / 긴급 등록을 누른다(erpUpdateRequests_). 등록 버튼은 ERP상태=대기로만 바꾼다.
  *  3) 사이트별 사무실 PC의 등록 프로그램이 GET ?action=pending 으로 대기 건을 배치 단위로 가져가고
  *     (ERP상태=등록중), ERP 등록 후 POST action=result 로 완료/실패를 돌려준다.
@@ -55,6 +55,12 @@ const ERP_FLAG_TTL_SEC = 21600;
 // 청구서 관리 화면 "진행·완료" 탭에 보여 줄 완료 건 기간.
 const ERP_DONE_VIEW_DAYS = 7;
 const ERP_URGENT_NOTE_KEYWORD = '긴급';
+// 청구서 관리 권한: 관리자(전체 사이트) / 자재관리자(Users 시트 '사이트' 열의 사이트만, '전체'면 전체).
+const ERP_ADMIN_ROLE = '관리자';
+const ERP_SITE_MANAGER_ROLE = '자재관리자';
+const ERP_SITE_ALL = '전체';
+// 관리자(전체 담당)가 고를 수 있는 사이트.
+const ERP_SITES = ['화성', '평택'];
 
 // ------------------------- 구매유형 조건표 -------------------------
 
@@ -353,6 +359,27 @@ function parseErpSites_(v) {
 
 // ------------------------- PWA: 청구서 관리 -------------------------
 
+// 청구서 관리 사용 권한과 담당 사이트. multi=true면 사이트 선택 가능(관리자 또는 사이트='전체').
+function erpAccess_(pin) {
+  const user = handleLogin_(pin);
+  const isAdmin = user.role === ERP_ADMIN_ROLE;
+  if (!isAdmin && user.role !== ERP_SITE_MANAGER_ROLE) {
+    throw new Error('청구서 관리는 관리자와 자재관리자만 사용할 수 있습니다.');
+  }
+  if (isAdmin || user.site === ERP_SITE_ALL) return { user, multi: true, sites: ERP_SITES.slice() };
+  if (!user.site) throw new Error('유저 시트에 사이트를 지정해 주세요');
+  if (SITES.indexOf(user.site) === -1) throw new Error('유저 시트의 사이트 값이 올바르지 않습니다: ' + user.site);
+  return { user, multi: false, sites: [user.site] };
+}
+
+// 요청한 사이트를 권한에 맞게 정한다. 자재관리자는 자기 사이트로 고정, 관리자는 선택 사이트(없으면 첫 사이트).
+function resolveErpSite_(access, requested) {
+  const site = String(requested || '').trim();
+  if (access.sites.indexOf(site) !== -1) return site;
+  if (!access.multi && site) throw new Error('담당 사이트(' + access.sites[0] + ')만 처리할 수 있습니다.');
+  return access.sites[0];
+}
+
 function erpBotStatus_(site) {
   const raw = PropertiesService.getScriptProperties().getProperty('ERP_BOT_LAST_' + site);
   let last = null;
@@ -407,9 +434,9 @@ function compareErpRows_(a, b) {
 }
 
 // 청구서 관리 화면 데이터. rows = 미등록(ERP상태 빈값/실패) 구매대기 건, progress = 대기/등록중 + 최근 완료 건.
-function erpRequestList_(site, pin) {
-  assertSite_(site);
-  const user = assertManagerRole_(pin);
+function erpRequestList_(requestedSite, pin) {
+  const access = erpAccess_(pin);
+  const site = resolveErpSite_(access, requestedSite);
   const types = purchaseTypesForSite_(site);
   const defaultType = types.find(t => t.isDefault && t.enabled) || null;
   const all = readAll_(sheet_(poInSheetName_(site)));
@@ -435,7 +462,10 @@ function erpRequestList_(site, pin) {
     rows,
     progress,
     bot: erpBotStatus_(site),
-    canSelectSite: user.role === '관리자'
+    // 사이트 선택이 가능한 사용자(관리자)는 상단에 모든 사이트의 PC 상태를 함께 표시한다.
+    bots: access.multi ? access.sites.map(erpBotStatus_) : [erpBotStatus_(site)],
+    sites: access.sites,
+    canSelectSite: access.multi
   };
 }
 
@@ -452,8 +482,10 @@ function erpUpdateRequests_(body) {
   const lock = scriptLock_();
   lock.waitLock(30000);
   try {
-    const site = assertSite_(body.site);
-    const user = assertManagerRole_(body.pin);
+    const access = erpAccess_(body.pin);
+    const user = access.user;
+    const site = resolveErpSite_(access, body.site);
+    if (String(body.site || '').trim() !== site) throw new Error('사이트가 바뀌었습니다. 목록을 새로고침하세요.');
     const mode = String(body.mode || '');
     if (['save', 'register', 'urgent'].indexOf(mode) === -1) throw new Error('올바르지 않은 처리 방식입니다.');
     const items = Array.isArray(body.items) ? body.items : [];

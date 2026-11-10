@@ -936,7 +936,9 @@ html, body {
   border-radius: var(--radius); background: var(--surface); border: 1px solid var(--border); color: var(--text-muted);
 }
 .erp-bot-status:empty { display: none; }
-.erp-bot-status.is-offline { color: var(--danger); border-color: var(--danger); }
+.erp-bot-status.is-offline { border-color: var(--danger); }
+.erp-bot-item { color: var(--text); }
+.erp-bot-item.is-offline { color: var(--danger); font-weight: 600; }
 .erp-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
 .erp-filters .select { flex: 1 1 140px; width: auto; margin-bottom: 0; }
 .erp-tabs { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }

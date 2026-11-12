@@ -687,6 +687,7 @@ function onOpen() {
     .addItem('구매유형 조건표 교체(백업 후)', 'applyPurchaseTypeTableFromMenu')
     .addItem('유형제안규칙 시트 만들기', 'setupProposalRuleSheetFromMenu')
     .addItem('구매유형·제안규칙 캐시 새로고침', 'refreshPurchaseTypeCacheFromMenu')
+    .addItem('유형 제안 진단', 'diagnoseTypeProposalFromMenu')
     .addToUi();
 }
 
@@ -861,6 +862,20 @@ function applyPurchaseTypeTableFromMenu() {
     ui.ButtonSet.YES_NO);
   if (answer !== ui.Button.YES) return;
   ui.alert(applyPurchaseTypeTable_());
+}
+
+// "자재관리 > 유형 제안 진단" 메뉴: "화성 6907-901-240" 또는 "평택 1234"(행 번호)처럼 입력하면
+// 그 행에 유형제안규칙을 우선순위대로 적용한 과정을 보여 준다(시트는 바꾸지 않음, 실행 로그에도 남음).
+function diagnoseTypeProposalFromMenu() {
+  const ui = SpreadsheetApp.getUi();
+  const res = ui.prompt('유형 제안 진단', '사이트와 자재코드(또는 시트 행 번호)를 띄어서 입력하세요.\n예: 화성 6907-901-240', ui.ButtonSet.OK_CANCEL);
+  if (res.getSelectedButton() !== ui.Button.OK) return;
+  const parts = res.getResponseText().trim().split(/\s+/);
+  try {
+    ui.alert(diagnoseTypeProposal_(parts[0], parts.slice(1).join('')));
+  } catch (e) {
+    ui.alert('진단 실패: ' + (e && e.message || e));
+  }
 }
 
 function setupProposalRuleSheetFromMenu() {

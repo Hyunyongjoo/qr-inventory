@@ -44,7 +44,7 @@ const ERP_URGENT_REASON_SUFFIX = ' 긴급요망';
 // 구매유형 자동 제안 규칙 시트. 시트를 고치면 코드 수정 없이 반영된다(10분 캐시, 편집 시 onEdit가 캐시 삭제).
 const PROPOSAL_RULE_SHEET_NAME = '유형제안규칙';
 const PROPOSAL_RULE_HEADERS = ['우선순위', '사이트', '조건종류', '조건값', '유형코드', '사용', '설명'];
-const PROPOSAL_RULE_CACHE_KEY = 'proposalRules:v1';
+const PROPOSAL_RULE_CACHE_KEY = 'proposalRules:v2';
 const PROPOSAL_RULE_ALL_SITES = '전체';
 const RULE_KIND = {
   ROUTE: '구매경로',
@@ -345,6 +345,7 @@ function loadProposalRules_() {
         priority: Number(get(row, '우선순위')) || 0,
         site: get(row, '사이트'),
         kind: ruleNorm_(get(row, '조건종류')),
+        kindLabel: get(row, '조건종류'),
         value: get(row, '조건값'),
         code: get(row, '유형코드'),
         enabled: get(row, '사용').toUpperCase() !== 'N'
@@ -465,8 +466,9 @@ function proposalContext_(site) {
  * 규칙을 우선순위대로 검사해 처음 맞는 규칙의 유형(사용 중인 유형만)을 쓴다.
  * 안전용품구매 행은 구매경로/안전용품 사용설비 규칙만 보고, 맞는 것이 없으면 기본값으로 넘기지 않고
  * { code: '', state: 확인필요 }를 돌려준다.
+ * trace(배열)를 넘기면 규칙마다 검사 결과 문자열을 쌓는다(진단 메뉴용).
  */
-function proposeTypeForRow_(r, ctx) {
+function proposeTypeForRow_(r, ctx, trace) {
   const route = purchaseRouteOf_(r);
   const isSupply = route === SAFETY_SUPPLY_ZONE;
   let equipment = null;
@@ -474,19 +476,20 @@ function proposeTypeForRow_(r, ctx) {
     const rule = ctx.rules[i];
     let code = rule.code;
     let reason = '';
+    let skip = '';
     switch (rule.kind) {
       case ruleNorm_(RULE_KIND.ROUTE):
         if (route && ruleList_(rule.value).indexOf(ruleNorm_(route)) !== -1) reason = route + ' 메뉴';
         break;
       case ruleNorm_(RULE_KIND.SAFETY_EQUIPMENT): {
-        if (!isSupply) break;
+        if (!isSupply) { skip = '안전용품 경로 아님'; break; }
         if (equipment === null) equipment = String(ctx.equipmentOf(r) || '').trim();
         const have = ruleList_(equipment);
         if (have.length && ruleList_(rule.value).some(v => have.indexOf(v) !== -1)) reason = '사용설비:' + equipment;
         break;
       }
       case ruleNorm_(RULE_KIND.NOTE_WORD): {
-        if (isSupply) break;
+        if (isSupply) { skip = '안전용품 경로는 검사 안 함'; break; }
         const note = String(r['특이사항1'] || '') + ' ' + String(r['특이사항2'] || '');
         const hit = String(rule.value || '').split(/[,，]/).map(v => v.trim()).filter(Boolean)
           .find(v => noteHasWord_(note, ruleNorm_(v)));
@@ -494,28 +497,37 @@ function proposeTypeForRow_(r, ctx) {
         break;
       }
       case ruleNorm_(RULE_KIND.NAME_CONTAINS):
-        if (!isSupply && nameContains_(r['자재명'], rule.value)) reason = '자재명:' + rule.value;
+        if (isSupply) { skip = '안전용품 경로는 검사 안 함'; break; }
+        if (nameContains_(r['자재명'], rule.value)) reason = '자재명:' + rule.value;
         break;
       case ruleNorm_(RULE_KIND.LAST_CONFIRMED):
-        if (isSupply) break;
+        if (isSupply) { skip = '안전용품 경로는 검사 안 함'; break; }
         code = ctx.lastConfirmedOf(r);
         if (code) reason = '이전 확정';
         break;
       case ruleNorm_(RULE_KIND.DEFAULT): {
-        if (isSupply) break;
+        if (isSupply) { skip = '안전용품 경로는 기본값으로 넘기지 않음'; break; }
         const def = ctx.types.find(t => t.isDefault);
         code = def ? def.code : '';
         if (code) reason = '기본값';
         break;
       }
       default:
+        skip = '알 수 없는 조건종류';
         break;
     }
     // 삭제됐거나 사용하지 않는 유형을 가리키는 규칙은 건너뛴다.
-    if (reason && code && ctx.typeOk(code)) return { code, state: TYPE_STATE.PROPOSED, reason };
+    const ok = !!(reason && code && ctx.typeOk(code));
+    if (trace) {
+      trace.push('[' + rule.priority + '] ' + rule.site + ' / ' + rule.kindLabel + ' = "' + rule.value + '" → ' +
+        (rule.code || '(자동)') + ' : ' + (ok ? '일치 (' + reason + ', ' + code + ')' :
+        skip ? '건너뜀 (' + skip + ')' : reason ? '유형 없음/사용 안 함 (' + (code || '빈값') + ')' : '불일치'));
+    }
+    if (ok) return { code, state: TYPE_STATE.PROPOSED, reason };
   }
   if (isSupply) {
     if (equipment === null) equipment = String(ctx.equipmentOf(r) || '').trim();
+    if (trace) trace.push('→ 안전용품 경로인데 사용설비 규칙과 맞지 않아 확인필요');
     return { code: '', state: TYPE_STATE.NEEDS_CHECK, reason: equipment ? '사용설비:' + equipment + '(규칙 없음)' : '사용설비 없음' };
   }
   return { code: '', state: '', reason: '' };
@@ -526,9 +538,15 @@ function proposalToRowValues_(p) {
   return { '구매유형코드': p.code, '유형상태': p.state, '제안근거': p.reason };
 }
 
+// 시트에 제안이 한 번도 기록되지 않은 행(구매유형코드·유형상태 모두 빈값). 기능 도입 전 요청이거나
+// 요청 저장 때 제안 계산이 실패한 행이다. 화면/등록/제안 다시 계산은 이 행에도 규칙을 적용한다.
+function isUnproposedRow_(r) {
+  return !String(r['구매유형코드'] || '').trim() && !String(r['유형상태'] || '').trim();
+}
+
 /**
  * 미등록(ERP상태 빈값/실패, 취소 아님) 행 중 조건에 맞는 행의 제안을 다시 계산해 시트에 쓴다. 바뀐 행 수를 돌려준다.
- *  - mode 'proposed': 유형상태가 제안/확인필요인 행 (관리자 "제안 다시 계산")
+ *  - mode 'proposed': 유형상태가 제안/확인필요인 행 + 제안이 기록되지 않은 구매대기 행 (관리자 "제안 다시 계산")
  *  - mode 'deleted' : 구매유형코드가 조건표에 없는(삭제된) 행 — 확정 행도 포함 (조건표 교체 직후)
  * 대기/등록중/완료 행은 건드리지 않는다. 호출부에서 스크립트 락을 잡는다.
  */
@@ -547,7 +565,8 @@ function reproposeRows_(site, mode) {
     const state = String(r['유형상태'] || '').trim();
     if (mode === 'deleted') {
       if (!code || allCodes.indexOf(code) !== -1) return;
-    } else if (state !== TYPE_STATE.PROPOSED && state !== TYPE_STATE.NEEDS_CHECK) {
+    } else if (state !== TYPE_STATE.PROPOSED && state !== TYPE_STATE.NEEDS_CHECK &&
+      !(isUnproposedRow_(r) && isErpCandidateRow_(r))) {
       return;
     }
     const u = proposalToRowValues_(proposeTypeForRow_(r, ctx));
@@ -558,6 +577,60 @@ function reproposeRows_(site, mode) {
   });
   writeErpUpdates_(sheet, heads, updates);
   return count;
+}
+
+/**
+ * 유형 제안 진단: 사이트 + (시트 행 번호 또는 자재코드)로 구매발주및입고 행을 찾아 규칙 검사 과정을 문자열로 돌려준다.
+ * 시트는 바꾸지 않는다. 자재코드로 찾으면 미등록(ERP상태 빈값/실패) 행 중 아래쪽(최근) 3건까지.
+ */
+function diagnoseTypeProposal_(site, key) {
+  assertSite_(site);
+  const k = String(key || '').trim();
+  if (!k) throw new Error('행 번호 또는 자재코드를 입력하세요.');
+  const out = [];
+  const cacheHit = CacheService.getScriptCache().get(PROPOSAL_RULE_CACHE_KEY) !== null;
+  const ruleSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(PROPOSAL_RULE_SHEET_NAME);
+  const ctx = proposalContext_(site);
+  out.push('[규칙] ' + PROPOSAL_RULE_SHEET_NAME + ' 시트: ' + (ruleSheet ? (ruleSheet.getLastRow() - 1) + '행' : '없음') +
+    ' / 캐시: ' + (cacheHit ? '사용(10분 캐시에서 읽음)' : '없음(시트에서 새로 읽음)') + ' / ' + site + ' 적용 규칙 ' + ctx.rules.length + '개');
+  out.push('[유형] ' + site + ' 사용 유형: ' + (ctx.types.map(t => t.code + (t.isDefault ? '(기본)' : '')).join(', ') || '없음'));
+
+  const all = readAll_(sheet_(poInSheetName_(site)));
+  let rows;
+  if (/^\d+$/.test(k)) {
+    rows = all.filter(r => r._row === Number(k));
+  } else {
+    const code = normalizeMaterialCode_(k);
+    rows = all.filter(r => normalizeMaterialCode_(r['자재코드']) === code && !isCancelledRow_(r) &&
+      (erpStatusOf_(r) === '' || erpStatusOf_(r) === ERP_STATUS.FAILED)).slice(-3).reverse();
+  }
+  if (!rows.length) out.push('해당 행을 찾을 수 없습니다: ' + k);
+
+  rows.forEach(r => {
+    const trace = [];
+    const p = proposeTypeForRow_(r, ctx, trace);
+    const code = String(r['구매유형코드'] || '').trim();
+    const state = String(r['유형상태'] || '').trim();
+    const st = erpStatusOf_(r);
+    const equip = purchaseRouteOf_(r) === SAFETY_SUPPLY_ZONE ? String(ctx.equipmentOf(r) || '') : '(안전용품 경로 아님 - 조회 안 함)';
+    const candidate = isErpCandidateRow_(r);
+    const reTarget = (st === '' || st === ERP_STATUS.FAILED) && !isCancelledRow_(r) &&
+      (state === TYPE_STATE.PROPOSED || state === TYPE_STATE.NEEDS_CHECK || (isUnproposedRow_(r) && candidate));
+    out.push('');
+    out.push('■ ' + r._row + '행 ' + r['자재코드'] + ' ' + (r['자재명'] || '') + ' (요청일자 ' + sheetDateStr_(r['요청일자']) + ')');
+    out.push('  시트 값: 구매유형코드="' + code + '" 유형상태="' + state + '" 제안근거="' + String(r['제안근거'] || '') +
+      '" ERP상태="' + st + '" 구매대기=' + (candidate ? 'Y' : 'N'));
+    out.push('  구매경로: 라인 열="' + String(r['라인'] || '') + '" → ' + (purchaseRouteOf_(r) || '일반(라인) 요청'));
+    out.push('  사용설비(' + usedMaterialsSheetName_(site) + '): "' + equip + '"');
+    out.push('  특이사항1="' + String(r['특이사항1'] || '') + '" 특이사항2="' + String(r['특이사항2'] || '') + '"');
+    trace.forEach(t => out.push('    ' + t));
+    out.push('  최종 제안: ' + (p.code || '(빈값)') + ' / ' + (p.state || '(빈값)') + ' / ' + (p.reason || '-'));
+    out.push('  화면 표시: ' + JSON.stringify(erpRowTypeView_(r, defaultPurchaseType_(site), ctx)));
+    out.push('  제안 다시 계산 대상: ' + (reTarget ? '예' : '아니오 (유형상태가 확정이거나 ERP 진행/완료/취소 행)'));
+  });
+  const text = out.join('\n');
+  Logger.log(text);
+  return text;
 }
 
 /**
@@ -763,19 +836,24 @@ function erpBotStatus_(site) {
 
 // 화면에 보여 줄 유형/상태/제안근거.
 //  - 확인필요 행: 유형 빈값 그대로(기본값으로 채우지 않음)
-//  - 유형코드가 비어 있는 이전 행: 사이트 기본 유형을 제안으로 표시(근거 '기본값')
-function erpRowTypeView_(r, defaultType) {
+//  - 제안이 기록되지 않은 행(isUnproposedRow_): ctx가 있으면 규칙을 적용한 결과를 보여 준다(시트는 그대로,
+//    '제안 다시 계산'이나 유형 저장 때 기록됨). ctx가 없거나 맞는 규칙이 없으면 사이트 기본 유형(근거 '기본값').
+function erpRowTypeView_(r, defaultType, ctx) {
   const code = String(r['구매유형코드'] || '').trim();
   const state = String(r['유형상태'] || '').trim();
   const reason = String(r['제안근거'] || '').trim();
   if (code) return { code, state: state || TYPE_STATE.PROPOSED, reason };
   if (state === TYPE_STATE.NEEDS_CHECK) return { code: '', state, reason: reason || '확인필요' };
+  if (ctx && !state) {
+    const p = proposeTypeForRow_(r, ctx);
+    if (p.code || p.state) return { code: p.code, state: p.state, reason: p.reason };
+  }
   if (defaultType) return { code: defaultType.code, state: TYPE_STATE.PROPOSED, reason: '기본값' };
   return { code: '', state: '', reason };
 }
 
-function erpRowToView_(r, defaultType) {
-  const tv = erpRowTypeView_(r, defaultType);
+function erpRowToView_(r, defaultType, ctx) {
+  const tv = erpRowTypeView_(r, defaultType, ctx);
   return {
     rowIndex: r._row,
     requestDate: sheetDateStr_(r['요청일자']),
@@ -821,10 +899,11 @@ function erpRequestList_(requestedSite, pin) {
 
   const rows = [];
   const progress = [];
+  const ctx = proposalContext_(site);
   all.forEach(r => {
     const st = erpStatusOf_(r);
     if (st === '' || st === ERP_STATUS.FAILED) {
-      if (!isCancelledRow_(r) && isErpCandidateRow_(r)) rows.push(erpRowToView_(r, defaultType));
+      if (!isCancelledRow_(r) && isErpCandidateRow_(r)) rows.push(erpRowToView_(r, defaultType, ctx));
     } else if (st === ERP_STATUS.WAITING || st === ERP_STATUS.RUNNING ||
       (st === ERP_STATUS.DONE && toTimeMs_(r['ERP처리일시']) >= doneSince)) {
       progress.push(erpRowToView_(r, defaultType));
@@ -877,6 +956,8 @@ function erpUpdateRequests_(body) {
 
     const sheet = sheet_(poInSheetName_(site));
     const heads = headers_(sheet);
+    let ctxCache = null;
+    const proposalCtx = () => ctxCache || (ctxCache = proposalContext_(site));
     const byRow = {};
     readAll_(sheet).forEach(r => { byRow[r._row] = r; });
 
@@ -904,6 +985,13 @@ function erpUpdateRequests_(body) {
         if (!type) throw new Error('구매유형 시트에 없는 유형(' + storedCode + ')입니다. 유형을 다시 선택하세요: ' + label);
       }
       if (!type && storedState === TYPE_STATE.NEEDS_CHECK) throw new Error('확인필요 행입니다. 구매유형을 선택하세요: ' + label);
+      let autoReason = '기본값';
+      if (!type && isUnproposedRow_(r)) {
+        // 제안이 기록되지 않은 행은 화면에 보인 것과 같이 규칙으로 정한다(안전용품 미매칭은 확인필요로 막음).
+        const p = proposeTypeForRow_(r, proposalCtx());
+        if (p.state === TYPE_STATE.NEEDS_CHECK) throw new Error('확인필요 행입니다(' + p.reason + '). 구매유형을 선택하세요: ' + label);
+        if (p.code) { type = findPurchaseType_(site, p.code); autoReason = p.reason; }
+      }
       if (!type) type = defaultType;
       if (!type) throw new Error('구매유형을 선택하세요: ' + label);
       if (!type.enabled) throw new Error('사용하지 않는 구매유형입니다(' + type.code + '): ' + label);
@@ -927,7 +1015,7 @@ function erpUpdateRequests_(body) {
         '처리자': handler
       };
       // 제안과 다른 유형으로 바꿨으면 근거를 '직접 지정'으로 남긴다(같으면 원래 근거 유지).
-      if (type.code !== storedCode) u['제안근거'] = forcedType ? TYPE_REASON_MANUAL : '기본값';
+      if (type.code !== storedCode) u['제안근거'] = forcedType ? TYPE_REASON_MANUAL : autoReason;
       if (mode !== 'save') {
         u['ERP상태'] = ERP_STATUS.WAITING;
         u['긴급'] = mode === 'urgent' ? 'Y' : '';

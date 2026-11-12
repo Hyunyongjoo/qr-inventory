@@ -1591,15 +1591,23 @@ function submitPurchase_(body) {
 
     // 구매유형 제안값(Erp.gs proposeTypeForRow_): 유형제안규칙 시트의 규칙을 행마다 적용한다. 요청자 화면에는
     // 보이지 않는 열이고, 조건표/규칙이 없거나 읽기에 실패해도 구매요청 저장은 그대로 진행한다.
+    // 제안 계산이 실패해도 행을 빈값으로 두지 않는다: 안전용품은 확인필요, 그 외는 제안(유형 빈값 → 화면/제안 다시 계산에서 다시 계산).
+    let ctx = null;
     try {
-      const ctx = proposalContext_(site);
-      pending.forEach(p => {
+      ctx = proposalContext_(site);
+    } catch (err) {
+      Logger.log('구매유형 제안 준비 실패 [' + site + ']: ' + (err && err.message || err));
+    }
+    pending.forEach(p => {
+      try {
+        if (!ctx) throw new Error('제안 데이터를 읽지 못함');
         const v = proposalToRowValues_(proposeTypeForRow_(p.row, ctx));
         if (v['구매유형코드'] || v['유형상태']) Object.assign(p.row, v);
-      });
-    } catch (err) {
-      Logger.log('구매유형 제안 실패 [' + site + ']: ' + (err && err.message || err));
-    }
+      } catch (err) {
+        Logger.log('구매유형 제안 실패 [' + site + ' ' + p.itemId + ']: ' + (err && err.message || err));
+        if (isSafetySupply) Object.assign(p.row, { '구매유형코드': '', '유형상태': TYPE_STATE.NEEDS_CHECK, '제안근거': '제안 오류' });
+      }
+    });
 
     pending.forEach(p => {
       registerNewItemIfMissing_(p.itemId, p.itemName, p.spec);

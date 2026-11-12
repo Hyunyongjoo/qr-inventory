@@ -71,7 +71,7 @@
     ocrStartAt: 0,
     ocrCandidate: null,
     // 청구서 관리 화면. site: 조회 중인 사이트(서버가 권한으로 결정, 관리자는 선택 가능), pin: 그 화면을 연 사용자
-    erp: { site: null, pin: null, data: null, tab: 'pending', selected: new Set(), typeCode: '', varsDraft: {}, busy: false, loadSeq: 0 }
+    erp: { site: null, pin: null, appSite: null, siteList: null, data: null, tab: 'pending', selected: new Set(), typeCode: '', varsDraft: {}, busy: false, loadSeq: 0 }
   };
 
   // popstate(뒤로가기) 처리 중 switchView가 다시 history.pushState를 호출해
@@ -4138,10 +4138,10 @@
     $('#action-erp-btn').addEventListener('click', () => switchView('erp'));
     $('#erp-back-btn').addEventListener('click', () => switchView('actions'));
     $('#erp-refresh-btn').addEventListener('click', () => loadErpList());
-    $('#erp-site-select').addEventListener('change', (e) => {
-      state.erp.site = e.target.value;
-      resetErpSelection();
-      loadErpList();
+    $('#erp-repropose-btn').addEventListener('click', reproposeErp);
+    $('#erp-site-tabs').addEventListener('click', (e) => {
+      const btn = e.target.closest('.erp-site-btn');
+      if (btn) switchErpSite(btn.dataset.site);
     });
     $('#erp-state-filter').addEventListener('change', renderErp);
     $('#erp-urgent-filter').addEventListener('change', renderErp);
@@ -4155,6 +4155,13 @@
         else state.erp.selected.delete(r.rowIndex);
       });
       renderErp();
+    });
+    // 행의 구매유형을 누르면 그 사이트 유형 목록을 띄우고, 고르면 바로 저장(유형상태=확정)한다.
+    $('#erp-list').addEventListener('click', (e) => {
+      const btn = e.target.closest('.erp-type-btn');
+      if (!btn) return;
+      e.preventDefault();
+      openErpRowTypePicker(Number(btn.dataset.row));
     });
     $('#erp-list').addEventListener('change', (e) => {
       const cb = e.target.closest('.erp-row-check');
@@ -4189,6 +4196,20 @@
     state.erp.varsDraft = {};
   }
 
+  // 사이트를 바꾸면 이전 사이트의 목록/구매유형/필터/PC 상태를 모두 비우고 새로 읽는다.
+  // loadSeq를 올려 두므로 늦게 도착한 이전 사이트 응답은 버려진다.
+  function switchErpSite(site) {
+    if (!site || site === state.erp.site || state.erp.busy) return;
+    state.erp.site = site;
+    state.erp.data = null;
+    state.erp.loadSeq++;
+    resetErpSelection();
+    $('#erp-state-filter').value = '';
+    $('#erp-urgent-filter').value = '';
+    renderErp();
+    loadErpList();
+  }
+
   function enterErp() {
     if (!canUseErp()) {
       $('#erp-list').innerHTML = `<div class="empty-state">관리자와 자재관리자만 사용할 수 있습니다.</div>`;
@@ -4197,11 +4218,18 @@
     }
     // 청구서 관리의 사이트는 화면 상단에서 고른 사이트가 아니라 Users 시트의 담당 사이트로 서버가 정한다.
     // 다른 사용자로 다시 로그인했으면 처음부터 다시 불러온다.
-    if (state.erp.pin !== state.user.pin) {
+    // 처음 들어오거나 상단에서 사이트를 바꾼 뒤 들어오면 그 사이트로 연다(관리자에게만 적용되고,
+    // 자재관리자는 서버가 담당 사이트로 바꿔 돌려준다).
+    if (state.erp.pin !== state.user.pin || state.erp.appSite !== state.site) {
       state.erp.pin = state.user.pin;
-      state.erp.site = null;
+      state.erp.appSite = state.site;
+      state.erp.site = state.site || null;
+      state.erp.siteList = null;
       state.erp.data = null;
+      state.erp.loadSeq++;
       resetErpSelection();
+      $('#erp-state-filter').value = '';
+      $('#erp-urgent-filter').value = '';
     }
     renderErp();
     loadErpList();
@@ -4211,10 +4239,12 @@
     if (!state.user) return;
     const listEl = $('#erp-list');
     const seq = ++state.erp.loadSeq;
+    const requested = state.erp.site || '';
     if (!state.erp.data) listEl.innerHTML = `<div class="empty-state">불러오는 중...</div>`;
     try {
-      const data = await Api.post('erpRequestList', { site: state.erp.site || '', pin: state.user.pin });
-      if (seq !== state.erp.loadSeq) return; // 그 사이 다시 불러온 경우(사이트 변경 등)
+      const data = await Api.post('erpRequestList', { site: requested, pin: state.user.pin });
+      // 그 사이 다시 불러왔거나(사이트 변경·저장 등) 사이트가 바뀐 경우 늦게 온 응답은 버린다.
+      if (seq !== state.erp.loadSeq || (state.erp.site || '') !== requested) return;
       state.erp.site = data.site;
       state.erp.data = data;
       const valid = new Set(data.rows.map((r) => r.rowIndex));
@@ -4254,7 +4284,9 @@
     const urgent = $('#erp-urgent-filter').value;
     const rows = state.erp.tab === 'pending' ? data.rows : data.progress;
     return rows.filter((r) => {
-      if (typeState && r.typeState !== typeState) return false;
+      if (typeState === '__check') {
+        if (!erpNeedsReview(r)) return false;
+      } else if (typeState && r.typeState !== typeState) return false;
       if (urgent === 'Y' && !erpIsUrgentView(r)) return false;
       if (urgent === 'N' && erpIsUrgentView(r)) return false;
       return true;
@@ -4267,18 +4299,25 @@
     return data.rows.filter((r) => state.erp.selected.has(r.rowIndex));
   }
 
+  // 자재관리자가 확인해야 하는 행: 확인필요, 또는 아직 확정 전인데 근거가 '기본값'인 행.
+  function erpNeedsReview(r) {
+    return r.typeState === '확인필요' || (r.typeState === '제안' && r.typeReason === '기본값');
+  }
+
   function renderErp() {
     const data = state.erp.data;
-    const siteSel = $('#erp-site-select');
-    const canSelect = !!(data && data.canSelectSite);
-    siteSel.classList.toggle('hidden', !canSelect);
-    if (canSelect) {
-      siteSel.innerHTML = (data.sites || []).map((s) => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('');
-      siteSel.value = state.erp.site;
-    }
+    // 사이트 탭: 사이트를 고를 수 있는 사용자(관리자)만. 다른 사이트를 불러오는 중에도 탭은 그대로 둔다.
+    if (data) state.erp.siteList = data.canSelectSite ? (data.sites || []) : null;
+    const sites = state.erp.siteList || [];
+    const siteTabs = $('#erp-site-tabs');
+    siteTabs.classList.toggle('hidden', sites.length < 2);
+    siteTabs.innerHTML = sites.map((s) =>
+      `<button type="button" class="erp-site-btn${s === state.erp.site ? ' is-active' : ''}" data-site="${escapeHtml(s)}">${escapeHtml(s)}</button>`).join('');
+    $('#erp-repropose-btn').classList.toggle('hidden', !(data && data.canRepropose && state.erp.tab === 'pending'));
     $$('.erp-tab-btn').forEach((b) => b.classList.toggle('is-active', b.dataset.tab === state.erp.tab));
     renderErpBot();
     if (data) renderErpList();
+    else $('#erp-list').innerHTML = `<div class="empty-state">${escapeHtml(state.erp.site || '')} 불러오는 중...</div>`;
     renderErpSelectRow();
     renderErpFooter();
   }
@@ -4332,8 +4371,15 @@
     }
     listEl.innerHTML = rows.map((r) => {
       const t = erpTypeByCode(r.typeCode);
-      const typeText = r.typeCode ? (t ? `${t.code} ${t.name}` : r.typeCode) : '유형 미지정';
-      const typeChip = r.typeState ? `<span class="erp-chip erp-chip-${r.typeState === '확정' ? 'fixed' : 'proposed'}">${escapeHtml(r.typeState)}</span>` : '';
+      const typeText = r.typeCode ? (t ? `${t.code} ${t.name}` : `${r.typeCode} (삭제된 유형)`) : '유형 미지정';
+      const chipCls = r.typeState === '확정' ? 'fixed' : (r.typeState === '확인필요' ? 'check' : 'proposed');
+      const typeChip = r.typeState ? `<span class="erp-chip erp-chip-${chipCls}">${escapeHtml(r.typeState)}</span>` : '';
+      const review = pendingTab && erpNeedsReview(r);
+      const reasonText = r.typeReason ? `<span class="erp-reason${review ? ' is-review' : ''}">${escapeHtml(r.typeReason)}</span>` : '';
+      // 미등록 탭(ERP상태 빈값/실패 행)에서는 유형을 눌러 바로 바꿀 수 있다.
+      const typeHtml = pendingTab
+        ? `<button type="button" class="erp-type-btn" data-row="${r.rowIndex}">${escapeHtml(typeText)} ▾</button>`
+        : escapeHtml(typeText);
       const incompleteChip = t && t.incomplete ? `<span class="erp-chip erp-chip-warn">조건 미완성</span>` : '';
       const statusCls = ERP_STATUS_CLASS[r.erpStatus] || '';
       const statusDetail = r.erpStatus === '완료' ? r.erpTitle : (r.erpStatus === '실패' ? r.erpMessage : '');
@@ -4343,7 +4389,7 @@
       const notes = [r.note1, r.note2].filter(Boolean).join(' / ');
       const checked = state.erp.selected.has(r.rowIndex);
       return `
-        <div class="card erp-row${erpIsUrgentView(r) ? ' is-urgent' : ''}${checked ? ' is-selected' : ''}">
+        <div class="card erp-row${erpIsUrgentView(r) ? ' is-urgent' : ''}${checked ? ' is-selected' : ''}${review ? ' is-review' : ''}">
           <label class="erp-row-head">
             ${pendingTab ? `<input type="checkbox" class="erp-row-check" data-row="${r.rowIndex}" ${checked ? 'checked' : ''} />` : ''}
             <span class="erp-row-title">${erpIsUrgentView(r) ? '<span class="erp-urgent-badge">긴급</span>' : ''}${escapeHtml(r.itemName || r.itemId)}</span>
@@ -4351,7 +4397,7 @@
           <div class="erp-row-sub">${escapeHtml(r.itemId)}${r.spec ? ' · ' + escapeHtml(r.spec) : ''}</div>
           <div class="erp-row-sub">${escapeHtml(r.requestDate)} · ${escapeHtml(r.zone)} · 수량 <strong>${escapeHtml(r.qty)}</strong> · ${escapeHtml(r.requester)}</div>
           ${notes ? `<div class="erp-row-note">특이사항: ${escapeHtml(notes)}</div>` : ''}
-          <div class="erp-row-type">${escapeHtml(typeText)} ${typeChip}${incompleteChip}</div>
+          <div class="erp-row-type">${typeHtml} ${typeChip}${incompleteChip}${reasonText}</div>
           ${statusChip}
         </div>
       `;
@@ -4398,16 +4444,44 @@
     return Math.floor((d.getDate() - 1 + offset) / 7) + 1;
   }
 
-  // 서버 buildErpTitle(Erp.gs)과 같은 규칙의 미리보기용 명칭.
-  function erpBuildTitle(type, rows, vars, date) {
-    const lines = [...new Set(rows.map((r) => String(r.zone || '').trim()).filter(Boolean))];
-    const values = Object.assign({}, vars, { SITE: lines.join(', '), MM: String(date.getMonth() + 1), N: String(erpWeekOfMonth(date)) });
+  // ISO 주차(서버 isoWeek_와 같은 규칙).
+  function erpIsoWeek(date) {
+    const t = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+    t.setUTCDate(t.getUTCDate() + 3 - ((t.getUTCDay() + 6) % 7));
+    return Math.floor((t - Date.UTC(t.getUTCFullYear(), 0, 1)) / 86400000 / 7) + 1;
+  }
+
+  // 서버 erpTemplateValues_(Erp.gs)와 같은 규칙의 템플릿 값.
+  function erpTemplateValues(rows, vars, date) {
+    const lines = [...new Set(rows.map((r) => String(r.zone || '').trim()).filter(Boolean))].join(', ');
+    const values = Object.assign({}, vars, {
+      SITE: lines, '라인': lines, MM: String(date.getMonth() + 1), N: String(erpWeekOfMonth(date)),
+      NN: String(erpIsoWeek(date)).padStart(2, '0')
+    });
+    if (!String(values.PART == null ? '' : values.PART).trim() && rows.length) {
+      values.PART = String(rows[0].itemName || rows[0].itemId || '').trim() + (rows.length > 1 ? ` 외 ${rows.length - 1}건` : '');
+    }
+    return values;
+  }
+
+  function erpFillTemplate(template, values) {
     const val = (n) => String(values[n.trim()] == null ? '' : values[n.trim()]).trim();
-    return String(type.template || '')
+    return String(template || '')
       .replace(/\(\s*\{([^}]+)\}\s*\)/g, (m, v) => (val(v) ? `(${val(v)})` : ''))
       .replace(/\{([^}]+)\}/g, (m, v) => val(v))
       .replace(/\s{2,}/g, ' ')
       .trim();
+  }
+
+  // 서버 buildErpTitle / buildErpReason(Erp.gs)과 같은 규칙의 미리보기.
+  function erpBuildTitle(type, rows, vars, date) {
+    return erpFillTemplate(type.template, erpTemplateValues(rows, vars, date));
+  }
+
+  function erpBuildReason(type, rows, vars, date, title, urgent) {
+    const values = Object.assign(erpTemplateValues(rows, vars, date), { '명칭과 동일': title });
+    const reason = erpFillTemplate(type.reasonTemplate, values);
+    return urgent && reason ? reason + ' 긴급요망' : reason;
   }
 
   function erpVarValue(name, rows) {
@@ -4430,6 +4504,9 @@
 
   // 등록(청구서/긴급)을 막아야 하는 이유. 없으면 ''.
   function erpRegisterBlockReason(rows) {
+    if (!state.erp.typeCode && rows.some((r) => r.typeState === '확인필요' && !r.typeCode)) {
+      return '확인필요 행이 있습니다. 행의 유형을 눌러 먼저 고르세요.';
+    }
     const codes = erpEffectiveCodes(rows);
     if (codes.some((c) => !c)) return '구매유형이 지정되지 않은 행이 있습니다. 유형을 선택하세요.';
     const bad = [...new Set(codes)].map(erpTypeByCode);
@@ -4508,7 +4585,9 @@
       const types = codes.map(erpTypeByCode).filter(Boolean);
       const typeLabel = types.length === 1 ? types[0].name : `${types[0].name} 외 ${types.length - 1}개 유형`;
       const single = erpSingleType(rows);
-      const title = single ? erpBuildTitle(single, rows, erpCollectVars(single, rows), new Date()) : '';
+      const vars = single ? erpCollectVars(single, rows) : {};
+      const title = single ? erpBuildTitle(single, rows, vars, new Date()) : '';
+      const reason = single ? erpBuildReason(single, rows, vars, new Date(), title, mode === 'urgent') : '';
       let botLine = '';
       if (bot) {
         const offline = bot.never || bot.offline;
@@ -4524,6 +4603,7 @@
           <h3>${mode === 'urgent' ? '긴급 등록' : '청구서 등록'}</h3>
           <p class="erp-confirm-main">${escapeHtml(site)} / ${escapeHtml(typeLabel)} / ${rows.length}품목 / ${mode === 'urgent' ? '긴급 — ' : ''}즉시 ERP 등록합니다</p>
           ${title ? `<p class="muted">명칭 미리보기: ${escapeHtml(title)}</p>` : ''}
+          ${reason ? `<p class="muted">기타요청사유: ${escapeHtml(reason)}</p>` : ''}
           ${mode === 'register' ? '<p class="muted">사무실 PC에서 등록 프로그램을 실행하면 등록됩니다.</p>' : ''}
           ${botLine}
           <div class="modal-actions">
@@ -4569,6 +4649,7 @@
     if (single) body.vars = erpCollectVars(single, rows);
 
     state.erp.busy = true;
+    state.erp.loadSeq++; // 저장 전에 보낸 목록 요청의 (이전 값) 응답은 버린다
     renderErpFooter();
     try {
       const res = await Api.post('erpUpdateRequests', body);
@@ -4583,6 +4664,79 @@
       state.erp.busy = false;
       renderErpFooter();
     }
+  }
+
+  // 행 하나의 유형 즉시 변경: 사이트 유형 목록에서 고르면 그 행만 유형 저장(유형상태=확정) 후
+  // 시트의 최신 값으로 목록을 다시 읽는다.
+  function openErpRowTypePicker(rowIndex) {
+    const data = state.erp.data;
+    const row = data && data.rows.find((r) => r.rowIndex === rowIndex);
+    if (!row || state.erp.busy) return;
+    const types = erpTypes().filter((t) => t.enabled);
+    if (!types.length) { toast('이 사이트에 사용 중인 구매유형이 없습니다.', 'error'); return; }
+    openModal(`
+      <div class="modal-sheet">
+        <h3>구매유형 변경</h3>
+        <p class="muted">${escapeHtml(row.itemName || row.itemId)} · ${escapeHtml(row.zone)} · 수량 ${escapeHtml(row.qty)}</p>
+        ${row.typeReason ? `<p class="muted">제안 근거: ${escapeHtml(row.typeReason)}</p>` : ''}
+        <div class="erp-type-pick-list">
+          ${types.map((t) => `<button type="button" class="erp-type-pick${t.code === row.typeCode ? ' is-current' : ''}" data-code="${escapeHtml(t.code)}">${escapeHtml(erpTypeLabel(t))}</button>`).join('')}
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-secondary" id="erp-type-pick-cancel">취소</button>
+        </div>
+      </div>
+    `);
+    $('#erp-type-pick-cancel').addEventListener('click', closeModal);
+    $$('.erp-type-pick').forEach((b) => b.addEventListener('click', () => {
+      closeModal();
+      saveErpRowType(row, b.dataset.code);
+    }));
+  }
+
+  async function saveErpRowType(row, typeCode) {
+    if (state.erp.busy) return;
+    const site = state.erp.site;
+    state.erp.busy = true;
+    state.erp.loadSeq++; // 저장 전에 보낸 목록 요청의 (이전 값) 응답은 버린다
+    renderErpFooter();
+    try {
+      const res = await Api.post('erpUpdateRequests', {
+        site, pin: state.user.pin, mode: 'save', typeCode,
+        items: [{ rowIndex: row.rowIndex, itemId: row.itemId }]
+      });
+      // 서버가 돌려준(시트에 쓴) 값으로 먼저 바꿔 보여 주고, 이어서 목록 전체를 다시 읽는다.
+      const saved = (res.rows || []).find((r) => r.rowIndex === row.rowIndex);
+      if (saved && state.erp.site === site && state.erp.data) {
+        state.erp.data.rows = state.erp.data.rows.map((r) => (r.rowIndex === saved.rowIndex ? saved : r));
+        renderErp();
+      }
+      toast(`${typeCode} 저장 완료`, 'success');
+    } catch (err) {
+      toast(err.message || '처리 중 오류가 발생했습니다.', 'error');
+    } finally {
+      state.erp.busy = false;
+      renderErpFooter();
+    }
+    if (state.erp.site === site) await loadErpList();
+  }
+
+  // 관리자: 유형상태가 제안/확인필요인 미등록 행에 유형제안규칙을 다시 적용한다.
+  async function reproposeErp() {
+    if (state.erp.busy || !state.erp.site) return;
+    if (!confirm(`${state.erp.site}: 유형상태가 제안/확인필요인 미등록 행에 제안 규칙을 다시 적용할까요? (확정 행은 바뀌지 않습니다)`)) return;
+    const site = state.erp.site;
+    state.erp.busy = true;
+    state.erp.loadSeq++;
+    try {
+      const res = await Api.post('erpRepropose', { site, pin: state.user.pin });
+      toast(`${res.site} 제안 다시 계산: ${res.count}건 변경`, 'success');
+    } catch (err) {
+      toast(err.message || '처리 중 오류가 발생했습니다.', 'error');
+    } finally {
+      state.erp.busy = false;
+    }
+    if (state.erp.site === site) await loadErpList();
   }
 
   // ------------------------- 모달 -------------------------

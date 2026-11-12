@@ -467,12 +467,14 @@
         <h2>청구서 관리</h2>
         <button class="btn-link" id="erp-back-btn">← 뒤로</button>
       </div>
+      <div id="erp-site-tabs" class="erp-site-tabs hidden"></div>
       <div id="erp-bot-status" class="erp-bot-status"></div>
       <div class="erp-filters">
-        <select id="erp-site-select" class="select hidden"></select>
         <select id="erp-state-filter" class="select">
           <option value="">유형상태 전체</option>
+          <option value="__check">확인 대상 (기본값·확인필요)</option>
           <option value="제안">제안</option>
+          <option value="확인필요">확인필요</option>
           <option value="확정">확정</option>
         </select>
         <select id="erp-urgent-filter" class="select">
@@ -484,6 +486,7 @@
       <div class="erp-tabs">
         <button type="button" class="erp-tab-btn is-active" data-tab="pending">미등록</button>
         <button type="button" class="erp-tab-btn" data-tab="progress">진행·완료</button>
+        <button type="button" class="btn-link hidden" id="erp-repropose-btn">제안 다시 계산</button>
         <button type="button" class="btn-link" id="erp-refresh-btn">새로고침</button>
       </div>
       <div id="erp-select-row" class="select-all-row">

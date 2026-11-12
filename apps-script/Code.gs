@@ -311,6 +311,9 @@ function dispatchPost_(action, body) {
     case 'erpUpdateRequests':
       result = erpUpdateRequests_(body);
       break;
+    case 'erpRepropose':
+      result = erpRepropose_(body);
+      break;
     default:
       throw new Error('알 수 없는 action: ' + action);
   }
@@ -1586,19 +1589,16 @@ function submitPurchase_(body) {
     const count = pending.length;
     if (!count) throw new Error('등록할 수 있는 자재가 없습니다 (자재코드/수량을 확인하세요).');
 
-    // 구매유형 제안값(Erp.gs): 사이트 기본 유형, 안전용품구매는 환경안전용품 유형. 요청자 화면에는
-    // 보이지 않는 열이고, 조건표가 없거나 읽기에 실패해도 구매요청 저장은 그대로 진행한다.
-    let proposedType = '';
+    // 구매유형 제안값(Erp.gs proposeTypeForRow_): 유형제안규칙 시트의 규칙을 행마다 적용한다. 요청자 화면에는
+    // 보이지 않는 열이고, 조건표/규칙이 없거나 읽기에 실패해도 구매요청 저장은 그대로 진행한다.
     try {
-      proposedType = proposePurchaseTypeCode_(site, isSafetySupply);
+      const ctx = proposalContext_(site);
+      pending.forEach(p => {
+        const v = proposalToRowValues_(proposeTypeForRow_(p.row, ctx));
+        if (v['구매유형코드'] || v['유형상태']) Object.assign(p.row, v);
+      });
     } catch (err) {
       Logger.log('구매유형 제안 실패 [' + site + ']: ' + (err && err.message || err));
-    }
-    if (proposedType) {
-      pending.forEach(p => {
-        p.row['구매유형코드'] = proposedType;
-        p.row['유형상태'] = TYPE_STATE.PROPOSED;
-      });
     }
 
     pending.forEach(p => {

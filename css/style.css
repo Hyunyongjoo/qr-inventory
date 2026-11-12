@@ -982,3 +982,24 @@ html, body {
 .erp-confirm-main { font-size: 16px; font-weight: 600; }
 .erp-confirm-bot { font-size: 13px; color: var(--text-muted); margin: 8px 0; }
 .erp-confirm-bot.is-offline { color: var(--danger); }
+.erp-site-tabs { display: flex; gap: 8px; margin-bottom: 10px; }
+.erp-site-btn {
+  flex: 1; min-height: 44px; border-radius: var(--radius); border: 1px solid var(--border);
+  background: var(--surface); color: var(--text); font-size: 15px; font-weight: 600;
+}
+.erp-site-btn.is-active { background: var(--teal); border-color: var(--teal); color: #fff; }
+.erp-row.is-review { box-shadow: inset 4px 0 0 var(--warn); }
+.erp-row.is-urgent.is-review { box-shadow: inset 4px 0 0 var(--danger); }
+.erp-chip-check { color: var(--danger); border-color: var(--danger); font-weight: 600; }
+.erp-reason { display: inline-block; font-size: 11px; color: var(--text-muted); margin-left: 6px; }
+.erp-reason.is-review { color: var(--warn); font-weight: 600; }
+.erp-type-btn {
+  font: inherit; font-size: 13px; color: var(--accent); background: none; border: 1px dashed var(--border);
+  border-radius: 6px; padding: 4px 8px; min-height: 32px; text-align: left; word-break: break-all;
+}
+.erp-type-pick-list { display: flex; flex-direction: column; gap: 6px; max-height: 50vh; overflow-y: auto; margin: 10px 0; }
+.erp-type-pick {
+  font: inherit; font-size: 14px; text-align: left; padding: 10px 12px; min-height: 44px;
+  border-radius: var(--radius); border: 1px solid var(--border); background: var(--surface); color: var(--text);
+}
+.erp-type-pick.is-current { border-color: var(--accent); font-weight: 600; }

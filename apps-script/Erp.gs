@@ -238,7 +238,10 @@ function isoWeek_(date) {
 // 명칭/기타요청사유 템플릿에 넣을 값.
 //  - {SITE}·{라인}: 묶음 행들의 라인 값(중복 제거 후 ', ' 연결)
 //  - {MM}: 등록일 월, {N}: 월 기준 주차, {NN}: ISO 주차 2자리
-//  - {PART}: 명칭변수 PART, 비어 있으면 첫 품목 자재명 + (2품목 이상이면 " 외 N건")
+//  - {PART}: 명칭변수 PART를 입력했으면 그 값. 비어 있으면 배치의 품목 수(서로 다른 자재코드 수)로 정한다:
+//            1개 → 그 품목의 자재명 / 2개 이상 → 'PART'. 1개일 때는 템플릿의 "{PART} 등"에서 " 등"을 지운다.
+const ERP_PART_MULTI = 'PART';
+const ERP_PART_SINGLE_FLAG = '__partSingle';
 function erpTemplateValues_(rows, vars, date) {
   const d = date || new Date();
   const list = rows || [];
@@ -254,8 +257,17 @@ function erpTemplateValues_(rows, vars, date) {
   values.N = String(weekOfMonth_(d));
   values.NN = ('0' + isoWeek_(d)).slice(-2);
   if (!String(values.PART == null ? '' : values.PART).trim() && list.length) {
-    const first = String(list[0]['자재명'] || list[0]['자재코드'] || '').trim();
-    values.PART = first + (list.length > 1 ? ' 외 ' + (list.length - 1) + '건' : '');
+    const codes = [];
+    list.forEach(r => {
+      const c = normalizeMaterialCode_(r['자재코드']) || String(r['자재명'] || '').trim();
+      if (codes.indexOf(c) === -1) codes.push(c);
+    });
+    if (codes.length === 1) {
+      values.PART = String(list[0]['자재명'] || list[0]['자재코드'] || '').trim();
+      values[ERP_PART_SINGLE_FLAG] = true;
+    } else {
+      values.PART = ERP_PART_MULTI;
+    }
   }
   return values;
 }
@@ -263,7 +275,10 @@ function erpTemplateValues_(rows, vars, date) {
 // 템플릿의 {변수}를 값으로 바꾼다. 값이 빈 괄호 변수("({버전})")는 괄호째 지우고 연속 공백을 정리한다.
 function fillErpTemplate_(template, values) {
   const valueOf = name => String(values[name.trim()] == null ? '' : values[name.trim()]).trim();
-  let s = String(template || '').replace(/\(\s*\{([^}]+)\}\s*\)/g, (m, v) => {
+  let s = String(template || '');
+  // PART를 자동으로 채웠고 품목이 1개면 "{PART} 등"의 " 등"을 지운다.
+  if (values[ERP_PART_SINGLE_FLAG]) s = s.replace(/\{\s*PART\s*\}\s*등(?=\s|$)/g, '{PART}');
+  s = s.replace(/\(\s*\{([^}]+)\}\s*\)/g, (m, v) => {
     const val = valueOf(v);
     return val ? '(' + val + ')' : '';
   });

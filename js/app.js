@@ -4458,15 +4458,24 @@
       SITE: lines, '라인': lines, MM: String(date.getMonth() + 1), N: String(erpWeekOfMonth(date)),
       NN: String(erpIsoWeek(date)).padStart(2, '0')
     });
+    // {PART} 비어 있으면: 서로 다른 자재코드 1개 → 그 자재명(“{PART} 등”의 “ 등” 제거) / 2개 이상 → 'PART'
     if (!String(values.PART == null ? '' : values.PART).trim() && rows.length) {
-      values.PART = String(rows[0].itemName || rows[0].itemId || '').trim() + (rows.length > 1 ? ` 외 ${rows.length - 1}건` : '');
+      const codes = new Set(rows.map((r) => String(r.itemId || r.itemName || '').replace(/\s+/g, '').toUpperCase()));
+      if (codes.size === 1) {
+        values.PART = String(rows[0].itemName || rows[0].itemId || '').trim();
+        values.__partSingle = true;
+      } else {
+        values.PART = 'PART';
+      }
     }
     return values;
   }
 
   function erpFillTemplate(template, values) {
     const val = (n) => String(values[n.trim()] == null ? '' : values[n.trim()]).trim();
-    return String(template || '')
+    let tpl = String(template || '');
+    if (values.__partSingle) tpl = tpl.replace(/\{\s*PART\s*\}\s*등(?=\s|$)/g, '{PART}');
+    return tpl
       .replace(/\(\s*\{([^}]+)\}\s*\)/g, (m, v) => (val(v) ? `(${val(v)})` : ''))
       .replace(/\{([^}]+)\}/g, (m, v) => val(v))
       .replace(/\s{2,}/g, ' ')

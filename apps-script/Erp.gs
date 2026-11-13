@@ -81,6 +81,11 @@ const ERP_COLUMNS = [
   '구매유형코드', '유형상태', '긴급', '명칭변수', 'ERP상태', 'ERP명칭', 'ERP처리일시', 'ERP메시지', '배치ID', '처리자', '제안근거'
 ];
 const ERP_STATUS = { WAITING: '대기', RUNNING: '등록중', DONE: '완료', FAILED: '실패' };
+// 구매요청번호 열(시트 1열, 기존 열). ERP 완료 결과의 erp_number(PC가 ERP 목록에서 읽은 번호)를 기록한다.
+const PURCHASE_REQ_NO_COLUMN = '구매요청번호';
+// 화면에서 직접 입력할 때 허용하는 형식(예: PR26-1113-0041).
+const PURCHASE_REQ_NO_PATTERN = /^PR\d{2}-\d{4}-\d{4}$/;
+const PURCHASE_REQ_NO_CHECK_MESSAGE = '구매요청번호 확인 필요';
 // 이 상태의 행은 유형·명칭변수·요청수량을 바꿀 수 없다(실패 행은 수정 후 재처리 가능).
 const ERP_LOCKED_STATUSES = [ERP_STATUS.WAITING, ERP_STATUS.RUNNING, ERP_STATUS.DONE];
 // 확인필요: 안전용품구매인데 사용설비로 유형을 정하지 못한 행. 자재관리자가 유형을 고르기 전까지 등록 불가.
@@ -877,6 +882,9 @@ function erpRowToView_(r, defaultType, ctx) {
     erpTitle: r['ERP명칭'] || '',
     erpMessage: r['ERP메시지'] || '',
     erpAt: fmtDateTime_(r['ERP처리일시']),
+    purchaseReqNo: String(r[PURCHASE_REQ_NO_COLUMN] || '').trim(),
+    // 완료됐는데 구매요청번호가 비어 있는 행(화면에서 노란색 + 직접 입력).
+    needsPurchaseReqNo: erpStatusOf_(r) === ERP_STATUS.DONE && !String(r[PURCHASE_REQ_NO_COLUMN] || '').trim(),
     batchId: r['배치ID'] || '',
     handler: r['처리자'] || ''
   };
@@ -1039,6 +1047,58 @@ function erpUpdateRequests_(body) {
   }
 }
 
+/**
+ * 청구서 관리 화면: 완료됐는데 구매요청번호가 빈 행에 번호를 직접 입력한다(관리자/자재관리자).
+ * body: { site, pin, rowIndex, itemId, purchaseNo }
+ * 그 행과 같은 배치ID의 완료 행 전체에 함께 기록한다(이미 다른 번호가 있는 행은 건너뛰고 ERP메시지에 남김).
+ */
+function erpSetPurchaseNo_(body) {
+  const lock = scriptLock_();
+  lock.waitLock(30000);
+  try {
+    const access = erpAccess_(body.pin);
+    const site = resolveErpSite_(access, body.site);
+    if (String(body.site || '').trim() !== site) throw new Error('사이트가 바뀌었습니다. 목록을 새로고침하세요.');
+    const number = String(body.purchaseNo || '').trim().toUpperCase();
+    if (!PURCHASE_REQ_NO_PATTERN.test(number)) throw new Error('구매요청번호 형식이 올바르지 않습니다(예: PR26-1113-0041).');
+
+    const sheet = sheet_(poInSheetName_(site));
+    const heads = headers_(sheet);
+    const rows = readAll_(sheet);
+    const target = rows.find(r => r._row === Number(body.rowIndex));
+    if (!target || normalizeMaterialCode_(target['자재코드']) !== normalizeMaterialCode_(body.itemId)) {
+      throw new Error('요청을 찾을 수 없습니다(시트가 바뀌었을 수 있습니다). 목록을 새로고침하세요.');
+    }
+    if (erpStatusOf_(target) !== ERP_STATUS.DONE) throw new Error('ERP 완료 행만 구매요청번호를 입력할 수 있습니다.');
+    const current = String(target[PURCHASE_REQ_NO_COLUMN] || '').trim();
+    if (current) throw new Error('이미 구매요청번호가 있습니다: ' + current);
+
+    const batchId = String(target['배치ID'] || '').trim();
+    const group = batchId
+      ? rows.filter(r => String(r['배치ID'] || '').trim() === batchId && erpStatusOf_(r) === ERP_STATUS.DONE)
+      : [target];
+    const stamp = access.user.name + ' ' + Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd HH:mm');
+    const updates = {};
+    const numberRows = [];
+    let conflicts = 0;
+    group.forEach(r => {
+      const existing = String(r[PURCHASE_REQ_NO_COLUMN] || '').trim();
+      if (!existing) {
+        numberRows.push(r._row);
+        updates[r._row] = { 'ERP메시지': '구매요청번호 직접 입력: ' + stamp };
+      } else if (existing.toUpperCase() !== number) {
+        conflicts++;
+        updates[r._row] = { 'ERP메시지': '기존 번호 있음: ' + existing + ' (입력 번호 ' + number + ')' };
+      }
+    });
+    writeErpUpdates_(sheet, heads, updates);
+    writePurchaseReqNo_(sheet, heads, numberRows, number);
+    return { site, batchId, purchaseNo: number, count: numberRows.length, conflicts };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 // ------------------------- ERP 자동등록 PC API -------------------------
 
 /**
@@ -1142,6 +1202,9 @@ function erpPending_(p) {
         Object.keys(v).forEach(k => { if (!vars[k] && v[k]) vars[k] = v[k]; });
       });
       const fileName = c.batchId + '.xlsx';
+      // 같은 자재코드 여러 행은 한 줄로 합친다(수량 합계·가장 빠른 필요일자·첫 행 값 — 구매 다운로드와 같은 함수).
+      // row_count는 합친 뒤 줄 수(PC가 업로드된 줄 수와 비교). 시트의 원래 행은 모두 같은 배치ID를 받는다.
+      const downloadRows = buildPurchaseDownloadRows_(c.rows, unitMap);
       const title = buildErpTitle(type, c.rows, vars, new Date(now));
       // fields: 조건표 값 + 원인부서 + 완성된 기타요청사유(긴급 배치는 끝에 " 긴급요망").
       const fields = Object.assign({}, type.fields, {
@@ -1155,15 +1218,15 @@ function erpPending_(p) {
         urgent: c.urgent,
         fields,
         title,
-        row_count: c.rows.length,
+        row_count: downloadRows.length,
         file_name: fileName,
-        file_b64: buildPurchaseXlsxBase64_(c.batchId, buildPurchaseDownloadRows_(c.rows, unitMap))
+        file_b64: buildPurchaseXlsxBase64_(c.batchId, downloadRows)
       });
     } catch (err) {
       const message = '배치 준비 실패: ' + (err && err.message || err);
       Logger.log(c.batchId + ' ' + message);
       try {
-        markErpBatch_(c.site, c.batchId, ERP_STATUS.FAILED, '', message);
+        markErpBatch_(c.site, c.batchId, ERP_STATUS.FAILED, '', message, '');
         sendErpAlert_(c.site, '[QR 재고] ERP 등록 실패 ' + c.site + ' ' + c.batchId,
           '배치ID: ' + c.batchId + '\n사이트: ' + c.site + '\n유형: ' + (c.rows[0]['구매유형코드'] || '') + '\n메시지: ' + message);
       } catch (e) {
@@ -1204,7 +1267,11 @@ function buildPurchaseXlsxBase64_(name, downloadRows) {
 }
 
 // 배치ID로 행을 찾아 결과를 기록한다. 등록중/대기 행만 바꾼다(되돌린 뒤 다른 배치로 다시 가져간 행은 배치ID가 달라 제외됨).
-function markErpBatch_(site, batchId, status, erpTitle, message) {
+// erpNumber(완료 + 'PR'로 시작)가 있으면 그 배치ID의 모든 행(합쳐 올린 품목의 원래 행 포함)의 구매요청번호에 기록한다.
+//  - 이미 완료로 기록된 같은 배치 행(결과 재전송)도 번호가 비어 있으면 기록한다.
+//  - 이미 다른 값이 있는 행은 덮어쓰지 않고 ERP메시지에 "기존 번호 있음: …"을 남긴다.
+// 반환: { matched: 상태를 바꾼 행, numbered: 번호를 기록한 행 수, conflicts: 기존 번호가 있던 행 수 }
+function markErpBatch_(site, batchId, status, erpTitle, message, erpNumber) {
   const lock = scriptLock_();
   lock.waitLock(20000);
   try {
@@ -1212,21 +1279,45 @@ function markErpBatch_(site, batchId, status, erpTitle, message) {
     const heads = headers_(sheet);
     const rows = readAll_(sheet);
     const updates = {};
+    const numberRows = [];
     const matched = [];
+    let conflicts = 0;
+    const number = status === ERP_STATUS.DONE ? String(erpNumber || '').trim().toUpperCase() : '';
     rows.forEach(r => {
       if (String(r['배치ID'] || '').trim() !== batchId) return;
       const st = erpStatusOf_(r);
-      if (st !== ERP_STATUS.RUNNING && st !== ERP_STATUS.WAITING) return;
-      updates[r._row] = { 'ERP상태': status, 'ERP명칭': erpTitle || '', 'ERP메시지': message || '', 'ERP처리일시': new Date() };
-      r['ERP상태'] = status;
-      matched.push(r);
+      const changing = st === ERP_STATUS.RUNNING || st === ERP_STATUS.WAITING;
+      if (changing) {
+        updates[r._row] = { 'ERP상태': status, 'ERP명칭': erpTitle || '', 'ERP메시지': message || '', 'ERP처리일시': new Date() };
+        r['ERP상태'] = status;
+        matched.push(r);
+      }
+      if (!number || (!changing && st !== ERP_STATUS.DONE)) return;
+      const existing = String(r[PURCHASE_REQ_NO_COLUMN] || '').trim();
+      if (!existing) {
+        numberRows.push(r._row);
+        r[PURCHASE_REQ_NO_COLUMN] = number;
+      } else if (existing.toUpperCase() !== number) {
+        conflicts++;
+        const note = '기존 번호 있음: ' + existing + ' (ERP 번호 ' + number + ')';
+        updates[r._row] = Object.assign(updates[r._row] || {}, { 'ERP메시지': message ? note + ' / ' + message : note });
+      }
     });
     writeErpUpdates_(sheet, heads, updates);
+    writePurchaseReqNo_(sheet, heads, numberRows, number);
     refreshErpFlags_(site, rows);
-    return matched;
+    return { matched, numbered: numberRows.length, conflicts };
   } finally {
     lock.releaseLock();
   }
+}
+
+// 구매요청번호 열(ERP 열 묶음 밖의 기존 열)은 행별로 그 칸만 쓴다.
+function writePurchaseReqNo_(sheet, heads, rowIdxs, number) {
+  if (!rowIdxs.length) return;
+  const col = heads.indexOf(PURCHASE_REQ_NO_COLUMN);
+  if (col === -1) throw new Error('"' + sheet.getName() + '" 시트에서 "' + PURCHASE_REQ_NO_COLUMN + '" 열을 찾을 수 없습니다.');
+  rowIdxs.forEach(ri => sheet.getRange(ri, col + 1).setValue(number));
 }
 
 // 배치ID가 어느 사이트 시트에 있는지 배치ID 열만 읽어 찾는다.
@@ -1244,7 +1335,10 @@ function findErpBatchSite_(batchId) {
 }
 
 /**
- * POST { token, action:"result", batch_id, status:"완료"|"실패", erp_title, message }
+ * POST { token, action:"result", batch_id, status:"완료"|"실패", erp_title, erp_number, message }
+ *  - 완료 + erp_number가 'PR'로 시작 → 그 배치ID의 모든 행 구매요청번호에 기록(markErpBatch_)
+ *  - 완료 + erp_number 빈값 → 번호는 비워 두고 ERP메시지에 PC 메시지 그대로(비어 있으면 "구매요청번호 확인 필요")
+ *  - 완료 + 'PR'로 시작하지 않는 값 → 기록하지 않고 ERP메시지에 형식 확인 필요를 남긴다
  */
 function erpResult_(body) {
   if (!erpTokenOk_(body.token)) return { ok: false, error: 'unauthorized' };
@@ -1255,8 +1349,21 @@ function erpResult_(body) {
 
   const site = findErpBatchSite_(batchId);
   if (!site) return { ok: false, error: '배치를 찾을 수 없습니다: ' + batchId };
-  const message = String(body.message || '').trim();
-  const matched = markErpBatch_(site, batchId, status, String(body.erp_title || '').trim(), message);
+  let message = String(body.message || '').trim();
+  const rawNumber = String(body.erp_number || '').trim();
+  let erpNumber = '';
+  if (status === ERP_STATUS.DONE) {
+    if (/^PR/i.test(rawNumber)) {
+      erpNumber = rawNumber.toUpperCase();
+    } else if (rawNumber) {
+      const note = PURCHASE_REQ_NO_CHECK_MESSAGE + ' (PR로 시작하지 않는 번호: ' + rawNumber + ')';
+      message = message ? note + ' / ' + message : note;
+    } else if (!message) {
+      message = PURCHASE_REQ_NO_CHECK_MESSAGE;
+    }
+  }
+  const res = markErpBatch_(site, batchId, status, String(body.erp_title || '').trim(), message, erpNumber);
+  const matched = res.matched;
 
   if (status === ERP_STATUS.FAILED && matched.length) {
     const handler = String(matched[0]['처리자'] || '');
@@ -1265,7 +1372,7 @@ function erpResult_(body) {
       '\n품목 수: ' + matched.length + '\n처리자: ' + handler + '\n메시지: ' + (message || '(없음)') +
       '\n\nPWA 청구서 관리 화면에서 수정 후 다시 등록할 수 있습니다.');
   }
-  return { ok: true, updated: matched.length };
+  return { ok: true, updated: matched.length, numbered: res.numbered, conflicts: res.conflicts };
 }
 
 /**

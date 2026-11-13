@@ -4133,6 +4133,8 @@
   // ERP상태=대기로 바꾼다. 실제 ERP 등록은 사이트별 사무실 PC 프로그램이 가져가서 처리한다(Erp.gs).
 
   const ERP_STATUS_CLASS = { '대기': 'wait', '등록중': 'run', '완료': 'done', '실패': 'fail' };
+  const ERP_PR_PATTERN = /^PR\d{2}-\d{4}-\d{4}$/;
+  const ERP_PR_CHECK_MESSAGE = '구매요청번호 확인 필요';
 
   function bindErp() {
     $('#action-erp-btn').addEventListener('click', () => switchView('erp'));
@@ -4158,6 +4160,11 @@
     });
     // 행의 구매유형을 누르면 그 사이트 유형 목록을 띄우고, 고르면 바로 저장(유형상태=확정)한다.
     $('#erp-list').addEventListener('click', (e) => {
+      const prBtn = e.target.closest('.erp-pr-save');
+      if (prBtn) {
+        saveErpPurchaseNo(Number(prBtn.dataset.row));
+        return;
+      }
       const btn = e.target.closest('.erp-type-btn');
       if (!btn) return;
       e.preventDefault();
@@ -4386,10 +4393,11 @@
       const statusChip = r.erpStatus
         ? `<div class="erp-status erp-status-${statusCls}">${escapeHtml(r.erpStatus)}${r.urgent ? ' (긴급)' : ''}${statusDetail ? ' · ' + escapeHtml(statusDetail) : ''}${r.erpAt ? ` <span class="muted">${escapeHtml(r.erpAt)}</span>` : ''}</div>`
         : '';
+      const prHtml = r.erpStatus === '완료' ? erpPurchaseNoHtml(r) : '';
       const notes = [r.note1, r.note2].filter(Boolean).join(' / ');
       const checked = state.erp.selected.has(r.rowIndex);
       return `
-        <div class="card erp-row${erpIsUrgentView(r) ? ' is-urgent' : ''}${checked ? ' is-selected' : ''}${review ? ' is-review' : ''}">
+        <div class="card erp-row${erpIsUrgentView(r) ? ' is-urgent' : ''}${checked ? ' is-selected' : ''}${review ? ' is-review' : ''}${r.needsPurchaseReqNo ? ' is-pr-missing' : ''}">
           <label class="erp-row-head">
             ${pendingTab ? `<input type="checkbox" class="erp-row-check" data-row="${r.rowIndex}" ${checked ? 'checked' : ''} />` : ''}
             <span class="erp-row-title">${erpIsUrgentView(r) ? '<span class="erp-urgent-badge">긴급</span>' : ''}${escapeHtml(r.itemName || r.itemId)}</span>
@@ -4399,9 +4407,56 @@
           ${notes ? `<div class="erp-row-note">특이사항: ${escapeHtml(notes)}</div>` : ''}
           <div class="erp-row-type">${typeHtml} ${typeChip}${incompleteChip}${reasonText}</div>
           ${statusChip}
+          ${prHtml}
         </div>
       `;
     }).join('');
+  }
+
+  // 완료 행의 구매요청번호. 비어 있으면 노란색 경고 + 직접 입력칸(같은 배치ID 행 전체에 기록).
+  function erpPurchaseNoHtml(r) {
+    if (!r.needsPurchaseReqNo) {
+      const msg = r.erpMessage && r.erpMessage.indexOf('기존 번호 있음') !== -1
+        ? `<div class="erp-row-note">${escapeHtml(r.erpMessage)}</div>` : '';
+      return `<div class="erp-pr">구매요청번호 <strong>${escapeHtml(r.purchaseReqNo)}</strong></div>${msg}`;
+    }
+    const msg = r.erpMessage && r.erpMessage !== ERP_PR_CHECK_MESSAGE ? ` · ${escapeHtml(r.erpMessage)}` : '';
+    return `
+      <div class="erp-pr-missing">
+        <div class="erp-pr-missing-title">${ERP_PR_CHECK_MESSAGE}${msg}</div>
+        <div class="erp-pr-form">
+          <input type="text" class="input erp-pr-input" data-row="${r.rowIndex}" placeholder="PR26-1113-0041"
+            maxlength="14" autocapitalize="characters" autocomplete="off" />
+          <button type="button" class="btn btn-primary erp-pr-save" data-row="${r.rowIndex}">저장</button>
+        </div>
+      </div>`;
+  }
+
+  async function saveErpPurchaseNo(rowIndex) {
+    if (state.erp.busy || !state.erp.data) return;
+    const row = state.erp.data.progress.find((r) => r.rowIndex === rowIndex);
+    const input = $(`.erp-pr-input[data-row="${rowIndex}"]`);
+    if (!row || !input) return;
+    const purchaseNo = input.value.trim().toUpperCase();
+    if (!ERP_PR_PATTERN.test(purchaseNo)) {
+      toast('구매요청번호 형식: PR00-0000-0000', 'error');
+      input.focus();
+      return;
+    }
+    const site = state.erp.site;
+    state.erp.busy = true;
+    state.erp.loadSeq++;
+    try {
+      const res = await Api.post('erpSetPurchaseNo', {
+        site, pin: state.user.pin, rowIndex: row.rowIndex, itemId: row.itemId, purchaseNo
+      });
+      toast(`${res.purchaseNo} 기록: ${res.count}행${res.conflicts ? ` (기존 번호 있는 ${res.conflicts}행 제외)` : ''}`, 'success');
+    } catch (err) {
+      toast(err.message || '처리 중 오류가 발생했습니다.', 'error');
+    } finally {
+      state.erp.busy = false;
+    }
+    if (state.erp.site === site) await loadErpList();
   }
 
   // 선택 행마다 실제로 적용될 유형코드(드롭다운에서 고르면 그 유형, 아니면 각 행의 현재 유형).

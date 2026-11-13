@@ -167,7 +167,7 @@ function doGet(e) {
 const IDEMPOTENT_ACTIONS = [
   'stockIn', 'stockOut', 'submitPurchase', 'stockReturn', 'cancelPurchase', 'updateRequestedQty',
   'stockOutByOrder', 'updateStockUsage', 'inboundByManager', 'outboundComplete', 'editInboundQty',
-  'requestTransfer', 'approveTransfer', 'rejectTransfer', 'returnTransfer', 'erpUpdateRequests'
+  'requestTransfer', 'approveTransfer', 'rejectTransfer', 'returnTransfer', 'erpUpdateRequests', 'erpSetPurchaseNo'
 ];
 // 처리 완료된 requestId의 응답을 보관하는 시간(초). CacheService 최대값(6시간).
 const IDEMPOTENCY_TTL_SEC = 21600;
@@ -313,6 +313,9 @@ function dispatchPost_(action, body) {
       break;
     case 'erpRepropose':
       result = erpRepropose_(body);
+      break;
+    case 'erpSetPurchaseNo':
+      result = erpSetPurchaseNo_(body);
       break;
     default:
       throw new Error('알 수 없는 action: ' + action);

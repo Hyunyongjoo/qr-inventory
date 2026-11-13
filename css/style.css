@@ -969,6 +969,16 @@ html, body {
 .erp-status-run { color: var(--accent); }
 .erp-status-done { color: var(--success); }
 .erp-status-fail { color: var(--danger); }
+.erp-pr { font-size: 13px; margin-top: 4px; }
+.erp-row.is-pr-missing { border-color: var(--warn); box-shadow: inset 4px 0 0 var(--warn); }
+.erp-pr-missing {
+  margin-top: 8px; padding: 8px; border-radius: var(--radius);
+  background: rgba(245,158,11,.15); border: 1px solid var(--warn);
+}
+.erp-pr-missing-title { font-size: 13px; font-weight: 600; color: var(--warn); word-break: break-all; margin-bottom: 6px; }
+.erp-pr-form { display: flex; gap: 6px; }
+.erp-pr-form .input { flex: 1; min-width: 0; margin-bottom: 0; text-transform: uppercase; }
+.erp-pr-form .btn { flex: 0 0 auto; width: auto; padding: 0 14px; }
 .erp-footer { max-height: 62vh; overflow-y: auto; }
 .erp-footer .select { margin-bottom: 8px; }
 .erp-vars { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 6px 8px; margin-bottom: 8px; }

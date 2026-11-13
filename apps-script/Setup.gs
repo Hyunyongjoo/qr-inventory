@@ -689,6 +689,7 @@ function onOpen() {
     .addItem('구매유형·제안규칙 캐시 새로고침', 'refreshPurchaseTypeCacheFromMenu')
     .addItem('유형 제안 진단', 'diagnoseTypeProposalFromMenu')
     .addItem('휴일 시트 만들기 · 공휴일 확인', 'setupHolidaySheetFromMenu')
+    .addItem('환경안전팀 지급 품목 재고사용 처리', 'applyHqSafetySupplyFromMenu')
     .addToUi();
 }
 

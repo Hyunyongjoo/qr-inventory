@@ -381,6 +381,83 @@ function clearProposalRuleCache_() {
   CacheService.getScriptCache().remove(PROPOSAL_RULE_CACHE_KEY);
 }
 
+// ------------------------- 본사 환경안전팀 지급 품목(구매하지 않음) -------------------------
+// 안전용품구매 경로 + 자재코드 값 '환경안전용품' + 사용자재 시트 사용설비 '환경안전용품'(띄어쓰기·대소문자 무시)인 행은
+// 구매하지 않고 본사 환경안전팀에서 받아오므로 재고사용(O)으로 처리한다. 재고사용=O인 행은 구매대기가 아니라서
+// 청구서 관리 목록·청구서/긴급 등록·pending 배치 대상에서 자동으로 빠진다(isErpCandidateRow_).
+// 사용설비만 환경안전용품이고 자재코드가 실제 코드인 품목은 대상이 아니다(유형 제안 규칙 H-07/G-06 등을 따름).
+const HQ_SAFETY_SUPPLY_VALUE = '환경안전용품';
+const HQ_SAFETY_SUPPLY_REASON = '본사 환경안전팀 지급(재고사용)';
+
+function isHqSafetySupplyRow_(r, ctx) {
+  if (purchaseRouteOf_(r) !== SAFETY_SUPPLY_ZONE) return false;
+  const v = ruleNorm_(HQ_SAFETY_SUPPLY_VALUE);
+  if (ruleNorm_(r['자재코드']) !== v) return false;
+  return ruleList_(ctx.equipmentOf(r)).indexOf(v) !== -1;
+}
+
+// 대상 행에 넣는 값. 구매요청번호 '재고사용'은 입고확인 "재고사용" 버튼(updateStockUsage_)과 같은 코드 표시값.
+function hqSafetySupplyRowValues_() {
+  return {
+    '재고사용(O,X)': 'O',
+    '구매요청번호': '재고사용',
+    '구매유형코드': '',
+    '유형상태': '',
+    '제안근거': HQ_SAFETY_SUPPLY_REASON,
+    'ERP상태': ''
+  };
+}
+
+// 이미 들어와 있는 미등록(ERP상태 빈값/실패) 대상 행을 재고사용으로 바꾼다. 재고확인중/구매대기 행만 바꾸고
+// (취소·보류·재고사용·구매완료 이후 행과 대기/등록중/완료 행은 그대로), 바꾼 행 수를 돌려준다. 호출부에서 락을 잡는다.
+function applyHqSafetySupplyRows_(site, ctx) {
+  const sheet = sheet_(poInSheetName_(site));
+  const heads = headers_(sheet);
+  const c = ctx || proposalContext_(site);
+  const updates = {};
+  let count = 0;
+  readAll_(sheet).forEach(r => {
+    const st = erpStatusOf_(r);
+    if (st !== '' && st !== ERP_STATUS.FAILED) return;
+    const status = computeInboundStatus_(r).status;
+    if (status !== '재고확인중' && status !== '구매대기') return;
+    if (!isHqSafetySupplyRow_(r, c)) return;
+    updates[r._row] = hqSafetySupplyRowValues_();
+    count++;
+  });
+  writeErpUpdates_(sheet, heads, updates);
+  return count;
+}
+
+// 사용자재 시트에서 자재코드·사용설비가 모두 '환경안전용품'인 품목 수(확인용).
+function countHqSafetySupplyItems_(site) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(usedMaterialsSheetName_(site));
+  if (!sheet) return -1;
+  const v = ruleNorm_(HQ_SAFETY_SUPPLY_VALUE);
+  return readAll_(sheet).filter(r => ruleNorm_(r['자재코드']) === v && ruleList_(r['사용설비']).indexOf(v) !== -1).length;
+}
+
+// "자재관리 > 환경안전팀 지급 품목 재고사용 처리" 메뉴(1회 실행용, 다시 실행해도 안전).
+function applyHqSafetySupplyFromMenu() {
+  const lock = scriptLock_();
+  lock.waitLock(60000);
+  const lines = [];
+  try {
+    SITES.forEach(site => {
+      if (!SpreadsheetApp.getActiveSpreadsheet().getSheetByName(poInSheetName_(site))) return;
+      const items = countHqSafetySupplyItems_(site);
+      const changed = applyHqSafetySupplyRows_(site);
+      lines.push(site + ': 사용자재 대상 품목 ' + (items < 0 ? '(사용자재 시트 없음)' : items + '개') + ' / 재고사용 처리 ' + changed + '행');
+    });
+  } finally {
+    lock.releaseLock();
+  }
+  const msg = '환경안전팀 지급 품목 재고사용 처리\n\n' + lines.join('\n');
+  Logger.log(msg);
+  try { SpreadsheetApp.getUi().alert(msg); } catch (e) { /* 편집기 실행 */ }
+  return msg;
+}
+
 // 요청이 들어온 메뉴: 라인 열 값이 안전재고/안전용품 표식이면 그 메뉴(submitPurchase_가 라인 대신 넣는 값), 아니면 일반 라인 요청.
 function purchaseRouteOf_(r) {
   const zone = ruleNorm_(r['라인']);
@@ -661,7 +738,9 @@ function erpRepropose_(body) {
     if (access.user.role !== ERP_ADMIN_ROLE) throw new Error('제안 다시 계산은 관리자만 사용할 수 있습니다.');
     const site = resolveErpSite_(access, body.site);
     clearProposalRuleCache_();
-    return { site, count: reproposeRows_(site, 'proposed') };
+    // 본사 환경안전팀 지급 품목을 먼저 재고사용으로 돌린 뒤(목록에서 빠짐) 나머지 행의 제안을 다시 계산한다.
+    const hqCount = applyHqSafetySupplyRows_(site);
+    return { site, count: reproposeRows_(site, 'proposed'), hqCount };
   } finally {
     lock.releaseLock();
   }

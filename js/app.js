@@ -4794,7 +4794,7 @@
     state.erp.loadSeq++;
     try {
       const res = await Api.post('erpRepropose', { site, pin: state.user.pin });
-      toast(`${res.site} 제안 다시 계산: ${res.count}건 변경`, 'success');
+      toast(`${res.site} 제안 다시 계산: ${res.count}건 변경${res.hqCount ? ` · 환경안전팀 지급 ${res.hqCount}건 재고사용 처리` : ''}`, 'success');
     } catch (err) {
       toast(err.message || '처리 중 오류가 발생했습니다.', 'error');
     } finally {

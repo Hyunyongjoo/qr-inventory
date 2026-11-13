@@ -1604,6 +1604,11 @@ function submitPurchase_(body) {
     pending.forEach(p => {
       try {
         if (!ctx) throw new Error('제안 데이터를 읽지 못함');
+        // 본사 환경안전팀 지급 품목(Erp.gs isHqSafetySupplyRow_): 구매하지 않으므로 저장 시 바로 재고사용(O).
+        if (isSafetySupply && isHqSafetySupplyRow_(p.row, ctx)) {
+          Object.assign(p.row, hqSafetySupplyRowValues_());
+          return;
+        }
         const v = proposalToRowValues_(proposeTypeForRow_(p.row, ctx));
         if (v['구매유형코드'] || v['유형상태']) Object.assign(p.row, v);
       } catch (err) {

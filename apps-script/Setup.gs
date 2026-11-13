@@ -688,6 +688,7 @@ function onOpen() {
     .addItem('유형제안규칙 시트 만들기', 'setupProposalRuleSheetFromMenu')
     .addItem('구매유형·제안규칙 캐시 새로고침', 'refreshPurchaseTypeCacheFromMenu')
     .addItem('유형 제안 진단', 'diagnoseTypeProposalFromMenu')
+    .addItem('휴일 시트 만들기 · 공휴일 확인', 'setupHolidaySheetFromMenu')
     .addToUi();
 }
 

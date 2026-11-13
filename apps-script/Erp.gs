@@ -86,6 +86,17 @@ const PURCHASE_REQ_NO_COLUMN = '구매요청번호';
 // 화면에서 직접 입력할 때 허용하는 형식(예: PR26-1113-0041).
 const PURCHASE_REQ_NO_PATTERN = /^PR\d{2}-\d{4}-\d{4}$/;
 const PURCHASE_REQ_NO_CHECK_MESSAGE = '구매요청번호 확인 필요';
+// 필요일자가 빈 행의 배치 엑셀 기본값: 오늘(배치 생성일, Asia/Seoul) + N일, 휴일이면 그다음 첫 평일.
+const ERP_DUE_DAYS_NORMAL = 14;
+const ERP_DUE_DAYS_URGENT = 1;
+// 대한민국 공휴일(대체공휴일 포함) 공개 캘린더. 연도별 결과를 스크립트 속성에 하루 동안 보관한다.
+const KR_HOLIDAY_CALENDAR_ID = 'ko.south_korea#holiday@group.v.calendar.google.com';
+const KR_HOLIDAY_PROP_PREFIX = 'KR_HOLIDAYS_';
+const KR_HOLIDAY_REFRESH_MS = 24 * 60 * 60 * 1000;
+// 회사 휴무일 시트(열: 날짜 | 설명). 창립기념일, 하계휴가 등.
+const HOLIDAY_SHEET_NAME = '휴일';
+const HOLIDAY_SHEET_HEADERS = ['날짜', '설명'];
+const ERP_HOLIDAY_FAIL_MESSAGE = '공휴일 캘린더 확인 실패';
 // 이 상태의 행은 유형·명칭변수·요청수량을 바꿀 수 없다(실패 행은 수정 후 재처리 가능).
 const ERP_LOCKED_STATUSES = [ERP_STATUS.WAITING, ERP_STATUS.RUNNING, ERP_STATUS.DONE];
 // 확인필요: 안전용품구매인데 사용설비로 유형을 정하지 못한 행. 자재관리자가 유형을 고르기 전까지 등록 불가.
@@ -1099,6 +1110,186 @@ function erpSetPurchaseNo_(body) {
   }
 }
 
+// ------------------------- 필요일자 기본값 · 휴일 판정 -------------------------
+// 날짜는 'yyyy-MM-dd' 문자열로 계산한다(UTC 산술이라 시간대와 무관).
+
+function ymdAddDays_(ymd, n) {
+  const p = String(ymd).split('-').map(Number);
+  return new Date(Date.UTC(p[0], p[1] - 1, p[2] + n)).toISOString().slice(0, 10);
+}
+
+function ymdWeekday_(ymd) {
+  const p = String(ymd).split('-').map(Number);
+  return new Date(Date.UTC(p[0], p[1] - 1, p[2])).getUTCDay();
+}
+
+// 시트에 쓸 Date(스크립트 시간대 Asia/Seoul 자정).
+function ymdToSheetDate_(ymd) {
+  const p = String(ymd).split('-').map(Number);
+  return new Date(p[0], p[1] - 1, p[2]);
+}
+
+function isBlankDueDate_(v) {
+  return v === null || v === undefined || String(v).trim() === '' || (v instanceof Date && isNaN(v.getTime()));
+}
+
+// 공휴일 캘린더에서 그 해의 공휴일('yyyy-MM-dd' → 이름)을 읽는다. '기념일'(어버이날 등 쉬지 않는 날)은 뺀다.
+function fetchKrPublicHolidays_(year) {
+  const cal = CalendarApp.getCalendarById(KR_HOLIDAY_CALENDAR_ID);
+  if (!cal) throw new Error('공휴일 캘린더를 찾을 수 없습니다(Google 캘린더에 "대한민국의 휴일" 추가 필요)');
+  const days = {};
+  cal.getEvents(new Date(year, 0, 1), new Date(year + 1, 0, 1)).forEach(ev => {
+    const desc = String(ev.getDescription() || '');
+    if (/기념일|observance/i.test(desc)) return;
+    const title = ev.getTitle();
+    const start = ev.isAllDayEvent() ? ev.getAllDayStartDate() : ev.getStartTime();
+    const end = ev.isAllDayEvent() ? ev.getAllDayEndDate() : null;
+    let ymd = Utilities.formatDate(start, 'Asia/Seoul', 'yyyy-MM-dd');
+    const endYmd = end ? Utilities.formatDate(end, 'Asia/Seoul', 'yyyy-MM-dd') : ymdAddDays_(ymd, 1);
+    for (let i = 0; i < 31 && ymd < endYmd; i++, ymd = ymdAddDays_(ymd, 1)) days[ymd] = title;
+  });
+  return days;
+}
+
+// 연도별 공휴일. 하루가 지나지 않았으면 저장값을 쓰고, 다시 읽다 실패하면 이전 저장값을 쓴다.
+// 저장값도 없으면 null(호출 쪽에서 토·일·휴일 시트만으로 판정).
+function krPublicHolidays_(year) {
+  const props = PropertiesService.getScriptProperties();
+  const key = KR_HOLIDAY_PROP_PREFIX + year;
+  let saved = null;
+  try { saved = JSON.parse(props.getProperty(key) || 'null'); } catch (e) { saved = null; }
+  if (saved && saved.days && Date.now() - (saved.at || 0) < KR_HOLIDAY_REFRESH_MS) return saved.days;
+  try {
+    const days = fetchKrPublicHolidays_(year);
+    props.setProperty(key, JSON.stringify({ at: Date.now(), days }));
+    return days;
+  } catch (err) {
+    Logger.log('공휴일 캘린더 읽기 실패(' + year + '): ' + (err && err.message || err));
+    return saved && saved.days ? saved.days : null;
+  }
+}
+
+// 휴일 시트의 날짜 → 설명. 시트가 없으면 빈 값.
+function companyHolidays_() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(HOLIDAY_SHEET_NAME);
+  const days = {};
+  if (!sheet || sheet.getLastRow() < 2) return days;
+  sheet.getRange(2, 1, sheet.getLastRow() - 1, 2).getValues().forEach(row => {
+    const ymd = sheetDateStr_(row[0]).replace(/[./]/g, '-');
+    if (/^\d{4}-\d{2}-\d{2}$/.test(ymd)) days[ymd] = String(row[1] || '회사 휴무');
+  });
+  return days;
+}
+
+// 휴일 판정 컨텍스트(배치 묶음 하나 동안 재사용). calendarFailed: 공휴일을 확인하지 못한 연도가 있었는지.
+function holidayContext_() {
+  const company = companyHolidays_();
+  const byYear = {};
+  const ctx = {
+    calendarFailed: false,
+    reason(ymd) {
+      const wd = ymdWeekday_(ymd);
+      if (wd === 0 || wd === 6) return wd === 0 ? '일요일' : '토요일';
+      if (company[ymd]) return company[ymd];
+      const year = Number(ymd.slice(0, 4));
+      if (!(year in byYear)) byYear[year] = krPublicHolidays_(year);
+      if (!byYear[year]) { ctx.calendarFailed = true; return ''; }
+      return byYear[year][ymd] || '';
+    },
+    isHoliday(ymd) { return !!ctx.reason(ymd); }
+  };
+  return ctx;
+}
+
+function nextBusinessDay_(ymd, hctx) {
+  let d = ymd;
+  for (let i = 0; i < 60 && hctx.isHoliday(d); i++) d = ymdAddDays_(d, 1);
+  return d;
+}
+
+// 필요일자 기본값: 일반 = 오늘 + 14일, 긴급 = 오늘 + 1일, 휴일이면 그다음 첫 평일.
+function defaultErpDueYmd_(todayYmd, urgent, hctx) {
+  return nextBusinessDay_(ymdAddDays_(todayYmd, urgent ? ERP_DUE_DAYS_URGENT : ERP_DUE_DAYS_NORMAL), hctx);
+}
+
+// 배치 행 중 필요일자가 빈 행에 기본값을 채운 복사본을 돌려준다(시트는 fillErpDueDates_가 따로 기록).
+// 반환: { rows: 엑셀용 행, blankRows: 빈칸이던 원래 행, dueYmd, calendarFailed }
+function applyErpDefaultDueDates_(rows, urgent, todayYmd, getHctx) {
+  const blankRows = rows.filter(r => isBlankDueDate_(r['필요일자']));
+  if (!blankRows.length) return { rows, blankRows, dueYmd: '', calendarFailed: false };
+  const hctx = getHctx();
+  const dueYmd = defaultErpDueYmd_(todayYmd, urgent, hctx);
+  const dueDate = ymdToSheetDate_(dueYmd);
+  return {
+    rows: rows.map(r => (blankRows.indexOf(r) !== -1 ? Object.assign({}, r, { '필요일자': dueDate }) : r)),
+    blankRows,
+    dueYmd,
+    calendarFailed: hctx.calendarFailed
+  };
+}
+
+// 엑셀에 채운 필요일자를 시트의 빈 칸에도 기록한다(이미 날짜가 있는 칸은 그대로).
+// 그 사이 행이 바뀌었을 수 있으므로 배치ID가 같은 행만 쓴다. 캘린더 확인 실패 시 ERP메시지에 남긴다.
+function fillErpDueDates_(site, batchId, rowIdxs, dueYmd, calendarFailed) {
+  if (!rowIdxs.length) return;
+  const lock = scriptLock_();
+  lock.waitLock(20000);
+  try {
+    const sheet = sheet_(poInSheetName_(site));
+    const heads = headers_(sheet);
+    const dueCol = heads.indexOf('필요일자') + 1;
+    const batchCol = heads.indexOf('배치ID') + 1;
+    const msgCol = heads.indexOf('ERP메시지') + 1;
+    if (!dueCol || !batchCol || !msgCol) throw new Error('필요일자/배치ID/ERP메시지 열을 찾을 수 없습니다.');
+    rowIdxs.forEach(ri => {
+      if (String(sheet.getRange(ri, batchCol).getValue() || '').trim() !== batchId) return;
+      const dueCell = sheet.getRange(ri, dueCol);
+      if (isBlankDueDate_(dueCell.getValue())) dueCell.setValue(ymdToSheetDate_(dueYmd));
+      if (calendarFailed) {
+        const msgCell = sheet.getRange(ri, msgCol);
+        const cur = String(msgCell.getValue() || '');
+        if (cur.indexOf(ERP_HOLIDAY_FAIL_MESSAGE) === -1) msgCell.setValue(cur ? ERP_HOLIDAY_FAIL_MESSAGE + ' / ' + cur : ERP_HOLIDAY_FAIL_MESSAGE);
+      }
+    });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * 휴일 시트를 만들고(없을 때만, 빈 시트) 공휴일 캘린더를 읽어 본다.
+ * 편집기에서 한 번 실행하면 캘린더 읽기 권한 승인 창이 뜬다(배포 전에 필요).
+ */
+function setupHolidaySheet() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const lines = [];
+  if (ss.getSheetByName(HOLIDAY_SHEET_NAME)) {
+    lines.push('휴일 시트가 이미 있어 그대로 두었습니다.');
+  } else {
+    const sheet = ss.insertSheet(HOLIDAY_SHEET_NAME);
+    writeSheetHeader_(sheet, HOLIDAY_SHEET_HEADERS, [1]);
+    lines.push('휴일 시트 생성(날짜 | 설명) — 회사 휴무일을 적어 주세요.');
+  }
+  const year = Number(Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy'));
+  [year, year + 1].forEach(y => {
+    try {
+      const days = fetchKrPublicHolidays_(y);
+      PropertiesService.getScriptProperties().setProperty(KR_HOLIDAY_PROP_PREFIX + y, JSON.stringify({ at: Date.now(), days }));
+      const keys = Object.keys(days).sort();
+      lines.push(y + '년 공휴일 ' + keys.length + '일: ' + keys.map(k => k.slice(5) + ' ' + days[k]).join(', '));
+    } catch (err) {
+      lines.push(y + '년 공휴일 캘린더 읽기 실패: ' + (err && err.message || err));
+    }
+  });
+  const msg = lines.join('\n');
+  Logger.log(msg);
+  return msg;
+}
+
+function setupHolidaySheetFromMenu() {
+  SpreadsheetApp.getUi().alert(setupHolidaySheet());
+}
+
 // ------------------------- ERP 자동등록 PC API -------------------------
 
 /**
@@ -1190,6 +1381,10 @@ function erpPending_(p) {
   // 3) 배치마다 구매 다운로드와 같은 형식의 xlsx를 만든다(잠금 밖). 실패한 배치는 실패로 기록하고 빼낸다.
   const batches = [];
   const unitMap = claimed.length ? buildItemUnitMap_() : {};
+  // 필요일자 기본값의 "오늘" = 배치를 만든 날(Asia/Seoul). 휴일 판정은 필요할 때 한 번만 준비한다.
+  const todayYmd = Utilities.formatDate(new Date(now), 'Asia/Seoul', 'yyyy-MM-dd');
+  let hctxCache = null;
+  const getHctx = () => hctxCache || (hctxCache = holidayContext_());
   claimed.forEach(c => {
     try {
       const typeCode = String(c.rows[0]['구매유형코드'] || '').trim();
@@ -1204,7 +1399,9 @@ function erpPending_(p) {
       const fileName = c.batchId + '.xlsx';
       // 같은 자재코드 여러 행은 한 줄로 합친다(수량 합계·가장 빠른 필요일자·첫 행 값 — 구매 다운로드와 같은 함수).
       // row_count는 합친 뒤 줄 수(PC가 업로드된 줄 수와 비교). 시트의 원래 행은 모두 같은 배치ID를 받는다.
-      const downloadRows = buildPurchaseDownloadRows_(c.rows, unitMap);
+      // 빈 필요일자는 먼저 기본값(일반 +14일 / 긴급 +1일, 휴일이면 다음 평일)으로 채운 뒤 합친다.
+      const due = applyErpDefaultDueDates_(c.rows, c.urgent, todayYmd, getHctx);
+      const downloadRows = buildPurchaseDownloadRows_(due.rows, unitMap);
       const title = buildErpTitle(type, c.rows, vars, new Date(now));
       // fields: 조건표 값 + 원인부서 + 완성된 기타요청사유(긴급 배치는 끝에 " 긴급요망").
       const fields = Object.assign({}, type.fields, {
@@ -1222,6 +1419,13 @@ function erpPending_(p) {
         file_name: fileName,
         file_b64: buildPurchaseXlsxBase64_(c.batchId, downloadRows)
       });
+      if (due.blankRows.length) {
+        try {
+          fillErpDueDates_(c.site, c.batchId, due.blankRows.map(r => r._row), due.dueYmd, due.calendarFailed);
+        } catch (e) {
+          Logger.log(c.batchId + ' 필요일자 시트 기록 실패: ' + (e && e.message || e));
+        }
+      }
     } catch (err) {
       const message = '배치 준비 실패: ' + (err && err.message || err);
       Logger.log(c.batchId + ' ' + message);
@@ -1288,7 +1492,10 @@ function markErpBatch_(site, batchId, status, erpTitle, message, erpNumber) {
       const st = erpStatusOf_(r);
       const changing = st === ERP_STATUS.RUNNING || st === ERP_STATUS.WAITING;
       if (changing) {
-        updates[r._row] = { 'ERP상태': status, 'ERP명칭': erpTitle || '', 'ERP메시지': message || '', 'ERP처리일시': new Date() };
+        // 배치 준비 때 남긴 "공휴일 캘린더 확인 실패"는 결과 메시지 앞에 유지한다.
+        const keepNote = String(r['ERP메시지'] || '').indexOf(ERP_HOLIDAY_FAIL_MESSAGE) !== -1 ? ERP_HOLIDAY_FAIL_MESSAGE : '';
+        const msg = keepNote && message ? keepNote + ' / ' + message : (keepNote || message || '');
+        updates[r._row] = { 'ERP상태': status, 'ERP명칭': erpTitle || '', 'ERP메시지': msg, 'ERP처리일시': new Date() };
         r['ERP상태'] = status;
         matched.push(r);
       }

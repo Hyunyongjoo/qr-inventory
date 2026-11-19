@@ -1,0 +1,75 @@
+{
+  "sites": [
+    "화성"
+  ],
+  "pc_name": "화성PC",
+  "api_url": "여기에 입력",
+  "token": "여기에 입력",
+  "dry_run": true,
+  "poll_seconds": 60,
+  "heartbeat_seconds": 300,
+  "keepalive_seconds": 600,
+  "chrome_debug_port": 9222,
+  "erp_host": "unisem.kr",
+  "wait_seconds": 10,
+  "menu_path": [
+    "자재관리",
+    "구매요청서 등록"
+  ],
+  "register_page_url": "/WARRJAJE/WARRJAJE",
+  "buttons": {
+    "register": "등록",
+    "excel_upload": "구매요청자재 액셀Upload",
+    "upload": "Excel업로드",
+    "save": "저장후 종료"
+  },
+  "field_labels": {
+    "사이트": "사이트",
+    "설비구분": "설비구분",
+    "용도": "용도",
+    "명칭": "명칭",
+    "유무상": "유/무상 구분",
+    "유무상상세": "유/무상 상세",
+    "사유1": "사유1",
+    "사유2": "사유2",
+    "기타요청사유": "기타요청사유"
+  },
+  "dropdown_fields": [
+    "설비구분",
+    "사유1",
+    "사유2"
+  ],
+  "popup_fields": [
+    "용도",
+    "유무상",
+    "유무상상세"
+  ],
+  "popup_select_button": "선택",
+  "popup_cancel_button": "취소",
+  "default_cause_dept": "CS센터",
+  "popup_search_words": {
+    "원인부서": "CS센터"
+  },
+  "popup_search_button": "조회",
+  "default_request_reason": "고객사 AS간 필요한 파트 구매 요청 건 입니다.",
+  "request_reason_by_type": {
+    "H-02": "고객사 AS간 필요한 폐수 보틀 구매 요청 건 입니다."
+  },
+  "fail_words": [
+    "오류",
+    "실패",
+    "필수",
+    "입력하세요"
+  ],
+  "popup_url_part": "JAJE011W",
+  "upload_file_id": "FileUpload2",
+  "upload_button_id": "UpldButton",
+  "upload_grid_id": "GridView2",
+  "upload_wait_seconds": 40,
+  "allow_partial_upload": false,
+  "upload_settle_seconds": 2.0,
+  "register_menu_button_id": "btn1",
+  "register_menu_text": "구매요청서 등록",
+  "register_tab_url": "/WARRJAJE/JAJE010",
+  "tab_load_seconds": 25
+}

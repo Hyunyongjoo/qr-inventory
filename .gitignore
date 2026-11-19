@@ -1,0 +1,11 @@
+# ERP 자동등록 PC 프로그램: 비밀값·실행 산출물은 올리지 않는다 (config.example.json 참고)
+erp_auto/접속정보.json
+erp_auto/config.json
+erp_auto/*.log
+erp_auto/debug/
+erp_auto/dist/
+erp_auto/build/
+erp_auto/*.exe
+erp_auto/*.spec
+erp_auto/*.zip
+erp_auto/*.xlsx

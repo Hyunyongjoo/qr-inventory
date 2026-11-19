@@ -690,6 +690,7 @@ function onOpen() {
     .addItem('유형 제안 진단', 'diagnoseTypeProposalFromMenu')
     .addItem('휴일 시트 만들기 · 공휴일 확인', 'setupHolidaySheetFromMenu')
     .addItem('환경안전팀 지급 품목 재고사용 처리', 'applyHqSafetySupplyFromMenu')
+    .addItem('ERP 등록중 → 대기 되돌리기', 'resetErpRunningFromMenu')
     .addToUi();
 }
 
@@ -878,6 +879,24 @@ function diagnoseTypeProposalFromMenu() {
   } catch (e) {
     ui.alert('진단 실패: ' + (e && e.message || e));
   }
+}
+
+// "자재관리 > ERP 등록중 → 대기 되돌리기" 메뉴: 배치ID(앞부분) 또는 사이트명을 입력받는다.
+function resetErpRunningFromMenu() {
+  const ui = SpreadsheetApp.getUi();
+  const res = ui.prompt('ERP 등록중 → 대기 되돌리기',
+    '배치ID(앞부분만 써도 됨) 또는 사이트명을 입력하세요.\n예: B20261116-112814-PT  또는  평택', ui.ButtonSet.OK_CANCEL);
+  if (res.getSelectedButton() !== ui.Button.OK) return;
+  try {
+    ui.alert(resetErpRunningToWaiting_(res.getResponseText()));
+  } catch (e) {
+    ui.alert('실패: ' + (e && e.message || e));
+  }
+}
+
+// 편집기에서 바로 실행: 2026-11-16 평택 배치 B20261116-112814-PT01~PT04를 대기로(이미 대기면 확인만).
+function resetPtBatches20261116() {
+  return resetErpRunningToWaiting_('B20261116-112814-PT');
 }
 
 function setupProposalRuleSheetFromMenu() {

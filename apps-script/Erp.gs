@@ -746,6 +746,57 @@ function erpRepropose_(body) {
   }
 }
 
+// ------------------------- 운영 보조(메뉴) -------------------------
+
+/**
+ * 등록중 행을 대기로 되돌린다(PC가 가져간 배치를 처리하지 못했을 때). key = 배치ID(앞부분만 써도 됨,
+ * 예: B20261116-112814-PT) 또는 사이트명(그 사이트의 등록중 행 전부). 배치ID는 남겨 두어 늦게 온 결과도 받는다.
+ * 같은 배치ID인데 이미 등록중이 아닌 행 수도 함께 알려 준다(확인용).
+ */
+function resetErpRunningToWaiting_(key) {
+  const k = String(key || '').trim();
+  if (!k) throw new Error('배치ID 또는 사이트를 입력하세요.');
+  const bySite = SITES.indexOf(k) !== -1;
+  const lock = scriptLock_();
+  lock.waitLock(30000);
+  const lines = [];
+  try {
+    SITES.forEach(site => {
+      if (bySite && site !== k) return;
+      if (!SpreadsheetApp.getActiveSpreadsheet().getSheetByName(poInSheetName_(site))) return;
+      const sheet = sheet_(poInSheetName_(site));
+      const heads = headers_(sheet);
+      const rows = readAll_(sheet);
+      const updates = {};
+      const reset = {};
+      const other = {};
+      rows.forEach(r => {
+        const batch = String(r['배치ID'] || '').trim();
+        if (!bySite && batch.indexOf(k) !== 0) return;
+        const st = erpStatusOf_(r);
+        if (st === ERP_STATUS.RUNNING) {
+          updates[r._row] = { 'ERP상태': ERP_STATUS.WAITING, 'ERP메시지': '등록중에 멈춰 수동으로 대기로 되돌림' };
+          r['ERP상태'] = ERP_STATUS.WAITING;
+          reset[batch] = (reset[batch] || 0) + 1;
+        } else if (!bySite) {
+          const label = batch + '(' + (st || '빈값') + ')';
+          other[label] = (other[label] || 0) + 1;
+        }
+      });
+      writeErpUpdates_(sheet, heads, updates);
+      if (Object.keys(updates).length) refreshErpFlags_(site, rows);
+      const fmt = o => Object.keys(o).map(b => b + ' ' + o[b] + '행').join(', ');
+      if (Object.keys(reset).length) lines.push(site + ' 대기로 되돌림: ' + fmt(reset));
+      if (Object.keys(other).length) lines.push(site + ' 등록중 아님(그대로): ' + fmt(other));
+    });
+  } finally {
+    lock.releaseLock();
+  }
+  const msg = '등록중 → 대기 되돌리기 (' + k + ')\n\n' + (lines.join('\n') || '해당 행이 없습니다.');
+  Logger.log(msg);
+  return msg;
+}
+
 // ------------------------- 공용 헬퍼 -------------------------
 
 function erpStatusOf_(r) {

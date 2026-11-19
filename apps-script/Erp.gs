@@ -116,6 +116,8 @@ const TYPE_REASON_MANUAL = '직접 지정';
 const ERP_AUTO_VARS = ['SITE', '라인', 'MM', 'N', 'NN'];
 // 등록중인데 이 시간 동안 결과가 없으면 대기로 되돌린다(PC 중단 대비).
 const ERP_STALE_MS = 20 * 60 * 1000;
+// 구매 pending 한 번에 내려주는 최대 배치 수(PC v25는 빈 응답이 올 때까지 반복해서 받는다).
+const ERP_PENDING_MAX_BATCHES = 8;
 // heartbeat가 이 시간 이상 끊기면 PWA에서 빨간색/경고로 표시한다.
 const ERP_BOT_OFFLINE_MS = 10 * 60 * 1000;
 // 로그인필요 알림 메일은 같은 상태가 반복되면 이 간격에 1회까지만 보낸다.
@@ -1597,6 +1599,8 @@ function erpPending_(p) {
       });
 
       order.forEach(key => {
+        // 한 번에 최대 ERP_PENDING_MAX_BATCHES개. 나머지는 대기로 남아(플래그 1) 다음 요청에서 가져간다.
+        if (claimed.length >= ERP_PENDING_MAX_BATCHES) return;
         const groupRows = groups[key];
         const batchId = 'B' + stamp + '-' + SITE_CODES[site] + ('0' + (claimed.length + 1)).slice(-2);
         groupRows.forEach(r => {

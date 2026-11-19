@@ -68,9 +68,10 @@ const ensuredColumnsCache_ = {};
 
 function doGet(e) {
   // ERP 자동등록 PC 전용(Erp.gs): 응답 형식이 {ok, ...}로 PWA용 {success, data}와 다르다.
-  if ((e.parameter.action || '') === 'pending') {
+  const erpAction = e.parameter.action || '';
+  if (erpAction === 'pending' || erpAction === 'out_pending') {
     try {
-      return jsonResponse_(erpPending_(e.parameter));
+      return jsonResponse_(erpAction === 'pending' ? erpPending_(e.parameter) : outPending_(e.parameter));
     } catch (err) {
       return jsonResponse_({ ok: false, error: String(err.message || err) });
     }
@@ -177,9 +178,10 @@ function doPost(e) {
     const body = JSON.parse(e.postData.contents || '{}');
     const action = body.action;
     // ERP 자동등록 PC 전용(Erp.gs): 응답 형식 {ok, ...}
-    if (action === 'result' || action === 'heartbeat') {
+    const erpPost = { result: erpResult_, heartbeat: erpHeartbeat_, out_start: outStart_, out_result: outResult_ };
+    if (Object.prototype.hasOwnProperty.call(erpPost, action)) {
       try {
-        return jsonResponse_(action === 'result' ? erpResult_(body) : erpHeartbeat_(body));
+        return jsonResponse_(erpPost[action](body));
       } catch (err) {
         return jsonResponse_({ ok: false, error: String(err.message || err) });
       }

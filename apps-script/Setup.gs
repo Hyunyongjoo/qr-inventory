@@ -692,6 +692,9 @@ function onOpen() {
     .addItem('환경안전팀 지급 품목 재고사용 처리', 'applyHqSafetySupplyFromMenu')
     .addItem('특이사항 단어 규칙 정리(백업 후)', 'applyNoteWordRulesFromMenu')
     .addItem('ERP 등록중 → 대기 되돌리기', 'resetErpRunningFromMenu')
+    .addSeparator()
+    .addItem('출고 자동등록 준비(조건 시트·출고번호 열)', 'setupOutAutomationFromMenu')
+    .addItem('출고 시작일 이전 행 수동등록 표시', 'markOutManualBeforeStartFromMenu')
     .addToUi();
 }
 
@@ -704,6 +707,7 @@ function onEdit(e) {
     const name = e && e.range ? e.range.getSheet().getName() : '';
     if (name === PURCHASE_TYPE_SHEET_NAME) clearPurchaseTypeCache_();
     else if (name === PROPOSAL_RULE_SHEET_NAME) clearProposalRuleCache_();
+    else if (name === OUT_COND_SHEET_NAME || name === OUT_LINE_SHEET_NAME) clearOutConfigCache_();
   } catch (err) {
     // 심플 트리거 실패는 무시 (캐시는 10분 뒤 자동 만료)
   }
@@ -914,10 +918,14 @@ function setupProposalRuleSheetFromMenu() {
 function refreshPurchaseTypeCacheFromMenu() {
   clearPurchaseTypeCache_();
   clearProposalRuleCache_();
+  clearOutConfigCache_();
   const types = loadPurchaseTypes_();
   const rules = loadProposalRules_();
+  const outConds = loadOutConditions_();
+  const outLines = loadOutLines_();
   const incomplete = types.filter(t => t.incomplete);
-  SpreadsheetApp.getUi().alert('구매유형 ' + types.length + '개, 유형제안규칙 ' + rules.length + '개를 다시 읽었습니다.' +
+  SpreadsheetApp.getUi().alert('구매유형 ' + types.length + '개, 유형제안규칙 ' + rules.length + '개, 출고조건 ' + outConds.length +
+    '개, 출고라인 ' + outLines.length + '개를 다시 읽었습니다.' +
     (incomplete.length ? '\n\n조건 미완성: ' + incomplete.map(t => t.code + '(' + t.missing.join(', ') + ')').join(', ') : ''));
 }
 

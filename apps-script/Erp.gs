@@ -87,7 +87,8 @@ const PROPOSAL_RULE_SEED_ROWS = [
 // 구매발주및입고 시트 맨 오른쪽에 추가하는 열(기존 열 위치 불변 — sheet_()의 ensureColumns_가 끝에 덧붙인다).
 // '제안근거'는 조건표 교체(2026-11) 때 추가한 열(자동 제안이 어느 규칙으로 정해졌는지).
 const ERP_COLUMNS = [
-  '구매유형코드', '유형상태', '긴급', '명칭변수', 'ERP상태', 'ERP명칭', 'ERP처리일시', 'ERP메시지', '배치ID', '처리자', '제안근거'
+  '구매유형코드', '유형상태', '긴급', '명칭변수', 'ERP상태', 'ERP명칭', 'ERP처리일시', 'ERP메시지', '배치ID', '처리자', '제안근거',
+  '구매경로' // = PURCHASE_ROUTE_COLUMN(Code.gs). 파일 로드 순서에 기대지 않도록 글자로 적는다.
 ];
 const ERP_STATUS = { WAITING: '대기', RUNNING: '등록중', DONE: '완료', FAILED: '실패' };
 // 구매요청번호 열(시트 1열, 기존 열). ERP 완료 결과의 erp_number(PC가 ERP 목록에서 읽은 번호)를 기록한다.
@@ -469,11 +470,18 @@ function applyHqSafetySupplyFromMenu() {
   return msg;
 }
 
-// 요청이 들어온 메뉴: 라인 열 값이 안전재고/안전용품 표식이면 그 메뉴(submitPurchase_가 라인 대신 넣는 값), 아니면 일반 라인 요청.
+// 요청이 들어온 메뉴(안전재고/안전용품/'' = 일반 라인 요청). 구매경로 열(submitPurchase_가 기록)로 판단한다.
+// 구매경로 열이 빈 행(열 추가 전 요청, "구매경로 열 채우기" 전)만 예전처럼 라인 열의 안전재고/안전용품 표식으로 본다.
 function purchaseRouteOf_(r) {
-  const zone = ruleNorm_(r['라인']);
-  if (zone === ruleNorm_(SAFETY_STOCK_ZONE)) return SAFETY_STOCK_ZONE;
-  if (zone === ruleNorm_(SAFETY_SUPPLY_ZONE)) return SAFETY_SUPPLY_ZONE;
+  const route = routeFromValue_(r[PURCHASE_ROUTE_COLUMN]);
+  return route || routeFromValue_(r['라인']);
+}
+
+function routeFromValue_(v) {
+  const z = ruleNorm_(v);
+  if (!z) return '';
+  if (z === ruleNorm_(SAFETY_STOCK_ZONE)) return SAFETY_STOCK_ZONE;
+  if (z === ruleNorm_(SAFETY_SUPPLY_ZONE)) return SAFETY_SUPPLY_ZONE;
   return '';
 }
 
@@ -725,7 +733,8 @@ function diagnoseTypeProposal_(site, key) {
     out.push('■ ' + r._row + '행 ' + r['자재코드'] + ' ' + (r['자재명'] || '') + ' (요청일자 ' + sheetDateStr_(r['요청일자']) + ')');
     out.push('  시트 값: 구매유형코드="' + code + '" 유형상태="' + state + '" 제안근거="' + String(r['제안근거'] || '') +
       '" ERP상태="' + st + '" 구매대기=' + (candidate ? 'Y' : 'N'));
-    out.push('  구매경로: 라인 열="' + String(r['라인'] || '') + '" → ' + (purchaseRouteOf_(r) || '일반(라인) 요청'));
+    out.push('  구매경로: 구매경로 열="' + String(r[PURCHASE_ROUTE_COLUMN] || '') + '" 라인 열="' + String(r['라인'] || '') + '" → ' +
+      (purchaseRouteOf_(r) || '일반(라인) 요청'));
     out.push('  사용설비(' + usedMaterialsSheetName_(site) + '): "' + equip + '"');
     out.push('  특이사항1="' + String(r['특이사항1'] || '') + '" 특이사항2="' + String(r['특이사항2'] || '') + '"');
     trace.forEach(t => out.push('    ' + t));
@@ -873,6 +882,181 @@ function applyNoteWordRules_() {
   return msg;
 }
 
+// ------------------------- 화성 세부사이트(H1~H4) · 구매경로 열 -------------------------
+
+// 세부사이트별로 청구서를 나누는 화성 안전용품 유형(라인분리=Y로 바꾼다).
+const SUB_SITE_SPLIT_TYPE_CODES = ['H-06', 'H-07', 'H-08'];
+
+/**
+ * "자재관리 > 구매경로 열 채우기" (1회 실행용, 다시 실행해도 안전).
+ *  1) 구매경로 열이 빈 행: 라인 열이 '안전용품'/'안전재고'면 그 값을 구매경로에 기록한다(일반 라인 행은 빈칸 그대로).
+ *  2) 화성 안전용품 행 중 아직 등록 전(ERP상태 빈값/실패, 재고확인중/구매대기, 취소 아님)이고 라인이 '안전용품'인 행:
+ *     라인 값을 요청자(신청자 = Users Name)의 세부사이트(H1~H4)로 바꾼다. 요청자에게 세부사이트가 없으면(사이트=화성) 빈칸.
+ *     Users에서 요청자를 못 찾거나 같은 이름이 여러 세부사이트에 있으면 바꾸지 않고 목록으로 알려 준다.
+ *  3) 구매유형 시트 H-06, H-07, H-08의 라인분리를 Y로 바꾼다.
+ */
+function fillPurchaseRouteColumn_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const lock = scriptLock_();
+  lock.waitLock(60000);
+  const lines = [];
+  try {
+    // 요청자 이름 → 세부사이트 목록(화성 사용자만). 같은 이름이 서로 다른 세부사이트면 모호.
+    const subsByName = {};
+    readAll_(sheet_('Users')).forEach(u => {
+      const name = String(u.Name || '').trim();
+      if (!name) return;
+      const us = getUserSite(u);
+      if (!subsByName[name]) subsByName[name] = [];
+      if (subsByName[name].indexOf(us.sub) === -1) subsByName[name].push(us.sub);
+    });
+
+    SITES.forEach(site => {
+      if (!ss.getSheetByName(poInSheetName_(site))) return;
+      const sheet = sheet_(poInSheetName_(site));
+      const heads = headers_(sheet);
+      const routeCol = heads.indexOf(PURCHASE_ROUTE_COLUMN) + 1;
+      const lineCol = heads.indexOf('라인') + 1;
+      if (!routeCol || !lineCol) throw new Error('"' + sheet.getName() + '" 시트에 구매경로/라인 열이 없습니다.');
+      const routeUpdates = {};
+      const lineUpdates = {};
+      const count = { supply: 0, stock: 0 };
+      const subCount = {};
+      const unresolved = [];
+      readAll_(sheet).forEach(r => {
+        const lineRoute = routeFromValue_(r['라인']);
+        if (!String(r[PURCHASE_ROUTE_COLUMN] || '').trim() && lineRoute) {
+          routeUpdates[r._row] = lineRoute;
+          if (lineRoute === SAFETY_SUPPLY_ZONE) count.supply++; else count.stock++;
+        }
+        if (site !== '화성' || lineRoute !== SAFETY_SUPPLY_ZONE) return;
+        const st = erpStatusOf_(r);
+        if (st !== '' && st !== ERP_STATUS.FAILED) return;
+        if (isCancelledRow_(r)) return;
+        const status = computeInboundStatus_(r).status;
+        if (status !== '재고확인중' && status !== '구매대기') return;
+        const name = String(r['신청자'] || '').trim();
+        const subs = subsByName[name] || [];
+        if (subs.length !== 1) {
+          unresolved.push(r._row + '행 ' + (name || '(신청자 없음)') + (subs.length ? '(세부사이트 여러 개: ' + subs.join('/') + ')' : '(Users에 없음)'));
+          return;
+        }
+        lineUpdates[r._row] = subs[0];
+        const k = subs[0] || '빈칸';
+        subCount[k] = (subCount[k] || 0) + 1;
+      });
+      // 열 하나씩, 연속된 행끼리 한 번에 쓴다(Out.gs writeOutCells_: 텍스트 서식).
+      writeOutCells_(sheet, routeCol, routeUpdates);
+      writeOutCells_(sheet, lineCol, lineUpdates);
+      lines.push(site + ': 구매경로 기록 안전용품 ' + count.supply + '행 / 안전재고 ' + count.stock + '행');
+      if (site === '화성') {
+        const fmt = Object.keys(subCount).map(k => k + ' ' + subCount[k] + '행').join(', ');
+        lines.push('화성 미등록 안전용품 라인 변경: ' + (fmt || '0행'));
+        if (unresolved.length) lines.push('화성 라인 그대로(요청자 확인 필요): ' + unresolved.join(', '));
+      }
+    });
+
+    lines.push(setSubSiteLineSplit_());
+    SpreadsheetApp.flush();
+  } finally {
+    lock.releaseLock();
+  }
+  const msg = '구매경로 열 채우기\n\n' + lines.join('\n');
+  Logger.log(msg);
+  return msg;
+}
+
+// 구매유형 시트에서 화성 H-06/H-07/H-08의 라인분리를 Y로(명칭 템플릿 등 다른 열은 그대로).
+function setSubSiteLineSplit_() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(PURCHASE_TYPE_SHEET_NAME);
+  if (!sheet || sheet.getLastRow() < 2) return '구매유형 시트가 없어 라인분리를 바꾸지 못했습니다.';
+  const heads = headers_(sheet).map(h => String(h || '').trim());
+  const iSite = heads.indexOf('사이트');
+  const iCode = heads.indexOf('유형코드');
+  const iSplit = heads.indexOf('라인분리');
+  if (iSite === -1 || iCode === -1 || iSplit === -1) return '구매유형 시트에 사이트/유형코드/라인분리 열이 없어 라인분리를 바꾸지 못했습니다.';
+  const values = sheet.getRange(2, 1, sheet.getLastRow() - 1, heads.length).getValues();
+  const changed = [];
+  const already = [];
+  values.forEach((row, i) => {
+    const code = String(row[iCode] || '').trim();
+    if (String(row[iSite] || '').trim() !== '화성' || SUB_SITE_SPLIT_TYPE_CODES.indexOf(code) === -1) return;
+    if (String(row[iSplit] || '').trim().toUpperCase() === 'Y') { already.push(code); return; }
+    sheet.getRange(i + 2, iSplit + 1).setValue('Y');
+    changed.push(code);
+  });
+  clearPurchaseTypeCache_();
+  const missing = SUB_SITE_SPLIT_TYPE_CODES.filter(c => changed.indexOf(c) === -1 && already.indexOf(c) === -1);
+  return '구매유형 라인분리=Y: 변경 ' + (changed.join(', ') || '없음') + ' / 이미 Y ' + (already.join(', ') || '없음') +
+    (missing.length ? ' / 시트에 없음 ' + missing.join(', ') : '');
+}
+
+/**
+ * 화성 세부사이트 · 구매경로 테스트(시트는 바꾸지 않는다). 편집기에서 testSubSiteSafetySupply 실행 또는 메뉴.
+ * 실제 사용자재 시트의 안전용품 품목으로 제안을 계산하고, 배치 묶음 키·라인 값 결정을 가짜 행으로 확인한다.
+ */
+function testSubSiteSafetySupply_() {
+  const out = [];
+  const check = (ok, text) => out.push((ok ? 'OK ' : 'NG ') + text);
+
+  // 1) Users 사이트 → {site, sub}
+  [['H2', '화성', 'H2'], [' h3 ', '화성', 'H3'], ['화성', '화성', ''], ['평택', '평택', ''], ['전체', '전체', '']].forEach(c => {
+    const us = getUserSite({ '사이트': c[0] });
+    check(us.site === c[1] && us.sub === c[2], '사이트 "' + c[0] + '" → ' + us.site + ' / 세부 ' + (us.sub || '(없음)'));
+  });
+
+  // 2) 안전용품 요청의 라인 값
+  const h2 = { name: '테스트', sub: 'H2' };
+  const hs = { name: '테스트', sub: '' };
+  check(purchaseZoneFor_('화성', SAFETY_SUPPLY_ZONE, h2, '') === 'H2', '화성 H2 사용자 안전용품 → 라인 H2');
+  check(purchaseZoneFor_('화성', SAFETY_SUPPLY_ZONE, hs, '') === '', '화성(세부 없음) 사용자 안전용품 → 라인 빈칸');
+  check(purchaseZoneFor_('평택', SAFETY_SUPPLY_ZONE, h2, '') === SAFETY_SUPPLY_ZONE, '평택 안전용품 → 라인 안전용품(기존과 같음)');
+  check(purchaseZoneFor_('화성', SAFETY_STOCK_ZONE, h2, '') === SAFETY_STOCK_ZONE, '화성 안전재고 → 라인 안전재고');
+
+  // 3) 유형 제안(실제 사용자재 시트 품목)
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const proposeFor = (site, line, equipNeedle) => {
+    const sheet = ss.getSheetByName(usedMaterialsSheetName_(site));
+    if (!sheet) return null;
+    const item = readAll_(sheet).find(m => String(m['자재코드'] || '').trim() &&
+      ruleNorm_(m['자재코드']) !== ruleNorm_(HQ_SAFETY_SUPPLY_VALUE) &&
+      ruleList_(m['사용설비']).join(',') === ruleNorm_(equipNeedle));
+    if (!item) return null;
+    const row = { '구매경로': SAFETY_SUPPLY_ZONE, '라인': line, '자재코드': item['자재코드'], '자재명': item['자재명'] || item['품명'] || '',
+      '특이사항1': '', '특이사항2': '', '비고': '' };
+    const ctx = proposalContext_(site);
+    return { item: String(item['자재코드']), p: proposeTypeForRow_(row, ctx), hq: isHqSafetySupplyRow_(row, ctx), ctx };
+  };
+  [['화성', '안전용품', 'H-06'], ['화성', '환경안전용품', 'H-07'], ['화성', '환경안전용품-공구', 'H-08'],
+    ['평택', '안전용품', 'P-05'], ['평택', '환경안전용품-공구', 'P-06']].forEach(c => {
+    const line = c[0] === '화성' ? 'H2' : SAFETY_SUPPLY_ZONE;
+    const res = proposeFor(c[0], line, c[1]);
+    if (!res) { out.push('-- ' + c[0] + ' 사용설비 "' + c[1] + '" 품목이 사용자재 시트에 없어 건너뜀'); return; }
+    check(res.p.code === c[2], c[0] + ' 안전용품 라인 ' + line + ' / 사용설비 ' + c[1] + ' (' + res.item + ') → ' +
+      (res.p.code || '(빈값)') + ' ' + res.p.state + ' (' + res.p.reason + ')' + (res.p.code === c[2] ? '' : ' / 기대 ' + c[2]));
+  });
+  // 본사 환경안전팀 지급 품목(자재코드 '환경안전용품')은 라인이 H2여도 구매경로로 재고사용 대상
+  const hqCtx = proposalContext_('화성');
+  check(isHqSafetySupplyRow_({ '구매경로': SAFETY_SUPPLY_ZONE, '라인': 'H2', '자재코드': HQ_SAFETY_SUPPLY_VALUE }, hqCtx) ===
+    (countHqSafetySupplyItems_('화성') > 0), '화성 H2 환경안전팀 지급 품목 → 재고사용 판정(사용자재 대상 품목 ' + countHqSafetySupplyItems_('화성') + '개)');
+  // 안전재고 메뉴
+  const ss3 = proposeTypeForRow_({ '구매경로': SAFETY_STOCK_ZONE, '라인': SAFETY_STOCK_ZONE, '자재코드': '', '자재명': '' }, hqCtx);
+  check(ss3.code === 'H-03', '화성 안전재고 메뉴 → ' + (ss3.code || '(빈값)') + ' (' + ss3.reason + ')');
+  // 구매경로 열이 빈 예전 행도 라인 열로 같은 결과
+  check(purchaseRouteOf_({ '라인': SAFETY_SUPPLY_ZONE }) === SAFETY_SUPPLY_ZONE && purchaseRouteOf_({ '라인': 'H2' }) === '' &&
+    purchaseRouteOf_({ '구매경로': SAFETY_SUPPLY_ZONE, '라인': 'H2' }) === SAFETY_SUPPLY_ZONE, '구매경로 판정(열 우선, 빈 행은 라인 열)');
+
+  // 4) 배치 묶음: H2 2건 + H3 1건, 같은 버튼 클릭 H-06 → 2묶음
+  const t6 = findPurchaseType_('화성', 'H-06');
+  out.push('-- 구매유형 H-06 라인분리=' + (t6 && t6.lineSplit ? 'Y' : 'N') + ', H-07=' +
+    ((findPurchaseType_('화성', 'H-07') || {}).lineSplit ? 'Y' : 'N') + ', H-08=' + ((findPurchaseType_('화성', 'H-08') || {}).lineSplit ? 'Y' : 'N'));
+  const fake = ['H2', 'H2', 'H3'].map(l => ({ '구매유형코드': 'H-06', '처리자': '테스트 2026-11-19 10:00:00', '라인': l, '긴급': '' }));
+  const keys = fake.map(r => erpBatchGroupKey_('화성', r)).filter((k, i, a) => a.indexOf(k) === i);
+  check(keys.length === 2, 'H2 2건 + H3 1건 H-06 → 청구서 ' + keys.length + '건 (' + keys.map(k => k.split('|').pop()).join(', ') + ')');
+  check(isMissingSplitLine_(t6, { '라인': '' }), '라인분리 유형 + 라인 빈칸 → 등록 차단');
+  return '[화성 세부사이트 · 구매경로 테스트]\n' + out.join('\n');
+}
+
 // 특이사항 단어 규칙 테스트(일반 라인 요청, 자재코드 없음 → 특이사항 규칙이 안 맞으면 '기본값').
 function testNoteWordRules_() {
   const cases = [
@@ -911,6 +1095,22 @@ function hasUrgentNote_(r) {
 // 청구서 관리 대상: 입고확인에서 구매필요(X)로 확정됐고 아직 구매요청번호가 없는 건(=구매 다운로드 대상과 동일).
 function isErpCandidateRow_(r) {
   return computeInboundStatus_(r).status === '구매대기';
+}
+
+const ERP_NO_LINE_MESSAGE = '라인 값이 없는 행(라인분리 유형) - 라인 열을 채운 뒤 다시 등록하세요';
+
+// 라인분리=Y 유형인데 라인 열이 빈 행인지.
+function isMissingSplitLine_(type, r) {
+  return !!(type && type.lineSplit && !String(r['라인'] || '').trim());
+}
+
+// pending 배치 묶음 키: 같은 버튼 클릭(처리자 = 이름 + 처리 시각) + 같은 유형코드, 긴급은 일반과 따로(U/G).
+// 라인분리=Y 유형은 라인 값(화성 안전용품은 세부사이트 H1~H4)별로 더 나눈다.
+function erpBatchGroupKey_(site, r) {
+  const code = String(r['구매유형코드'] || '');
+  const type = findPurchaseType_(site, code);
+  const lineKey = type && type.lineSplit ? '|' + String(r['라인'] || '').trim() : '';
+  return (isErpUrgentRow_(r) ? 'U' : 'G') + '|' + String(r['처리자'] || '') + '|' + code + lineKey;
 }
 
 function parseErpVars_(v) {
@@ -1219,6 +1419,7 @@ function erpUpdateRequests_(body) {
     const handler = user.name + ' ' + Utilities.formatDate(now, 'Asia/Seoul', 'yyyy-MM-dd HH:mm:ss');
     const updates = {};
     const touched = [];
+    const noLine = [];
     items.forEach(it => {
       const r = byRow[Number(it.rowIndex)];
       if (!r || normalizeMaterialCode_(r['자재코드']) !== normalizeMaterialCode_(it.itemId)) {
@@ -1252,6 +1453,9 @@ function erpUpdateRequests_(body) {
       if (mode !== 'save' && type.incomplete) {
         throw new Error(type.code + ' ' + type.name + ': 구매유형 시트에서 조건을 채워주세요 (' + type.missing.join(', ') + ')');
       }
+      // 라인분리=Y 유형은 라인별로 청구서를 나누므로 라인 값이 없는 행은 등록하지 않는다
+      // (예: Users 사이트가 '화성'뿐이라 세부사이트(H1~H4)가 없는 요청자의 안전용품 요청).
+      if (mode !== 'save' && isMissingSplitLine_(type, r)) noLine.push(label);
 
       let vars = parseErpVars_(r['명칭변수']);
       if (hasVars) {
@@ -1282,6 +1486,10 @@ function erpUpdateRequests_(body) {
       Object.keys(u).forEach(k => { r[k] = u[k]; });
       touched.push(r);
     });
+    if (noLine.length) {
+      throw new Error('라인 값이 없는 행이 있어 등록할 수 없습니다(라인분리 유형은 라인별로 청구서를 나눕니다). ' +
+        '시트의 라인 열을 채우거나(화성 안전용품: 요청자 세부사이트 H1~H4) 유형을 바꾸세요: ' + noLine.join(', '));
+    }
 
     writeErpUpdates_(sheet, heads, updates);
     if (mode !== 'save') setErpPendingFlags_(site, mode === 'urgent');
@@ -1583,13 +1791,16 @@ function erpPending_(p) {
       const waiting = rows.filter(r => erpStatusOf_(r) === ERP_STATUS.WAITING && (scope === 'all' || isErpUrgentRow_(r)));
       // 같은 버튼 클릭(처리자 = 이름 + 처리 시각) + 같은 유형코드끼리 한 배치. 긴급은 일반과 섞지 않는다.
       // 라인분리=Y 유형은 라인별로 배치를 더 나눈다.
+      // 라인분리 유형인데 라인 값이 없는 대기 행(등록 차단 전에 대기가 된 행)은 가져가지 않고 실패로 돌린다.
       const groups = {};
       const order = [];
       waiting.forEach(r => {
-        const code = String(r['구매유형코드'] || '');
-        const type = findPurchaseType_(site, code);
-        const lineKey = type && type.lineSplit ? '|' + String(r['라인'] || '').trim() : '';
-        const key = (isErpUrgentRow_(r) ? 'U' : 'G') + '|' + String(r['처리자'] || '') + '|' + code + lineKey;
+        if (isMissingSplitLine_(findPurchaseType_(site, String(r['구매유형코드'] || '')), r)) {
+          updates[r._row] = Object.assign(updates[r._row] || {}, { 'ERP상태': ERP_STATUS.FAILED, 'ERP메시지': ERP_NO_LINE_MESSAGE });
+          r['ERP상태'] = ERP_STATUS.FAILED;
+          return;
+        }
+        const key = erpBatchGroupKey_(site, r);
         if (!groups[key]) { groups[key] = []; order.push(key); }
         groups[key].push(r);
       });

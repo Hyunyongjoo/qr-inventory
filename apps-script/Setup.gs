@@ -21,7 +21,7 @@ function setupSpreadsheet() {
   ], [6]); // CreatedAt
 
   createSheetIfMissing_(ss, 'Users', [
-    'PIN', 'Name', 'Role', '사이트' // 사이트: 청구서 관리 담당 사이트(화성/평택/기흥/전체)
+    'PIN', 'Name', 'Role', '사이트' // 사이트: 화성/평택/기흥/전체, 화성 세부사이트는 H1~H4(= 화성, Code.gs getUserSite)
   ], []);
 
   SITES.forEach(site => {
@@ -690,6 +690,8 @@ function onOpen() {
     .addItem('유형 제안 진단', 'diagnoseTypeProposalFromMenu')
     .addItem('휴일 시트 만들기 · 공휴일 확인', 'setupHolidaySheetFromMenu')
     .addItem('환경안전팀 지급 품목 재고사용 처리', 'applyHqSafetySupplyFromMenu')
+    .addItem('구매경로 열 채우기(화성 세부사이트 H1~H4)', 'fillPurchaseRouteColumnFromMenu')
+    .addItem('화성 세부사이트 · 구매경로 테스트', 'testSubSiteSafetySupply')
     .addItem('특이사항 단어 규칙 정리(백업 후)', 'applyNoteWordRulesFromMenu')
     .addItem('ERP 등록중 → 대기 되돌리기', 'resetErpRunningFromMenu')
     .addSeparator()
@@ -884,6 +886,21 @@ function diagnoseTypeProposalFromMenu() {
   } catch (e) {
     ui.alert('진단 실패: ' + (e && e.message || e));
   }
+}
+
+// "자재관리 > 구매경로 열 채우기" 메뉴(1회 실행용, Erp.gs fillPurchaseRouteColumn_). 다시 실행해도 안전.
+function fillPurchaseRouteColumnFromMenu() {
+  const msg = fillPurchaseRouteColumn_();
+  try { SpreadsheetApp.getUi().alert(msg); } catch (e) { /* 편집기 실행 */ }
+  return msg;
+}
+
+// "자재관리 > 화성 세부사이트 · 구매경로 테스트" 메뉴 / 편집기 실행(시트는 바꾸지 않음).
+function testSubSiteSafetySupply() {
+  const msg = testSubSiteSafetySupply_();
+  Logger.log(msg);
+  try { SpreadsheetApp.getUi().alert(msg); } catch (e) { /* 편집기 실행 */ }
+  return msg;
 }
 
 // "자재관리 > 특이사항 단어 규칙 정리(백업 후)" 메뉴.

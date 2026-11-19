@@ -33,6 +33,12 @@ const SAFETY_STOCK_ZONE = '안전재고';
 // 그 자재들은 라인/안전재고 구매 검색에서는 제외된다(isSafetySupplyMaterial_ 참고).
 const SAFETY_SUPPLY_ZONE = '안전용품';
 const SAFETY_SUPPLY_KEYWORD = '안전용품';
+// 구매발주및입고 시트 '구매경로' 열: 어느 메뉴로 들어온 요청인지(안전용품 / 안전재고 / 빈칸 = 일반 라인).
+// 유형 제안·환경안전팀 지급·입고확인/다운로드의 안전용품 필터 등은 라인 열 대신 이 열로 판단한다(Erp.gs purchaseRouteOf_).
+const PURCHASE_ROUTE_COLUMN = '구매경로';
+// 화성 세부사이트. Users 시트 '사이트'에 H1~H4를 적으면 사이트는 화성, 세부사이트는 그 값이다(getUserSite).
+// 화성 안전용품구매의 라인 열에는 '안전용품' 대신 요청자의 세부사이트가 들어가, 라인분리 유형(H-06~08)이 세부사이트별로 나뉜다.
+const SUB_SITES = { 'H1': '화성', 'H2': '화성', 'H3': '화성', 'H4': '화성' };
 // 입고확인 화면의 재고사용/구매필요/입고/출고완료 버튼을 사용할 수 있는 Role (Users 시트 Role 컬럼 값).
 // 자재관리자는 자재담당자 권한 전부 + 청구서 관리(Erp.gs, Users 시트 '사이트' 열로 담당 사이트 지정)를 쓴다.
 const MANAGER_ROLES = ['자재담당자', '관리자', '자재관리자'];
@@ -358,7 +364,7 @@ function sheet_(name) {
   } else if (name.slice(-3) === '_출고') {
     ensureColumnsOnce_(sheet, name, ['라인구매번호']);
   } else if (name === 'Users') {
-    // 청구서 관리 담당 사이트(화성/평택/기흥/전체). 청구서 관리 기능에서만 쓰고 기존 화면은 쓰지 않는다.
+    // 청구서 관리 담당 사이트(화성/평택/기흥/전체, 화성 세부사이트 H1~H4 = 화성). getUserSite로 읽는다.
     ensureColumnsOnce_(sheet, name, ['사이트']);
   }
   return sheet;
@@ -403,6 +409,30 @@ function assertZone_(site, zone) {
   const zones = ZONES[site] || [];
   if (!zones.includes(zone)) throw new Error('올바르지 않은 라인입니다: ' + zone);
   return zone;
+}
+
+// 구매요청 행의 라인 열 값. route = 구매경로(안전재고/안전용품/빈값=일반 라인).
+//  - 안전재고: '안전재고' / 일반: 선택한 라인(ZONES 검증)
+//  - 안전용품: 화성이면 요청자의 세부사이트(H1~H4, 없으면 빈칸), 평택·기흥은 '안전용품'(기존과 같음)
+function purchaseZoneFor_(site, route, worker, requestedZone) {
+  if (route === SAFETY_STOCK_ZONE) return SAFETY_STOCK_ZONE;
+  if (route === SAFETY_SUPPLY_ZONE) return site === '화성' ? String(worker && worker.sub || '') : SAFETY_SUPPLY_ZONE;
+  return assertZone_(site, requestedZone);
+}
+
+// 구매발주및입고 행이 화면의 라인 필터(입고확인·구매 다운로드)에 맞는지. 안전용품/안전재고 필터는 구매경로 열로 본다
+// (화성 안전용품 행의 라인 열은 H1~H4 또는 빈칸이므로).
+function poRowMatchesZone_(r, zoneQ) {
+  if (zoneQ === SAFETY_SUPPLY_ZONE || zoneQ === SAFETY_STOCK_ZONE) return purchaseRouteOf_(r) === zoneQ;
+  return String(r['라인'] || '').trim() === zoneQ;
+}
+
+// 출고 시트 행이 라인 필터에 맞는지. 출고 시트에는 구매경로 열이 없어, 안전용품 필터는 라인 값
+// '안전용품' 또는 화성 세부사이트(H1~H4, 화성 라인 목록에는 없는 값)로 본다.
+function txRowMatchesZone_(r, zoneQ) {
+  const line = String(r['라인'] || '').trim();
+  if (zoneQ === SAFETY_SUPPLY_ZONE) return line === SAFETY_SUPPLY_ZONE || Object.prototype.hasOwnProperty.call(SUB_SITES, line);
+  return line === zoneQ;
 }
 
 function stockSheetName_(site) {
@@ -555,7 +585,22 @@ function handleLogin_(pin) {
   const users = readAll_(sheet_('Users'));
   const user = users.find(u => String(u.PIN) === String(pin));
   if (!user) throw new Error('사번이 올바르지 않습니다.');
-  return { name: user.Name, role: user.Role, pin: String(user.PIN), site: String(user['사이트'] || '').trim() };
+  const us = getUserSite(user);
+  // site는 화성/평택/기흥/전체(H1~H4도 화성), sub는 화성 세부사이트(H1~H4, 없으면 빈값).
+  return { name: user.Name, role: user.Role, pin: String(user.PIN), site: us.site, sub: us.sub };
+}
+
+/**
+ * Users 시트 '사이트' 값 → { site, sub }. 사이트를 읽는 곳은 모두 이 함수(또는 이 함수를 쓰는 handleLogin_)를 쓴다.
+ *  - H1~H4(대소문자·띄어쓰기 무시) → { site: '화성', sub: 'H2' }
+ *  - 화성/평택/기흥/전체/빈값 등 그 밖의 값 → { site: 그 값, sub: '' }
+ * user는 Users 행 객체(user['사이트']) 또는 사이트 문자열.
+ */
+function getUserSite(user) {
+  const raw = String((user && typeof user === 'object' ? user['사이트'] : user) || '').trim();
+  const key = raw.replace(/\s/g, '').toUpperCase();
+  if (Object.prototype.hasOwnProperty.call(SUB_SITES, key)) return { site: SUB_SITES[key], sub: key };
+  return { site: raw, sub: '' };
 }
 
 // ------------------------- 자재(Items) -------------------------
@@ -796,10 +841,10 @@ function hasRealPurchaseReqNo_(r) {
   return !!no && PURCHASE_REQ_NO_MARKERS.indexOf(no) === -1;
 }
 
-// 라인 컬럼값이 "안전재고"인 행(안전재고구매로 등록된 구매요청). 입고확인 화면에서
+// 구매경로가 "안전재고"인 행(안전재고구매로 등록된 구매요청, 구매경로 열이 비었으면 라인 열 '안전재고'). 입고확인 화면에서
 // 재고사용/구매필요/구매보류/출고 버튼은 막고, 입고/수량변경/취소만 허용한다.
 function isSafetyStockRow_(r) {
-  return String(r['라인'] || '').trim() === SAFETY_STOCK_ZONE;
+  return purchaseRouteOf_(r) === SAFETY_STOCK_ZONE;
 }
 
 // 안전재고 건 중 입고완료 상태가 된 행. 안전재고는 입고완료되어도 시트 데이터는 그대로 두되,
@@ -1031,7 +1076,7 @@ function checkInbound_(site, name, startDate, endDate, zone, materialQuery) {
   // pendingMap 등 다른 계산에 쓰이는 allRows는 건드리지 않는다.
   let rows = allRows.filter(r => !isCancelledRow_(r) && !isSafetyStockInboundDoneRow_(r));
   if (q) rows = rows.filter(r => String(r['신청자'] || '').includes(q));
-  if (zoneQ) rows = rows.filter(r => String(r['라인'] || '').trim() === zoneQ);
+  if (zoneQ) rows = rows.filter(r => poRowMatchesZone_(r, zoneQ));
   if (start || end) {
     rows = rows.filter(r => {
       const d = toDateOnly_(r['요청일자']);
@@ -1478,17 +1523,11 @@ function submitPurchase_(body) {
     // 이 사이트 사용자재 시트의 안전용품 자재인지 검증한다.
     const isSafetySupply = !isSafetyStock &&
       (String(body.zone || '').trim() === SAFETY_SUPPLY_ZONE || body.safetySupply === true);
-    let zone;
-    if (isSafetyStock) {
-      assertManagerRole_(body.pin);
-      zone = SAFETY_STOCK_ZONE;
-    } else if (isSafetySupply) {
-      zone = SAFETY_SUPPLY_ZONE;
-    } else {
-      zone = assertZone_(site, body.zone);
-    }
-    const stockUsageDefault = isSafetyStock ? 'X' : '';
+    if (isSafetyStock) assertManagerRole_(body.pin);
     const worker = handleLogin_(body.pin);
+    const route = isSafetyStock ? SAFETY_STOCK_ZONE : isSafetySupply ? SAFETY_SUPPLY_ZONE : '';
+    const zone = purchaseZoneFor_(site, route, worker, body.zone);
+    const stockUsageDefault = isSafetyStock ? 'X' : '';
     const items = Array.isArray(body.items) ? body.items : [];
     if (!items.length) throw new Error('담긴 자재가 없습니다.');
     if (isSafetySupply) assertSafetySupplyItems_(site, items);
@@ -1541,6 +1580,7 @@ function submitPurchase_(body) {
               '요청일자': today,
               '신청자': worker.name,
               '라인': zone,
+              '구매경로': route,
               'BQMS': comp['BQMS'] || '',
               '자재코드': compItemId,
               '자재명': comp['품명'] || '',
@@ -1572,6 +1612,7 @@ function submitPurchase_(body) {
           '요청일자': today,
           '신청자': worker.name,
           '라인': zone,
+          '구매경로': route,
           'BQMS': it.bqms || '',
           '자재코드': itemId,
           '자재명': itemName,
@@ -2566,7 +2607,7 @@ function getPurchaseDownload_(site, startDate, endDate, zone) {
 
   let rows = readAll_(sheet_(poInSheetName_(site)));
   rows = rows.filter(r => String(r['재고사용(O,X)'] || '').trim().toUpperCase() === 'X' && !hasRealPurchaseReqNo_(r));
-  if (zoneQ) rows = rows.filter(r => String(r['라인'] || '').trim() === zoneQ);
+  if (zoneQ) rows = rows.filter(r => poRowMatchesZone_(r, zoneQ));
   rows = filterByDateRange_(rows, '필요일자', startDate, endDate);
   return buildPurchaseDownloadRows_(rows, unitMap);
 }
@@ -2613,7 +2654,7 @@ function getOutboundDownload_(site, startDate, endDate, zone) {
   const zoneQ = (zone || '').toString().trim();
 
   let rows = readAll_(sheet_(txSheetName_(site)));
-  if (zoneQ) rows = rows.filter(r => String(r['라인'] || '').trim() === zoneQ);
+  if (zoneQ) rows = rows.filter(r => txRowMatchesZone_(r, zoneQ));
   rows = filterByDateRange_(rows, '출고일자', startDate, endDate);
 
   const merged = {};
@@ -2647,7 +2688,7 @@ function getTransactionDownload_(site, startDate, endDate, zone) {
   const zoneQ = (zone || '').toString().trim();
 
   let rows = readAll_(sheet_(txSheetName_(site)));
-  if (zoneQ) rows = rows.filter(r => String(r['라인'] || '').trim() === zoneQ);
+  if (zoneQ) rows = rows.filter(r => txRowMatchesZone_(r, zoneQ));
   rows = filterByDateRange_(rows, '출고일자', startDate, endDate);
 
   return rows.map(r => ({

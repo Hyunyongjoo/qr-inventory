@@ -690,6 +690,7 @@ function onOpen() {
     .addItem('유형 제안 진단', 'diagnoseTypeProposalFromMenu')
     .addItem('휴일 시트 만들기 · 공휴일 확인', 'setupHolidaySheetFromMenu')
     .addItem('환경안전팀 지급 품목 재고사용 처리', 'applyHqSafetySupplyFromMenu')
+    .addItem('특이사항 단어 규칙 정리(백업 후)', 'applyNoteWordRulesFromMenu')
     .addItem('ERP 등록중 → 대기 되돌리기', 'resetErpRunningFromMenu')
     .addToUi();
 }
@@ -879,6 +880,13 @@ function diagnoseTypeProposalFromMenu() {
   } catch (e) {
     ui.alert('진단 실패: ' + (e && e.message || e));
   }
+}
+
+// "자재관리 > 특이사항 단어 규칙 정리(백업 후)" 메뉴.
+function applyNoteWordRulesFromMenu() {
+  const msg = applyNoteWordRules_();
+  try { SpreadsheetApp.getUi().alert(msg); } catch (e) { /* 편집기 실행 */ }
+  return msg;
 }
 
 // "자재관리 > ERP 등록중 → 대기 되돌리기" 메뉴: 배치ID(앞부분) 또는 사이트명을 입력받는다.

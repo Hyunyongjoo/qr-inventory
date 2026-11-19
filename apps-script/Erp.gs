@@ -54,6 +54,19 @@ const RULE_KIND = {
   LAST_CONFIRMED: '이전 확정',
   DEFAULT: '기본값'
 };
+// 특이사항 단어 규칙(2026-11-16 정리). 한글은 띄어쓰기 무시 포함, 영문(WI/WO)은 단어 단위.
+// '영업무상'(30)이 '무상'(35)보다 먼저 검사되어야 한다. "자재관리 > 특이사항 단어 규칙 정리" 메뉴가 시트를 이 목록으로 바꾼다.
+const NOTE_WORD_RULE_ROWS = [
+  [30, '평택', '특이사항 단어', '영업무상', 'P-03', 'Y', '한글은 포함(띄어쓰기 무시)'],
+  [30, '평택', '특이사항 단어', 'WI', 'P-03', 'Y', '영문은 단어 단위로만(WIRE 제외)'],
+  [30, '기흥', '특이사항 단어', '영업무상', 'G-07', 'Y', '한글은 포함(띄어쓰기 무시)'],
+  [30, '기흥', '특이사항 단어', 'WI', 'G-07', 'Y', '영문은 단어 단위로만(WIRE 제외)'],
+  [35, '화성', '특이사항 단어', '무상', 'H-05', 'Y', '한글은 포함(띄어쓰기 무시), CS 무상 포함'],
+  [35, '평택', '특이사항 단어', '무상', 'P-04', 'Y', '한글은 포함(띄어쓰기 무시)'],
+  [35, '평택', '특이사항 단어', 'WO', 'P-04', 'Y', '영문은 단어 단위로만(TWO 제외)'],
+  [35, '기흥', '특이사항 단어', '무상', 'G-05', 'Y', '한글은 포함(띄어쓰기 무시)'],
+  [35, '기흥', '특이사항 단어', 'WO', 'G-05', 'Y', '영문은 단어 단위로만(TWO 제외)']
+];
 // 초기 규칙(시트가 없거나 비어 있을 때만 채운다). 열 순서는 PROPOSAL_RULE_HEADERS와 같다.
 const PROPOSAL_RULE_SEED_ROWS = [
   [10, '화성', '구매경로', '안전재고', 'H-03', 'Y', '안전재고 메뉴로 들어온 요청'],
@@ -65,11 +78,7 @@ const PROPOSAL_RULE_SEED_ROWS = [
   [20, '평택', '안전용품 사용설비', '안전용품', 'P-05', 'Y', '안전용품구매 + 사용자재 시트 사용설비'],
   [20, '평택', '안전용품 사용설비', '환경안전용품-공구', 'P-06', 'Y', '안전용품구매 + 사용자재 시트 사용설비'],
   [20, '기흥', '안전용품 사용설비', '안전용품,환경안전용품,환경안전용품-공구', 'G-06', 'Y', '쉼표 = 어느 하나라도'],
-  [30, '화성', '특이사항 단어', 'CS무상', 'H-05', 'Y', '특이사항1/2에 단어 포함'],
-  [30, '평택', '특이사항 단어', 'WI', 'P-03', 'Y', '영문은 단어 단위로만(WIRE 제외)'],
-  [30, '평택', '특이사항 단어', 'WO', 'P-04', 'Y', '영문은 단어 단위로만(TWO 제외)'],
-  [30, '기흥', '특이사항 단어', 'WI', 'G-07', 'Y', '영문은 단어 단위로만(WIRE 제외)'],
-  [30, '기흥', '특이사항 단어', 'WO', 'G-05', 'Y', '영문은 단어 단위로만(TWO 제외)'],
+  ...NOTE_WORD_RULE_ROWS,
   [40, '화성', '자재명 포함', '폐수+BOTTLE', 'H-02', 'Y', '+ = 모두 포함'],
   [90, '전체', '이전 확정', '', '', 'Y', '같은 사이트·자재코드의 마지막 확정 유형'],
   [99, '전체', '기본값', '', '', 'Y', '구매유형 시트의 기본값=Y 유형']
@@ -467,7 +476,8 @@ function purchaseRouteOf_(r) {
 }
 
 // 특이사항 단어 일치. 영문/숫자만으로 된 값(WI, WO 등)은 단어 단위로만 본다(WIRE, TWO 제외).
-// 이때 영문 사이의 '/'는 무시한다(W/O = WO). 그 외 값은 띄어쓰기를 무시한 포함 여부.
+// 이때 영문 사이의 '/'는 무시한다(W/O = WO). 한글 등 그 외 값은 띄어쓰기를 무시하고 포함만 되면 일치
+// ('무상' ⊂ 'CS 무상', '무상요청', '영업 무상').
 function noteHasWord_(text, word) {
   if (/^[A-Z0-9]+$/.test(word)) {
     const t = normalizeForSearch_(text).toUpperCase().replace(/([A-Z0-9])\/(?=[A-Z0-9])/g, '$1');
@@ -795,6 +805,91 @@ function resetErpRunningToWaiting_(key) {
   const msg = '등록중 → 대기 되돌리기 (' + k + ')\n\n' + (lines.join('\n') || '해당 행이 없습니다.');
   Logger.log(msg);
   return msg;
+}
+
+/**
+ * 유형제안규칙 시트의 '특이사항 단어' 규칙을 NOTE_WORD_RULE_ROWS로 바꾼다(다른 규칙은 그대로, 백업 시트 생성).
+ * 이어서 사이트별 미등록 행에 '제안 다시 계산'을 적용하고 테스트 결과를 함께 돌려준다.
+ */
+function applyNoteWordRules_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const lock = scriptLock_();
+  lock.waitLock(60000);
+  const lines = [];
+  try {
+    const sheet = ss.getSheetByName(PROPOSAL_RULE_SHEET_NAME);
+    if (!sheet || sheet.getLastRow() < 2) {
+      lines.push(setupProposalRuleSheet_(true));
+    } else {
+      const backupName = uniqueSheetName_(ss, PROPOSAL_RULE_SHEET_NAME + '_백업_' + Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyyMMdd'));
+      sheet.copyTo(ss).setName(backupName);
+      lines.push('백업: ' + backupName);
+      const width = Math.max(sheet.getLastColumn(), PROPOSAL_RULE_HEADERS.length);
+      const heads = sheet.getRange(1, 1, 1, width).getValues()[0].map(h => String(h || '').trim());
+      const iKind = heads.indexOf('조건종류');
+      const iPri = heads.indexOf('우선순위');
+      if (iKind === -1 || iPri === -1) throw new Error('유형제안규칙 시트에 우선순위/조건종류 열이 없습니다.');
+      const oldCount = sheet.getLastRow() - 1;
+      const data = sheet.getRange(2, 1, oldCount, width).getValues();
+      const noteKind = ruleNorm_(RULE_KIND.NOTE_WORD);
+      const blank = row => row.every(v => String(v).trim() === '');
+      const kept = data.filter(row => !blank(row) && ruleNorm_(row[iKind]) !== noteKind);
+      const removed = data.filter(row => !blank(row)).length - kept.length;
+      const added = NOTE_WORD_RULE_ROWS.map(src => {
+        const row = new Array(width).fill('');
+        PROPOSAL_RULE_HEADERS.forEach((h, j) => {
+          const i = heads.indexOf(h);
+          if (i !== -1) row[i] = src[j];
+        });
+        return row;
+      });
+      // 우선순위 순, 같으면 기존 규칙 → 새 규칙 순서.
+      const out = kept.concat(added)
+        .map((row, i) => ({ row, i }))
+        .sort((a, b) => (Number(a.row[iPri]) || 0) - (Number(b.row[iPri]) || 0) || a.i - b.i)
+        .map(x => x.row);
+      sheet.getRange(2, 1, oldCount, width).clearContent();
+      sheet.getRange(2, 1, out.length, width).setNumberFormat('@');
+      sheet.getRange(2, iPri + 1, out.length, 1).setNumberFormat('0');
+      sheet.getRange(2, 1, out.length, width).setValues(out);
+      lines.push('특이사항 단어 규칙: 기존 ' + removed + '개 삭제 → 새 규칙 ' + added.length + '개 입력 (전체 ' + out.length + '개)');
+    }
+    SpreadsheetApp.flush();
+    clearProposalRuleCache_();
+    SITES.forEach(site => {
+      if (!ss.getSheetByName(poInSheetName_(site))) return;
+      lines.push(site + ': 제안 다시 계산 ' + reproposeRows_(site, 'proposed') + '건');
+    });
+    SpreadsheetApp.flush();
+  } finally {
+    lock.releaseLock();
+  }
+  lines.push('');
+  lines.push(testNoteWordRules_());
+  const msg = lines.join('\n');
+  Logger.log(msg);
+  return msg;
+}
+
+// 특이사항 단어 규칙 테스트(일반 라인 요청, 자재코드 없음 → 특이사항 규칙이 안 맞으면 '기본값').
+function testNoteWordRules_() {
+  const cases = [
+    ['평택', '영업무상', 'P-03'],
+    ['평택', '무상요청', 'P-04'],
+    ['화성', 'CS 무상', 'H-05'],
+    ['평택', 'WIRE 교체', '기본값'],
+    ['평택', 'W/O 요청', 'P-04'],
+    ['기흥', '영업 무상', 'G-07']
+  ];
+  const ctxs = {};
+  const out = cases.map(c => {
+    const ctx = ctxs[c[0]] || (ctxs[c[0]] = proposalContext_(c[0]));
+    const p = proposeTypeForRow_({ '특이사항1': c[1], '특이사항2': '', '라인': '', '자재코드': '', '자재명': '', '비고': '' }, ctx);
+    const got = String(p.reason || '').indexOf('특이사항') === 0 ? p.code : '기본값';
+    const ok = got === c[2];
+    return (ok ? 'OK ' : 'NG ') + c[0] + ' "' + c[1] + '" → ' + (p.code || '(빈값)') + ' (' + (p.reason || '-') + ')' + (ok ? '' : ' / 기대 ' + c[2]);
+  });
+  return '[테스트]\n' + out.join('\n');
 }
 
 // ------------------------- 공용 헬퍼 -------------------------

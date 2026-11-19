@@ -881,6 +881,14 @@ function erpTokenOk_(token) {
   return !!expected && String(token || '') === expected;
 }
 
+// pending 전용: sites가 비었거나 화성/평택/기흥이 아닌 값이 하나라도 있으면 null(전체로 바꾸지 않는다).
+function parseErpSitesStrict_(v) {
+  const list = (Array.isArray(v) ? v : String(v == null ? '' : v).split(','))
+    .map(s => String(s == null ? '' : s).trim()).filter(Boolean);
+  if (!list.length || list.some(s => SITES.indexOf(s) === -1)) return null;
+  return list.filter((s, i) => list.indexOf(s) === i);
+}
+
 function parseErpSites_(v) {
   const list = Array.isArray(v) ? v : String(v || '').split(',');
   const sites = list.map(s => String(s || '').trim()).filter(s => SITES.indexOf(s) !== -1);
@@ -1373,13 +1381,19 @@ function setupHolidaySheetFromMenu() {
 
 /**
  * GET ?action=pending&token=...&scope=urgent|all&sites=화성,평택&pc=화성PC
+ * sites는 화성/평택/기흥만(쉼표로 여러 개). 비었거나 그 밖의 값이면 {ok:false,error:'sites 설정 오류'}.
  * 처리할 건이 없으면 캐시 플래그만 보고 바로 {ok:true,batches:[]}를 돌려준다(시트 읽기 없음).
  */
 function erpPending_(p) {
   if (!erpTokenOk_(p.token)) return { ok: false, error: 'unauthorized' };
   const scope = p.scope === 'urgent' ? 'urgent' : 'all';
-  const sites = parseErpSites_(p.sites);
   const pc = String(p.pc || '').trim();
+  // 요청한 사이트의 배치만 내려준다. sites가 비었거나 잘못되면(예: '전체') 아무 것도 가져가지 않는다.
+  const sites = parseErpSitesStrict_(p.sites);
+  if (!sites) {
+    Logger.log('ERP pending 거부 [' + (pc || '?') + ']: sites="' + String(p.sites == null ? '' : p.sites) + '"');
+    return { ok: false, error: 'sites 설정 오류' };
+  }
   const now = Date.now();
 
   // 1) 빠른 경로: 요청한 사이트의 플래그가 모두 0이고, 20분 넘은 등록중 건도 없으면 즉시 응답.

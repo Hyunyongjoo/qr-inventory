@@ -22,8 +22,7 @@ const OUT_ST = {
   NEED_NUMBER: '출고번호 확인 필요',
   FAIL_PREFIX: '실패: '
 };
-// 사용자재 시트 사용설비 값(띄어쓰기 무시, 정확히 일치).
-const OUT_EXCLUDE_EQUIPMENT = '환경안전용품';
+// 사용자재 시트 사용설비 값(띄어쓰기 무시, 정확히 일치). 환경안전용품 제외는 공통 함수 isEnvSafetyItem_(Erp.gs).
 const OUT_FREE_EQUIPMENT = '안전용품';
 const OUT_FREE_NOTE_WORD = '무상';
 const OUT_PAID = '유상';
@@ -248,7 +247,7 @@ function buildOutGroups_(site, rows, ctx) {
     if (!r.code || !r.date || r.date < ctx.start || r.date > ctx.today) return;
     const eq = stripSpaces_(ctx.equipmentOf(r.code));
     const target = isOutTargetStatus_(r.out);
-    if (eq === OUT_EXCLUDE_EQUIPMENT) {
+    if (isEnvSafetyItem_(r.code, eq)) {
       if (target) exclude.push(r.row);
       return;
     }

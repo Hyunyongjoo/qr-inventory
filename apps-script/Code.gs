@@ -147,6 +147,8 @@ function doGet(e) {
         break;
       case 'getTransactionDownload':
         result = getTransactionDownload_(e.parameter.site || '', e.parameter.startDate || '', e.parameter.endDate || '', e.parameter.zone || '', e.parameter.byZone === '1');
+        // withExcluded=1: { rows, envSafetyExcluded } (뺀 환경안전용품 건수 안내용). 없으면 지금처럼 행 배열.
+        if (e.parameter.withExcluded === '1') result = { rows: result, envSafetyExcluded: result.envSafetyExcluded || 0 };
         break;
       case 'transferList':
         result = getTransferList_(e.parameter.site || '');
@@ -2708,10 +2710,20 @@ function getTransactionDownload_(site, startDate, endDate, zone, byZone) {
   if (zoneQ) rows = rows.filter(r => txRowMatchesZone_(r, zoneQ));
   rows = filterByDateRange_(rows, '출고일자', startDate, endDate);
 
+  // 환경안전용품(자재코드 또는 사용자재 사용설비, 공통 함수 isEnvSafetyItem_)은 거래명세서에서 뺀다.
+  // 뺀 건수는 반환 배열의 envSafetyExcluded 속성(JSON에는 안 실림 → 라우트에서 withExcluded로 감쌈).
+  const before = rows.length;
+  if (rows.length) {
+    const equip = readUsedEquipmentMap_(site).byCode;
+    rows = rows.filter(r => !isEnvSafetyItem_(r['자재코드'], equip[normalizeMaterialCode_(r['자재코드'])] || ''));
+  }
+  const excluded = before - rows.length;
+
   const snCodes = rows.length ? snManagedItemCodes_(site) : {};
   const toView = g => g.map(r => transactionDownloadRow_(r, snCodes));
-  if (byZone && !zoneQ) return mapByDownloadZone_(rows, r => txDownloadZoneOf_(site, r), toView);
-  return toView(rows);
+  const out = (byZone && !zoneQ) ? mapByDownloadZone_(rows, r => txDownloadZoneOf_(site, r), toView) : toView(rows);
+  out.envSafetyExcluded = excluded;
+  return out;
 }
 
 function transactionDownloadRow_(r, snCodes) {

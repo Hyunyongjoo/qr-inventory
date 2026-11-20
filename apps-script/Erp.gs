@@ -401,11 +401,21 @@ function clearProposalRuleCache_() {
 const HQ_SAFETY_SUPPLY_VALUE = '환경안전용품';
 const HQ_SAFETY_SUPPLY_REASON = '본사 환경안전팀 지급(재고사용)';
 
+// 환경안전용품 판정 공통 함수(띄어쓰기·대소문자 무시). 구매 재고사용(isHqSafetySupplyRow_),
+// 출고 자동등록 제외(Out.gs buildOutGroups_), 거래명세서 다운로드 제외(Code.gs getTransactionDownload_)가 함께 쓴다.
+function isEnvSafetyValue_(s) {
+  return ruleNorm_(s) === ruleNorm_(HQ_SAFETY_SUPPLY_VALUE);
+}
+
+// 출고·거래명세서용: 자재코드가 '환경안전용품'이거나, 사용자재 시트 사용설비가 '환경안전용품'인 품목.
+function isEnvSafetyItem_(code, equipment) {
+  return isEnvSafetyValue_(code) || isEnvSafetyValue_(equipment);
+}
+
 function isHqSafetySupplyRow_(r, ctx) {
   if (purchaseRouteOf_(r) !== SAFETY_SUPPLY_ZONE) return false;
-  const v = ruleNorm_(HQ_SAFETY_SUPPLY_VALUE);
-  if (ruleNorm_(r['자재코드']) !== v) return false;
-  return ruleList_(ctx.equipmentOf(r)).indexOf(v) !== -1;
+  if (!isEnvSafetyValue_(r['자재코드'])) return false;
+  return ruleList_(ctx.equipmentOf(r)).some(isEnvSafetyValue_);
 }
 
 // 대상 행에 넣는 값. 구매요청번호 '재고사용'은 입고확인 "재고사용" 버튼(updateStockUsage_)과 같은 코드 표시값.
@@ -445,8 +455,7 @@ function applyHqSafetySupplyRows_(site, ctx) {
 function countHqSafetySupplyItems_(site) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(usedMaterialsSheetName_(site));
   if (!sheet) return -1;
-  const v = ruleNorm_(HQ_SAFETY_SUPPLY_VALUE);
-  return readAll_(sheet).filter(r => ruleNorm_(r['자재코드']) === v && ruleList_(r['사용설비']).indexOf(v) !== -1).length;
+  return readAll_(sheet).filter(r => isEnvSafetyValue_(r['자재코드']) && ruleList_(r['사용설비']).some(isEnvSafetyValue_)).length;
 }
 
 // "자재관리 > 환경안전팀 지급 품목 재고사용 처리" 메뉴(1회 실행용, 다시 실행해도 안전).

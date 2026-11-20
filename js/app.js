@@ -4777,8 +4777,9 @@
   }
 
   // 서버 erpTemplateValues_(Erp.gs)와 같은 규칙의 템플릿 값.
+  // {라인}/{SITE}는 서버가 붙여 준 청구서표기(zoneLabel, 구매라인 시트: 화성 16LINE → H3)를 쓴다.
   function erpTemplateValues(rows, vars, date) {
-    const lines = [...new Set(rows.map((r) => String(r.zone || '').trim()).filter(Boolean))].join(', ');
+    const lines = [...new Set(rows.map((r) => String(r.zoneLabel || r.zone || '').trim()).filter(Boolean))].join(', ');
     const values = Object.assign({}, vars, {
       SITE: lines, '라인': lines, MM: String(date.getMonth() + 1), N: String(erpWeekOfMonth(date)),
       NN: String(erpIsoWeek(date)).padStart(2, '0')

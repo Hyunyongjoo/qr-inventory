@@ -239,6 +239,72 @@ function defaultPurchaseType_(site) {
   return purchaseTypesForSite_(site).find(t => t.isDefault && t.enabled) || null;
 }
 
+// ------------------------- 구매라인 시트 -------------------------
+// 구매 청구서 명칭의 {라인}/{SITE}에 넣을 표기값과 라인별 요청자(PC가 ERP 요청자 칸에 넣음).
+// 배치 묶음·라인 분리는 QR 라인값 그대로이고, 표기·요청자만 이 시트로 바꾼다. 행이 없는 사이트/라인은
+// 표기 = QR 라인값 그대로, 요청자 = 빈칸. QR라인값 비교는 띄어쓰기·대소문자 무시(normalizeLine_).
+// 시트가 없으면 처음 읽을 때 아래 초기값으로 만든다(10분 캐시, 편집·캐시 새로고침 메뉴로 바로 반영).
+const PURCHASE_LINE_SHEET_NAME = '구매라인';
+const PURCHASE_LINE_HEADERS = ['사이트', 'QR라인값', '청구서표기', '요청자'];
+const PURCHASE_LINE_SEED_ROWS = [
+  ['화성', 'NRD', 'NRD', '고재현'],
+  ['화성', '11LINE', 'H1', '고재현'],
+  ['화성', '15LINE', 'H2', '허영근'],
+  ['화성', '16LINE', 'H3', '김주빈'],
+  ['화성', '17LINE', 'H4', '정승현'],
+  // 안전용품 구매(라인 값 = 요청자의 세부사이트)
+  ['화성', 'H1', 'H1', '고재현'],
+  ['화성', 'H2', 'H2', '허영근'],
+  ['화성', 'H3', 'H3', '김주빈'],
+  ['화성', 'H4', 'H4', '정승현']
+];
+const PURCHASE_LINE_CACHE_KEY = 'purchaseLines:v1';
+
+function loadPurchaseLines_() {
+  return loadOutConfigSheet_(PURCHASE_LINE_SHEET_NAME, PURCHASE_LINE_HEADERS, PURCHASE_LINE_SEED_ROWS, PURCHASE_LINE_CACHE_KEY)
+    .map(o => ({
+      site: o['사이트'],
+      key: normalizeLine_(o['QR라인값']),
+      label: o['청구서표기'],
+      requester: o['요청자']
+    }))
+    .filter(l => l.key);
+}
+
+function clearPurchaseLineCache_() {
+  CacheService.getScriptCache().remove(PURCHASE_LINE_CACHE_KEY);
+}
+
+// QR 라인값 하나 → { label, requester }. site가 없거나 표에 없으면 { label: 원래 값, requester: '' }.
+function purchaseLineInfo_(site, line, list) {
+  const raw = String(line == null ? '' : line).trim();
+  const key = normalizeLine_(raw);
+  if (!site || !key) return { label: raw, requester: '' };
+  const hit = (list || loadPurchaseLines_()).find(l => l.site === site && l.key === key);
+  if (!hit) return { label: raw, requester: '' };
+  return { label: hit.label || raw, requester: hit.requester || '' };
+}
+
+// 묶음 행들의 라인 정보: lines(QR 라인값, 중복 제거·첫 등장 순), labels(청구서표기, 중복 제거),
+// requester(모든 라인의 요청자가 한 사람으로 같을 때만, 아니면 '').
+function batchLineInfo_(site, rows) {
+  const lines = [];
+  (rows || []).forEach(r => {
+    const z = String(r['라인'] || '').trim();
+    if (z && lines.indexOf(z) === -1) lines.push(z);
+  });
+  const list = site && lines.length ? loadPurchaseLines_() : [];
+  const labels = [];
+  const requesters = [];
+  lines.forEach(z => {
+    const info = purchaseLineInfo_(site, z, list);
+    if (info.label && labels.indexOf(info.label) === -1) labels.push(info.label);
+    requesters.push(info.requester);
+  });
+  const requester = requesters.length && requesters.every(n => n && n === requesters[0]) ? requesters[0] : '';
+  return { lines, labels, requester };
+}
+
 
 // ------------------------- 명칭 생성 -------------------------
 
@@ -264,22 +330,18 @@ function isoWeek_(date) {
 }
 
 // 명칭/기타요청사유 템플릿에 넣을 값.
-//  - {SITE}·{라인}: 묶음 행들의 라인 값(중복 제거 후 ', ' 연결)
+//  - {SITE}·{라인}: 묶음 행들의 라인 값을 구매라인 시트의 청구서표기로 바꿔 중복 제거 후 ', ' 연결
+//                  (site가 없거나 표에 없는 라인은 라인 값 그대로. 예: 화성 16LINE → H3)
 //  - {MM}: 등록일 월, {N}: 월 기준 주차, {NN}: ISO 주차 2자리
 //  - {PART}: 명칭변수 PART를 입력했으면 그 값. 비어 있으면 배치의 품목 수(서로 다른 자재코드 수)로 정한다:
 //            1개 → 그 품목의 자재명 / 2개 이상 → 'PART'. 1개일 때는 템플릿의 "{PART} 등"에서 " 등"을 지운다.
 const ERP_PART_MULTI = 'PART';
 const ERP_PART_SINGLE_FLAG = '__partSingle';
-function erpTemplateValues_(rows, vars, date) {
+function erpTemplateValues_(rows, vars, date, site) {
   const d = date || new Date();
   const list = rows || [];
-  const lines = [];
-  list.forEach(r => {
-    const z = String(r['라인'] || '').trim();
-    if (z && lines.indexOf(z) === -1) lines.push(z);
-  });
   const values = Object.assign({}, vars || {});
-  values.SITE = lines.join(', ');
+  values.SITE = batchLineInfo_(site, list).labels.join(', ');
   values['라인'] = values.SITE;
   values.MM = Utilities.formatDate(d, 'Asia/Seoul', 'M');
   values.N = String(weekOfMonth_(d));
@@ -320,21 +382,23 @@ function fillErpTemplate_(template, values) {
  *  - rows: 묶음에 포함된 구매발주및입고 행들
  *  - vars: 입력 변수 { PART: 'PRE-WET', ... }
  *  - date: 등록일
+ *  - site: 사이트(구매라인 시트의 청구서표기를 찾을 때 사용. 생략하면 typeRow.site, 그것도 없으면 라인 값 그대로)
  * 변수 규칙은 erpTemplateValues_ 참고.
  */
-function buildErpTitle(typeRow, rows, vars, date) {
+function buildErpTitle(typeRow, rows, vars, date, site) {
   const template = String((typeRow && (typeRow.template || typeRow['명칭템플릿'])) || '');
-  return fillErpTemplate_(template, erpTemplateValues_(rows, vars, date));
+  return fillErpTemplate_(template, erpTemplateValues_(rows, vars, date, site || (typeRow && typeRow.site) || ''));
 }
 
 /**
  * ERP 기타요청사유를 만든다. {명칭과 동일}은 title로, 나머지 변수는 명칭과 같은 규칙으로 바꾼다.
  * 긴급 등록 배치는 끝에 " 긴급요망"을 붙인다(명칭은 그대로).
  */
-function buildErpReason(typeRow, rows, vars, date, title, urgent) {
+function buildErpReason(typeRow, rows, vars, date, title, urgent, site) {
   const template = String((typeRow && (typeRow.reasonTemplate || typeRow['기타요청사유'])) || '');
-  const values = erpTemplateValues_(rows, vars, date);
-  values[ERP_REASON_SAME_AS_TITLE] = title == null ? buildErpTitle(typeRow, rows, vars, date) : title;
+  const s = site || (typeRow && typeRow.site) || '';
+  const values = erpTemplateValues_(rows, vars, date, s);
+  values[ERP_REASON_SAME_AS_TITLE] = title == null ? buildErpTitle(typeRow, rows, vars, date, s) : title;
   const reason = fillErpTemplate_(template, values);
   return urgent && reason ? reason + ERP_URGENT_REASON_SUFFIX : reason;
 }
@@ -1372,6 +1436,9 @@ function erpRequestList_(requestedSite, pin) {
       progress.push(erpRowToView_(r, defaultType));
     }
   });
+  // 명칭 미리보기용 청구서표기(구매라인 시트, 표에 없으면 라인 값 그대로).
+  const lineList = loadPurchaseLines_();
+  rows.concat(progress).forEach(v => { v.zoneLabel = purchaseLineInfo_(site, v.zone, lineList).label; });
   rows.sort(compareErpRows_);
   progress.sort((a, b) => (a.erpAt < b.erpAt ? 1 : a.erpAt > b.erpAt ? -1 : b.rowIndex - a.rowIndex));
 
@@ -1865,14 +1932,21 @@ function erpPending_(p) {
       // 빈 필요일자는 먼저 기본값(일반 +14일 / 긴급 +1일, 휴일이면 다음 평일)으로 채운 뒤 합친다.
       const due = applyErpDefaultDueDates_(c.rows, c.urgent, todayYmd, getHctx);
       const downloadRows = buildPurchaseDownloadRows_(due.rows, unitMap);
-      const title = buildErpTitle(type, c.rows, vars, new Date(now));
-      // fields: 조건표 값 + 원인부서 + 완성된 기타요청사유(긴급 배치는 끝에 " 긴급요망").
+      const title = buildErpTitle(type, c.rows, vars, new Date(now), c.site);
+      // line: QR 라인값(배치 묶음 기준), line_label: 명칭에 넣은 청구서표기(구매라인 시트).
+      // 여러 라인이 섞인 배치(라인분리 아닌 유형)는 ', '로 잇는다.
+      const lineInfo = batchLineInfo_(c.site, c.rows);
+      // fields: 조건표 값 + 원인부서 + 완성된 기타요청사유(긴급 배치는 끝에 " 긴급요망")
+      //       + 요청자(구매라인 시트, 정할 수 없으면 빈칸 → PC가 등록자 그대로 둠).
       const fields = Object.assign({}, type.fields, {
-        '기타요청사유': buildErpReason(type, c.rows, vars, new Date(now), title, c.urgent)
+        '기타요청사유': buildErpReason(type, c.rows, vars, new Date(now), title, c.urgent, c.site),
+        '요청자': lineInfo.requester
       });
       batches.push({
         batch_id: c.batchId,
         site: c.site,
+        line: lineInfo.lines.join(', '),
+        line_label: lineInfo.labels.join(', '),
         type_code: type.code,
         type_name: type.name,
         urgent: c.urgent,

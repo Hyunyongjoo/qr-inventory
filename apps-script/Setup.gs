@@ -710,6 +710,7 @@ function onEdit(e) {
     if (name === PURCHASE_TYPE_SHEET_NAME) clearPurchaseTypeCache_();
     else if (name === PROPOSAL_RULE_SHEET_NAME) clearProposalRuleCache_();
     else if (name === OUT_COND_SHEET_NAME || name === OUT_LINE_SHEET_NAME) clearOutConfigCache_();
+    else if (name === PURCHASE_LINE_SHEET_NAME) clearPurchaseLineCache_();
   } catch (err) {
     // 심플 트리거 실패는 무시 (캐시는 10분 뒤 자동 만료)
   }
@@ -936,13 +937,16 @@ function refreshPurchaseTypeCacheFromMenu() {
   clearPurchaseTypeCache_();
   clearProposalRuleCache_();
   clearOutConfigCache_();
+  clearPurchaseLineCache_();
   const types = loadPurchaseTypes_();
   const rules = loadProposalRules_();
   const outConds = loadOutConditions_();
   const outLines = loadOutLines_();
+  const purchaseLines = loadPurchaseLines_();
   const incomplete = types.filter(t => t.incomplete);
   SpreadsheetApp.getUi().alert('구매유형 ' + types.length + '개, 유형제안규칙 ' + rules.length + '개, 출고조건 ' + outConds.length +
-    '개, 출고라인 ' + outLines.length + '개를 다시 읽었습니다.' +
+    '개, 출고라인 ' + outLines.length +
+    '개, 구매라인 ' + purchaseLines.length + '개를 다시 읽었습니다.' +
     (incomplete.length ? '\n\n조건 미완성: ' + incomplete.map(t => t.code + '(' + t.missing.join(', ') + ')').join(', ') : ''));
 }
 

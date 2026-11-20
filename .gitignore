@@ -3,6 +3,7 @@ erp_auto/접속정보.json
 erp_auto/config.json
 erp_auto/*.log
 erp_auto/debug/
+erp_auto/logs/
 erp_auto/dist/
 erp_auto/build/
 erp_auto/*.exe

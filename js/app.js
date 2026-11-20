@@ -3965,9 +3965,9 @@
 
   function bindDownload() {
     $('#download-search-btn').addEventListener('click', searchDownload);
-    $('#download-purchase-btn').addEventListener('click', () => exportDownloadExcel('purchase'));
-    $('#download-outbound-btn').addEventListener('click', () => exportDownloadExcel('outbound'));
-    $('#download-transaction-btn').addEventListener('click', exportTransactionFiles);
+    $('#download-purchase-btn').addEventListener('click', () => exportDownloadFiles('purchase'));
+    $('#download-outbound-btn').addEventListener('click', () => exportDownloadFiles('outbound'));
+    $('#download-transaction-btn').addEventListener('click', () => exportDownloadFiles('transaction'));
     $('#download-transfer-btn').addEventListener('click', exportTransferDownload);
   }
 
@@ -3997,7 +3997,8 @@
       $('#download-summary').classList.add('hidden');
       $('#download-summary').innerHTML = '';
       $('#download-buttons').classList.add('hidden');
-      clearTransactionResult_();
+      state.downloadZone = '';
+      clearDownloadResult_();
     }
     populateDownloadZoneOptions();
     populateDownloadTransferSupplyOptions();
@@ -4057,21 +4058,25 @@
     const buttonsEl = $('#download-buttons');
 
     buttonsEl.classList.add('hidden');
-    clearTransactionResult_();
+    clearDownloadResult_();
     summaryEl.classList.remove('hidden');
     summaryEl.innerHTML = `<div class="empty-state">검색 중...</div>`;
 
+    // 라인 '전체'면 서버가 라인별로 따로 합산하고 행마다 fileZone을 붙여 준다(라인별 파일 만들기용).
+    const params = { site: state.site, startDate, endDate, zone, byZone: zone ? '' : '1' };
     try {
       const [purchase, outbound, transaction] = await Promise.all([
-        Api.get('getPurchaseDownload', { site: state.site, startDate, endDate, zone }),
-        Api.get('getOutboundDownload', { site: state.site, startDate, endDate, zone }),
-        Api.get('getTransactionDownload', { site: state.site, startDate, endDate, zone })
+        Api.get('getPurchaseDownload', params),
+        Api.get('getOutboundDownload', params),
+        Api.get('getTransactionDownload', params)
       ]);
       state.downloadRows = { purchase, outbound, transaction };
+      state.downloadZone = zone;
       renderDownloadSummary();
       buttonsEl.classList.remove('hidden');
     } catch (err) {
       state.downloadRows = { purchase: [], outbound: [], transaction: [] };
+      state.downloadZone = '';
       renderApiError_(summaryEl, err, searchDownload);
     }
   }
@@ -4106,15 +4111,14 @@
   };
 
   // 파일명: {구분}_{YYYYMMDD}{suffix}_{라인명 또는 전체}{ext} (오늘 날짜 기준).
-  // 거래명세서는 suffix에 '-1', '-2' … 를 넣어 날짜 바로 뒤에 붙인다.
-  function buildDownloadFilename_(label, suffix = '', ext = '.xlsx') {
+  // 거래명세서는 suffix에 '-1', '-2' … 를 넣어 날짜 바로 뒤에 붙인다. zoneLabel을 주면 그 라인 이름을 쓴다.
+  function buildDownloadFilename_(label, suffix = '', ext = '.xlsx', zoneLabel = '') {
     const now = new Date();
     const y = now.getFullYear();
     const m = String(now.getMonth() + 1).padStart(2, '0');
     const d = String(now.getDate()).padStart(2, '0');
-    const zone = $('#download-zone-select').value.trim();
-    const zoneLabel = zone || '전체';
-    return `${label}_${y}${m}${d}${suffix}_${zoneLabel}${ext}`;
+    const zoneName = zoneLabel || $('#download-zone-select').value.trim() || '전체';
+    return `${label}_${y}${m}${d}${suffix}_${zoneName}${ext}`;
   }
 
   // ---- 거래명세서: S/N 품목 1개씩 줄 나누기 + 파일당 최대 10줄 ----
@@ -4161,8 +4165,8 @@
     return { files, notes };
   }
 
-  function buildTransactionWorkbookBytes_(lines) {
-    const meta = DOWNLOAD_KIND_META.transaction;
+  function buildWorkbookBytes_(kind, lines) {
+    const meta = DOWNLOAD_KIND_META[kind];
     const ws = XLSX.utils.aoa_to_sheet([meta.columns].concat(lines.map(meta.toRow)));
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, meta.label);
@@ -4246,67 +4250,126 @@
 
   const delay_ = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-  // 거래명세서 다운로드: 파일을 차례로(0.5초 간격) 내려받고, 결과/안내와 '모두 zip으로 받기' 버튼을 보여 준다.
-  async function exportTransactionFiles() {
-    const rows = state.downloadRows.transaction || [];
-    const resultEl = $('#download-transaction-result');
-    if (!rows.length) {
-      toast('다운로드할 거래명세서 데이터가 없습니다.', 'error');
-      return;
-    }
-    const { files, notes } = splitTransactionFiles_(rows);
-    const entries = files.map((lines, i) => ({
-      name: buildDownloadFilename_('거래명세서', '-' + (i + 1)),
-      data: buildTransactionWorkbookBytes_(lines)
-    }));
-    state.transactionZip = { entries, name: buildDownloadFilename_('거래명세서', '', '.zip') };
+  const DOWNLOAD_NO_ZONE = '라인없음'; // 서버(Code.gs DOWNLOAD_NO_ZONE)와 같은 값
 
-    const msgs = [`파일 ${files.length}개(${files.map((f) => f.length).join('·')}줄) 생성`];
-    if (files.length > 1) msgs.push('브라우저가 "여러 파일 다운로드 허용"을 물으면 허용을 눌러 주세요. 막히면 아래 zip 버튼을 쓰세요.');
+  // 라인 '전체' 검색 결과(서버 byZone=1, 행마다 fileZone)를 라인별 묶음으로 나눈다.
+  // 순서: 라인 선택 목록 순서(사이트 라인 → 안전용품 → 안전재고), 목록에 없는 값은 이름순, 라인없음은 맨 뒤.
+  function groupRowsByFileZone_(rows) {
+    const groups = new Map();
+    rows.forEach((r) => {
+      const name = String(r.fileZone || '').trim() || DOWNLOAD_NO_ZONE;
+      if (!groups.has(name)) groups.set(name, []);
+      groups.get(name).push(r);
+    });
+    const known = (ZONES[state.site] || []).concat([SAFETY_SUPPLY_ZONE, SAFETY_STOCK_ZONE]);
+    const rank = (name) => {
+      if (name === DOWNLOAD_NO_ZONE) return [2, ''];
+      const i = known.indexOf(name);
+      return i === -1 ? [1, name] : [0, String(i).padStart(3, '0')];
+    };
+    return Array.from(groups.keys())
+      .sort((a, b) => {
+        const ra = rank(a), rb = rank(b);
+        return ra[0] - rb[0] || ra[1].localeCompare(rb[1], 'ko');
+      })
+      .map((name) => ({ zone: name, rows: groups.get(name) }));
+  }
+
+  // 다운로드할 파일 목록. 라인 하나면 그 라인 한 묶음, '전체'면 라인별 묶음.
+  // 거래명세서는 묶음마다 10줄 규칙으로 나누고 -1, -2 번호를 라인마다 1부터 붙인다.
+  function buildDownloadEntries_(kind, rows, zone) {
+    const meta = DOWNLOAD_KIND_META[kind];
+    const groups = zone ? [{ zone, rows }] : groupRowsByFileZone_(rows);
+    const notes = { qtyCheck: new Set(), overflow: new Set() };
+    const perZone = [];
+    const entries = [];
+    groups.forEach((g) => {
+      let files = [g.rows];
+      if (kind === 'transaction') {
+        const split = splitTransactionFiles_(g.rows);
+        files = split.files;
+        split.notes.qtyCheck.forEach((v) => notes.qtyCheck.add(v));
+        split.notes.overflow.forEach((v) => notes.overflow.add(v));
+      }
+      files.forEach((lines, i) => {
+        const suffix = kind === 'transaction' ? '-' + (i + 1) : '';
+        entries.push({ name: buildDownloadFilename_(meta.label, suffix, '.xlsx', g.zone), data: buildWorkbookBytes_(kind, lines) });
+      });
+      perZone.push({ zone: g.zone, lineCounts: files.map((f) => f.length) });
+    });
+    return { entries, perZone, notes };
+  }
+
+  function buildDownloadResultMessages_(kind, zone, built) {
+    const { entries, perZone, notes } = built;
+    const lines = (counts) => (kind === 'transaction' ? `(${counts.join('·')}줄)` : '');
+    const msgs = [];
+    if (zone) {
+      msgs.push(`파일 ${entries.length}개${lines(perZone[0].lineCounts)} 생성`);
+    } else {
+      msgs.push(perZone.map((z) => `${z.zone} ${z.lineCounts.length}개${lines(z.lineCounts)}`).join(', ') + ` (총 ${entries.length}개 파일)`);
+    }
+    if (entries.length > 1) msgs.push('브라우저가 "여러 파일 다운로드 허용"을 물으면 허용을 눌러 주세요. 막히면 아래 zip 버튼을 쓰세요.');
     if (notes.qtyCheck.size) msgs.push('S/N 품목 수량 확인 필요: ' + Array.from(notes.qtyCheck).join(', '));
     if (notes.overflow.size) msgs.push('S/N 품목 수량이 10개를 넘어 여러 파일로 나뉨: ' + Array.from(notes.overflow).join(', '));
-    resultEl.innerHTML = msgs.map((m, i) => `<p class="${i === 0 ? 'download-result-main' : 'download-result-note'}">${escapeHtml(m)}</p>`).join('') +
-      `<button type="button" id="download-transaction-zip-btn" class="btn btn-secondary btn-block">모두 zip으로 받기</button>`;
-    resultEl.classList.remove('hidden');
-    $('#download-transaction-zip-btn').addEventListener('click', downloadTransactionZip);
-
-    const btn = $('#download-transaction-btn');
-    btn.disabled = true;
-    try {
-      for (let i = 0; i < entries.length; i++) {
-        if (i) await delay_(500);
-        saveBlob_(new Blob([entries[i].data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), entries[i].name);
-      }
-    } finally {
-      btn.disabled = false;
-    }
+    return msgs;
   }
 
-  function clearTransactionResult_() {
-    state.transactionZip = null;
-    const el = $('#download-transaction-result');
-    el.innerHTML = '';
-    el.classList.add('hidden');
-  }
-
-  function downloadTransactionZip() {
-    const z = state.transactionZip;
-    if (!z || !z.entries.length) return;
-    saveBlob_(buildZip_(z.entries), z.name);
-  }
-
-  function exportDownloadExcel(kind) {
+  // 구매/출고/거래명세서 다운로드 버튼.
+  // - 구매·출고 + 라인 하나: 지금처럼 파일 1개를 바로 저장한다.
+  // - 그 외(거래명세서, 또는 라인 '전체'): 파일을 차례로(0.5초 간격) 내려받고, 결과/안내와 '모두 zip으로 받기' 버튼을 보여 준다.
+  async function exportDownloadFiles(kind) {
     const meta = DOWNLOAD_KIND_META[kind];
     const rows = state.downloadRows[kind] || [];
     if (!rows.length) {
       toast(`다운로드할 ${meta.label} 데이터가 없습니다.`, 'error');
       return;
     }
-    const aoa = [meta.columns].concat(rows.map(meta.toRow));
-    const ws = XLSX.utils.aoa_to_sheet(aoa);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, meta.label);
-    XLSX.writeFile(wb, buildDownloadFilename_(meta.label));
+    const zone = state.downloadZone || '';
+    clearDownloadResult_();
+    if (zone && kind !== 'transaction') {
+      const ws = XLSX.utils.aoa_to_sheet([meta.columns].concat(rows.map(meta.toRow)));
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, meta.label);
+      XLSX.writeFile(wb, buildDownloadFilename_(meta.label, '', '.xlsx', zone));
+      return;
+    }
+
+    const built = buildDownloadEntries_(kind, rows, zone);
+    const entries = built.entries;
+    state.downloadZip = { entries, name: buildDownloadFilename_(meta.label, '', '.zip', zone || '전체') };
+
+    const msgs = buildDownloadResultMessages_(kind, zone, built);
+    const resultEl = $('#download-result');
+    resultEl.innerHTML = `<p class="download-result-title">${escapeHtml(meta.label)}</p>` +
+      msgs.map((m, i) => `<p class="${i === 0 ? 'download-result-main' : 'download-result-note'}">${escapeHtml(m)}</p>`).join('') +
+      `<button type="button" id="download-zip-btn" class="btn btn-secondary btn-block">모두 zip으로 받기</button>`;
+    resultEl.classList.remove('hidden');
+    $('#download-zip-btn').addEventListener('click', downloadResultZip);
+
+    const btns = $$('#download-buttons button');
+    btns.forEach((b) => { b.disabled = true; });
+    try {
+      for (let i = 0; i < entries.length; i++) {
+        if (i) await delay_(500);
+        saveBlob_(new Blob([entries[i].data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), entries[i].name);
+      }
+    } finally {
+      btns.forEach((b) => { b.disabled = false; });
+    }
+  }
+
+  function clearDownloadResult_() {
+    state.downloadZip = null;
+    const el = $('#download-result');
+    el.innerHTML = '';
+    el.classList.add('hidden');
+  }
+
+  function downloadResultZip() {
+    const z = state.downloadZip;
+    if (!z || !z.entries.length) return;
+    saveBlob_(buildZip_(z.entries), z.name);
   }
 
   // ------------------------- 청구서 관리 (구매유형 · ERP 청구서/긴급 등록) -------------------------

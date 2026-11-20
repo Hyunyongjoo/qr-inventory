@@ -140,13 +140,13 @@ function doGet(e) {
         result = getPurchaseByLineOrderNo_(e.parameter.site || '', e.parameter.orderNo || '');
         break;
       case 'getPurchaseDownload':
-        result = getPurchaseDownload_(e.parameter.site || '', e.parameter.startDate || '', e.parameter.endDate || '', e.parameter.zone || '');
+        result = getPurchaseDownload_(e.parameter.site || '', e.parameter.startDate || '', e.parameter.endDate || '', e.parameter.zone || '', e.parameter.byZone === '1');
         break;
       case 'getOutboundDownload':
-        result = getOutboundDownload_(e.parameter.site || '', e.parameter.startDate || '', e.parameter.endDate || '', e.parameter.zone || '');
+        result = getOutboundDownload_(e.parameter.site || '', e.parameter.startDate || '', e.parameter.endDate || '', e.parameter.zone || '', e.parameter.byZone === '1');
         break;
       case 'getTransactionDownload':
-        result = getTransactionDownload_(e.parameter.site || '', e.parameter.startDate || '', e.parameter.endDate || '', e.parameter.zone || '');
+        result = getTransactionDownload_(e.parameter.site || '', e.parameter.startDate || '', e.parameter.endDate || '', e.parameter.zone || '', e.parameter.byZone === '1');
         break;
       case 'transferList':
         result = getTransferList_(e.parameter.site || '');
@@ -2603,7 +2603,8 @@ function filterByDateRange_(rows, dateField, startDate, endDate) {
 // (실제 구매발주로 넘어간) 행도 제외한다.
 // 같은 자재코드가 여러 행(다른 신청자/필요일자/라인)에 걸쳐 있으면 요청수량을 합산해 1행으로 합친다.
 // 필요일자는 합쳐진 행 중 가장 이른 날짜, 라인은 서로 다른 값이 섞여 있으면 콤마로 나열한다.
-function getPurchaseDownload_(site, startDate, endDate, zone) {
+// byZone(라인 '전체' + 라인별 파일): 라인별로 따로 합산하고 각 행에 fileZone(파일 라인 이름)을 붙인다.
+function getPurchaseDownload_(site, startDate, endDate, zone, byZone) {
   assertSite_(site);
   const zoneQ = (zone || '').toString().trim();
   const unitMap = buildItemUnitMap_();
@@ -2612,6 +2613,9 @@ function getPurchaseDownload_(site, startDate, endDate, zone) {
   rows = rows.filter(r => String(r['재고사용(O,X)'] || '').trim().toUpperCase() === 'X' && !hasRealPurchaseReqNo_(r));
   if (zoneQ) rows = rows.filter(r => poRowMatchesZone_(r, zoneQ));
   rows = filterByDateRange_(rows, '필요일자', startDate, endDate);
+  if (byZone && !zoneQ) {
+    return mapByDownloadZone_(rows, r => poDownloadZoneOf_(site, r), g => buildPurchaseDownloadRows_(g, unitMap));
+  }
   return buildPurchaseDownloadRows_(rows, unitMap);
 }
 
@@ -2652,14 +2656,21 @@ function buildPurchaseDownloadRows_(rows, unitMap) {
 }
 
 // 출고 다운로드: 출고 시트에서 날짜/라인 조건에 맞는 행을 자재코드별로 합산해 1행으로 만든다.
-function getOutboundDownload_(site, startDate, endDate, zone) {
+function getOutboundDownload_(site, startDate, endDate, zone, byZone) {
   assertSite_(site);
   const zoneQ = (zone || '').toString().trim();
 
   let rows = readAll_(sheet_(txSheetName_(site)));
   if (zoneQ) rows = rows.filter(r => txRowMatchesZone_(r, zoneQ));
   rows = filterByDateRange_(rows, '출고일자', startDate, endDate);
+  if (byZone && !zoneQ) {
+    return mapByDownloadZone_(rows, r => txDownloadZoneOf_(site, r), buildOutboundDownloadRows_);
+  }
+  return buildOutboundDownloadRows_(rows);
+}
 
+// 출고 다운로드 행 생성(자재코드별 합산).
+function buildOutboundDownloadRows_(rows) {
   const merged = {};
   rows.forEach(r => {
     const itemId = String(r['자재코드'] || '').trim();
@@ -2689,7 +2700,7 @@ function getOutboundDownload_(site, startDate, endDate, zone) {
 // (띄어쓰기·대소문자 무시). S/N 줄 나누기와 10줄 단위 파일 나누기는 PWA(app.js)에서 한다.
 const SN_MANAGED_HEADER = 'S/N 관리';
 
-function getTransactionDownload_(site, startDate, endDate, zone) {
+function getTransactionDownload_(site, startDate, endDate, zone, byZone) {
   assertSite_(site);
   const zoneQ = (zone || '').toString().trim();
 
@@ -2698,8 +2709,13 @@ function getTransactionDownload_(site, startDate, endDate, zone) {
   rows = filterByDateRange_(rows, '출고일자', startDate, endDate);
 
   const snCodes = rows.length ? snManagedItemCodes_(site) : {};
+  const toView = g => g.map(r => transactionDownloadRow_(r, snCodes));
+  if (byZone && !zoneQ) return mapByDownloadZone_(rows, r => txDownloadZoneOf_(site, r), toView);
+  return toView(rows);
+}
 
-  return rows.map(r => ({
+function transactionDownloadRow_(r, snCodes) {
+  return {
     bqms: r['BQMS'] || '',
     sn: r['S/N'] || '',
     qty: Number(r['수량']) || 0,
@@ -2710,7 +2726,53 @@ function getTransactionDownload_(site, startDate, endDate, zone) {
     spec: r['규격'] || '',
     unit: r['단위'] || '',
     snManaged: !!snCodes[normalizeMaterialCode_(r['자재코드'])]
-  }));
+  };
+}
+
+// ---- 라인 '전체' 다운로드를 라인별 파일로 나눌 때의 파일 라인 이름 ----
+// 각 파일 내용이 라인 선택 목록에서 그 값을 골랐을 때와 같도록, 라인 필터(poRowMatchesZone_/txRowMatchesZone_)와
+// 같은 기준으로 묶는다: 안전용품/안전재고는 그 이름 하나로, 일반 라인은 앞뒤 공백 제거·대소문자 무시로 비교해
+// 사이트 라인 목록의 이름을 쓰고(목록에 없으면 시트 값 그대로), 라인이 빈 행은 '라인없음'.
+const DOWNLOAD_NO_ZONE = '라인없음';
+
+function downloadZoneName_(site, line) {
+  const v = String(line == null ? '' : line).trim();
+  if (!v) return DOWNLOAD_NO_ZONE;
+  const key = v.toUpperCase();
+  const known = (ZONES[site] || []).concat([SAFETY_SUPPLY_ZONE, SAFETY_STOCK_ZONE]);
+  const hit = known.find(z => z.toUpperCase() === key);
+  return hit || v;
+}
+
+function poDownloadZoneOf_(site, r) {
+  const route = purchaseRouteOf_(r);
+  if (route === SAFETY_SUPPLY_ZONE || route === SAFETY_STOCK_ZONE) return route;
+  return downloadZoneName_(site, r['라인']);
+}
+
+function txDownloadZoneOf_(site, r) {
+  const line = String(r['라인'] || '').trim();
+  if (Object.prototype.hasOwnProperty.call(SUB_SITES, line)) return SAFETY_SUPPLY_ZONE;
+  return downloadZoneName_(site, line);
+}
+
+// 행을 파일 라인 이름별로 묶어(처음 나온 순서, 묶음 안 행 순서 유지) build로 만든 행마다 fileZone을 붙인다.
+// 비교 키는 앞뒤 공백 제거 + 대문자(목록에 없는 '16line '과 '16LINE'도 한 파일).
+function mapByDownloadZone_(rows, zoneOf, build) {
+  const groups = {};
+  const order = [];
+  rows.forEach(r => {
+    const name = zoneOf(r);
+    const key = name.toUpperCase();
+    if (!groups[key]) { groups[key] = { name: name, rows: [] }; order.push(key); }
+    groups[key].rows.push(r);
+  });
+  const out = [];
+  order.forEach(key => {
+    const g = groups[key];
+    build(g.rows).forEach(v => { v.fileZone = g.name; out.push(v); });
+  });
+  return out;
 }
 
 // 사이트 사용자재 시트에서 'S/N 관리' = Y(띄어쓰기·대소문자 무시)인 자재코드 집합(정규화 코드 → true).

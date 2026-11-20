@@ -363,6 +363,9 @@ function sheet_(name) {
     ensureColumnsOnce_(sheet, name, ['누적출고수량', '출고여부', '최종출고일', '비고', '특이사항1', '특이사항2'].concat(ERP_COLUMNS));
   } else if (name.slice(-3) === '_출고') {
     ensureColumnsOnce_(sheet, name, ['라인구매번호']);
+  } else if (name.slice(-5) === '_사용자재') {
+    // 거래명세서 다운로드: 'S/N 관리' 값이 Y인 자재코드는 수량만큼 1개씩 줄을 나눠 쓴다(맨 끝 열, 기존 행은 빈칸).
+    ensureColumnsOnce_(sheet, name, [SN_MANAGED_HEADER]);
   } else if (name === 'Users') {
     // 청구서 관리 담당 사이트(화성/평택/기흥/전체, 화성 세부사이트 H1~H4 = 화성). getUserSite로 읽는다.
     ensureColumnsOnce_(sheet, name, ['사이트']);
@@ -2682,7 +2685,10 @@ function getOutboundDownload_(site, startDate, endDate, zone) {
 }
 
 // 거래명세서 다운로드: 출고 시트 원본 그대로(자재코드 중복 합산 없이) BQMS/S-N/수량/라인/층 +
-// 자재코드/품명/규격/단위를 뽑는다.
+// 자재코드/품명/규격/단위를 뽑는다. snManaged는 사용자재 시트 'S/N 관리' 값이 Y인 자재코드인지
+// (띄어쓰기·대소문자 무시). S/N 줄 나누기와 10줄 단위 파일 나누기는 PWA(app.js)에서 한다.
+const SN_MANAGED_HEADER = 'S/N 관리';
+
 function getTransactionDownload_(site, startDate, endDate, zone) {
   assertSite_(site);
   const zoneQ = (zone || '').toString().trim();
@@ -2690,6 +2696,8 @@ function getTransactionDownload_(site, startDate, endDate, zone) {
   let rows = readAll_(sheet_(txSheetName_(site)));
   if (zoneQ) rows = rows.filter(r => txRowMatchesZone_(r, zoneQ));
   rows = filterByDateRange_(rows, '출고일자', startDate, endDate);
+
+  const snCodes = rows.length ? snManagedItemCodes_(site) : {};
 
   return rows.map(r => ({
     bqms: r['BQMS'] || '',
@@ -2700,8 +2708,29 @@ function getTransactionDownload_(site, startDate, endDate, zone) {
     itemId: r['자재코드'] || '',
     itemName: r['자재명'] || '',
     spec: r['규격'] || '',
-    unit: r['단위'] || ''
+    unit: r['단위'] || '',
+    snManaged: !!snCodes[normalizeMaterialCode_(r['자재코드'])]
   }));
+}
+
+// 사이트 사용자재 시트에서 'S/N 관리' = Y(띄어쓰기·대소문자 무시)인 자재코드 집합(정규화 코드 → true).
+// 헤더도 띄어쓰기·대소문자 무시로 찾는다("S/N관리"도 인정).
+function snManagedItemCodes_(site) {
+  const sheet = sheet_(usedMaterialsSheetName_(site));
+  const lastRow = sheet.getLastRow();
+  const lastCol = sheet.getLastColumn();
+  if (lastRow < 2 || !lastCol) return {};
+  const heads = headers_(sheet).map(normalizeHeader_);
+  const codeIdx = heads.indexOf(normalizeHeader_('자재코드'));
+  const snIdx = heads.indexOf(normalizeHeader_(SN_MANAGED_HEADER));
+  if (codeIdx === -1 || snIdx === -1) return {};
+  const out = {};
+  sheet.getRange(2, 1, lastRow - 1, lastCol).getValues().forEach(row => {
+    if (normalizeHeader_(row[snIdx]) !== 'Y') return;
+    const code = normalizeMaterialCode_(row[codeIdx]);
+    if (code) out[code] = true;
+  });
+  return out;
 }
 
 // ------------------------- 사이트간 이관(Transfer) -------------------------

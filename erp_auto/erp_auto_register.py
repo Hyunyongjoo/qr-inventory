@@ -52,7 +52,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import Select, WebDriverWait
 
 # ---------------------------------------------------------------- 설정
-VERSION = "2026-11-19 v28 (화성 라인별 요청자 - QR 라인값 기준)"
+VERSION = "2026-11-20 v30 (요청자: 서버 fields.요청자 우선, 없으면 line/명칭으로 찾기)"
 BASE_DIR = Path(sys.executable if getattr(sys, "frozen", False) else __file__).resolve().parent
 try:
     CFG = json.loads((BASE_DIR / "config.json").read_text(encoding="utf-8-sig"))
@@ -910,17 +910,41 @@ def _line_key(v):
     return v
 
 
+def _batch_lines(b, table):
+    """배치의 라인 값 목록. 서버가 line 값을 안 보내면 명칭(title)에서 표에 있는 라인 이름을 찾음."""
+    raw = b.get("line") or b.get("lines") or (b.get("fields") or {}).get("라인") or ""
+    if isinstance(raw, (list, tuple)):
+        raw = ",".join(str(x) for x in raw)
+    lines = [_line_key(x) for x in re.split(r"[,/]", str(raw)) if x.strip()]
+    if lines:
+        return lines, "line 값"
+    title = str(b.get("title", "")).upper()
+    found = [k for k in sorted(table, key=len, reverse=True) if re.search(rf"(?<![0-9A-Z]){re.escape(k)}(?![0-9A-Z])", title.replace(" LINE", "LINE"))]
+    if not found:   # '16L' 처럼 줄여 쓴 명칭
+        for m in re.finditer(r"(?<![0-9A-Z])(\d+)L(?!INE)(?![0-9A-Z])", title):
+            if _line_key(m.group(0)) in table:
+                found.append(_line_key(m.group(0)))
+    return found, "명칭"
+
+
 def requester_for(b):
     """배치의 사이트·라인으로 요청자 이름을 정함. 정할 수 없으면 '' (ERP 기본값 = 등록자 그대로)."""
-    table = {_line_key(k): v for k, v in REQUESTER_BY_LINE.get(b.get("site", ""), {}).items()}
+    site = str(b.get("site", "")).strip()
+    given = str((b.get("fields") or {}).get("요청자") or b.get("requester") or "").strip()
+    if given:   # 서버(구매라인 시트)가 정해 준 요청자가 있으면 그대로 사용
+        log.info("요청자 결정: %s (서버 구매라인 시트, 라인 %s)", given, b.get("line"))
+        return given
+    table ={_line_key(k): v for k, v in REQUESTER_BY_LINE.get(site, {}).items()}
     if not table:
+        log.info("요청자: 사이트 '%s'는 라인별 요청자 표가 없어 등록자 그대로 둠", site)
         return ""
-    lines = [_line_key(x) for x in str(b.get("line", "")).split(",") if x.strip()]
+    lines, src = _batch_lines(b, table)
     names = {table.get(x, "") for x in lines}
     if len(names) == 1 and "" not in names:
+        log.info("요청자 결정: %s (라인 %s, %s에서 찾음)", next(iter(names)), ",".join(lines), src)
         return names.pop()
-    if lines:
-        log.info("요청자: 라인 %s 은(는) 한 사람으로 정할 수 없어 등록자 그대로 둠", b.get("line"))
+    log.info("요청자: 라인을 한 사람으로 정할 수 없어 등록자 그대로 둠 (line=%r, 찾은 라인=%s, 명칭=%s)",
+             b.get("line"), lines, b.get("title"))
     return ""
 
 
@@ -1029,7 +1053,7 @@ def register_batch(drv, batch):
             for attempt in range(3):
                 try:
                     set_requester(drv, who)
-                    log.info("입력 완료: 요청자 = %s (라인 %s)", who, batch.get("line"))
+                    log.info("입력 완료: 요청자 = %s", who)
                     break
                 except Exception as e:  # noqa: BLE001
                     if attempt == 2:

@@ -147,8 +147,11 @@ function doGet(e) {
         break;
       case 'getTransactionDownload':
         result = getTransactionDownload_(e.parameter.site || '', e.parameter.startDate || '', e.parameter.endDate || '', e.parameter.zone || '', e.parameter.byZone === '1');
-        // withExcluded=1: { rows, envSafetyExcluded } (뺀 환경안전용품 건수 안내용). 없으면 지금처럼 행 배열.
-        if (e.parameter.withExcluded === '1') result = { rows: result, envSafetyExcluded: result.envSafetyExcluded || 0 };
+        // withExcluded=1: { rows, safetyExcluded, equipmentCheck } (뺀 안전용품 건수·사용설비 확인 필요 자재코드 안내용).
+        // 없으면 지금처럼 행 배열.
+        if (e.parameter.withExcluded === '1') {
+          result = { rows: result, safetyExcluded: result.safetyExcluded || 0, equipmentCheck: result.equipmentCheck || [] };
+        }
         break;
       case 'transferList':
         result = getTransferList_(e.parameter.site || '');
@@ -2710,20 +2713,43 @@ function getTransactionDownload_(site, startDate, endDate, zone, byZone) {
   if (zoneQ) rows = rows.filter(r => txRowMatchesZone_(r, zoneQ));
   rows = filterByDateRange_(rows, '출고일자', startDate, endDate);
 
-  // 환경안전용품(자재코드 또는 사용자재 사용설비, 공통 함수 isEnvSafetyItem_)은 거래명세서에서 뺀다.
-  // 뺀 건수는 반환 배열의 envSafetyExcluded 속성(JSON에는 안 실림 → 라우트에서 withExcluded로 감쌈).
+  // 안전용품(사용자재 사용설비 안전용품/환경안전용품/환경안전용품-공구, 또는 자재코드 '환경안전용품')은 거래명세서에서 뺀다.
+  // 출고 라인이 안전용품·H1~H4인데 위 기준에 안 걸린 행은 빼지 않고 자재코드만 경고 목록에 모은다.
+  // 뺀 건수·경고 목록은 반환 배열의 속성(JSON에는 안 실림 → 라우트에서 withExcluded로 감쌈).
   const before = rows.length;
+  const equipmentCheck = [];
   if (rows.length) {
     const equip = readUsedEquipmentMap_(site).byCode;
-    rows = rows.filter(r => !isEnvSafetyItem_(r['자재코드'], equip[normalizeMaterialCode_(r['자재코드'])] || ''));
+    rows = rows.filter(r => {
+      const code = r['자재코드'];
+      if (isTxExcludedSafetyItem_(code, equip[normalizeMaterialCode_(code)] || '')) return false;
+      const line = String(r['라인'] || '').trim().toUpperCase();
+      const isSafetyLine = line === SAFETY_SUPPLY_ZONE || Object.prototype.hasOwnProperty.call(SUB_SITES, line);
+      const c = String(code || '').trim();
+      if (isSafetyLine && c && equipmentCheck.indexOf(c) === -1) equipmentCheck.push(c);
+      return true;
+    });
   }
   const excluded = before - rows.length;
 
   const snCodes = rows.length ? snManagedItemCodes_(site) : {};
   const toView = g => g.map(r => transactionDownloadRow_(r, snCodes));
   const out = (byZone && !zoneQ) ? mapByDownloadZone_(rows, r => txDownloadZoneOf_(site, r), toView) : toView(rows);
-  out.envSafetyExcluded = excluded;
+  out.safetyExcluded = excluded;
+  out.equipmentCheck = equipmentCheck;
   return out;
+}
+
+// 거래명세서 제외 대상 사용설비(띄어쓰기·대소문자 무시). 구매 재고사용·ERP 출고 등록 기준과는 별개.
+const TX_EXCLUDE_EQUIPMENTS = ['안전용품', '환경안전용품', '환경안전용품-공구'];
+
+// 거래명세서에서 뺄 품목: 자재코드가 '환경안전용품'이거나, 사용설비가 TX_EXCLUDE_EQUIPMENTS 중 하나
+// (쉼표로 여러 값이 적혀 있으면 모두 이 목록 안의 값일 때).
+function isTxExcludedSafetyItem_(code, equipment) {
+  if (isEnvSafetyValue_(code)) return true;
+  const allowed = TX_EXCLUDE_EQUIPMENTS.map(ruleNorm_);
+  const list = ruleList_(equipment);
+  return list.length > 0 && list.every(v => allowed.indexOf(v) !== -1);
 }
 
 function transactionDownloadRow_(r, snCodes) {
@@ -2764,7 +2790,7 @@ function poDownloadZoneOf_(site, r) {
 
 function txDownloadZoneOf_(site, r) {
   const line = String(r['라인'] || '').trim();
-  if (Object.prototype.hasOwnProperty.call(SUB_SITES, line)) return SAFETY_SUPPLY_ZONE;
+  if (Object.prototype.hasOwnProperty.call(SUB_SITES, line.toUpperCase())) return SAFETY_SUPPLY_ZONE;
   return downloadZoneName_(site, line);
 }
 

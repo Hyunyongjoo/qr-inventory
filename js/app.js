@@ -3998,7 +3998,7 @@
       $('#download-summary').innerHTML = '';
       $('#download-buttons').classList.add('hidden');
       state.downloadZone = '';
-      state.transactionEnvExcluded = 0;
+      state.transactionSafety = { excluded: 0, equipmentCheck: [] };
       clearDownloadResult_();
     }
     populateDownloadZoneOptions();
@@ -4066,14 +4066,15 @@
     // 라인 '전체'면 서버가 라인별로 따로 합산하고 행마다 fileZone을 붙여 준다(라인별 파일 만들기용).
     const params = { site: state.site, startDate, endDate, zone, byZone: zone ? '' : '1' };
     try {
-      // 거래명세서는 환경안전용품을 뺀 행 + 뺀 건수(withExcluded=1 → { rows, envSafetyExcluded }).
+      // 거래명세서는 안전용품을 뺀 행 + 뺀 건수·사용설비 확인 필요 목록(withExcluded=1 → { rows, safetyExcluded, equipmentCheck }).
       const [purchase, outbound, txRes] = await Promise.all([
         Api.get('getPurchaseDownload', params),
         Api.get('getOutboundDownload', params),
         Api.get('getTransactionDownload', Object.assign({ withExcluded: '1' }, params))
       ]);
       const transaction = Array.isArray(txRes) ? txRes : (txRes.rows || []);
-      state.transactionEnvExcluded = Array.isArray(txRes) ? 0 : (Number(txRes.envSafetyExcluded) || 0);
+      state.transactionSafety = Array.isArray(txRes) ? { excluded: 0, equipmentCheck: [] }
+        : { excluded: Number(txRes.safetyExcluded) || 0, equipmentCheck: txRes.equipmentCheck || [] };
       state.downloadRows = { purchase, outbound, transaction };
       state.downloadZone = zone;
       renderDownloadSummary();
@@ -4081,7 +4082,7 @@
     } catch (err) {
       state.downloadRows = { purchase: [], outbound: [], transaction: [] };
       state.downloadZone = '';
-      state.transactionEnvExcluded = 0;
+      state.transactionSafety = { excluded: 0, equipmentCheck: [] };
       renderApiError_(summaryEl, err, searchDownload);
     }
   }
@@ -4089,8 +4090,8 @@
   function renderDownloadSummary() {
     const summaryEl = $('#download-summary');
     const { purchase, outbound, transaction } = state.downloadRows;
-    const envExcluded = state.transactionEnvExcluded || 0;
-    const envNote = envExcluded ? ` <span class="muted">(환경안전용품 ${envExcluded}건 제외)</span>` : '';
+    const safetyExcluded = (state.transactionSafety && state.transactionSafety.excluded) || 0;
+    const envNote = safetyExcluded ? ` <span class="muted">(안전용품 ${safetyExcluded}건 제외)</span>` : '';
     summaryEl.innerHTML = `
       <div class="download-summary-row"><span>구매</span><span class="value">${purchase.length}건</span></div>
       <div class="download-summary-row"><span>출고</span><span class="value">${outbound.length}건</span></div>
@@ -4307,7 +4308,15 @@
     return { entries, perZone, notes };
   }
 
-  function buildDownloadResultMessages_(kind, zone, built, envExcluded = 0) {
+  // 거래명세서 안전용품 안내: "안전용품 N건 제외", "사용설비 확인 필요: 자재코드 목록"(경고, 제외는 안 함).
+  function transactionSafetyMessages_(safety) {
+    const msgs = [];
+    if (safety && safety.excluded) msgs.push(`안전용품 ${safety.excluded}건 제외`);
+    if (safety && safety.equipmentCheck && safety.equipmentCheck.length) msgs.push('사용설비 확인 필요: ' + safety.equipmentCheck.join(', '));
+    return msgs;
+  }
+
+  function buildDownloadResultMessages_(kind, zone, built, safety = null) {
     const { entries, perZone, notes } = built;
     const lines = (counts) => (kind === 'transaction' ? `(${counts.join('·')}줄)` : '');
     const msgs = [];
@@ -4316,7 +4325,7 @@
     } else {
       msgs.push(perZone.map((z) => `${z.zone} ${z.lineCounts.length}개${lines(z.lineCounts)}`).join(', ') + ` (총 ${entries.length}개 파일)`);
     }
-    if (envExcluded) msgs.push(`환경안전용품 ${envExcluded}건 제외`);
+    transactionSafetyMessages_(safety).forEach((m) => msgs.push(m));
     if (entries.length > 1) msgs.push('브라우저가 "여러 파일 다운로드 허용"을 물으면 허용을 눌러 주세요. 막히면 아래 zip 버튼을 쓰세요.');
     if (notes.qtyCheck.size) msgs.push('S/N 품목 수량 확인 필요: ' + Array.from(notes.qtyCheck).join(', '));
     if (notes.overflow.size) msgs.push('S/N 품목 수량이 10개를 넘어 여러 파일로 나뉨: ' + Array.from(notes.overflow).join(', '));
@@ -4329,11 +4338,11 @@
   async function exportDownloadFiles(kind) {
     const meta = DOWNLOAD_KIND_META[kind];
     const rows = state.downloadRows[kind] || [];
-    const envExcluded = kind === 'transaction' ? (state.transactionEnvExcluded || 0) : 0;
+    const safety = kind === 'transaction' ? state.transactionSafety : null;
     clearDownloadResult_();
     if (!rows.length) {
-      if (envExcluded) {
-        const msg = `환경안전용품 ${envExcluded}건 제외 — 남은 품목이 없어 거래명세서 파일을 만들지 않았습니다.`;
+      if (safety && safety.excluded) {
+        const msg = `안전용품 ${safety.excluded}건 제외 — 남은 품목이 없어 거래명세서 파일을 만들지 않았습니다.`;
         const resultEl = $('#download-result');
         resultEl.innerHTML = `<p class="download-result-title">${escapeHtml(meta.label)}</p><p class="download-result-note">${escapeHtml(msg)}</p>`;
         resultEl.classList.remove('hidden');
@@ -4356,7 +4365,7 @@
     const entries = built.entries;
     state.downloadZip = { entries, name: buildDownloadFilename_(meta.label, '', '.zip', zone || '전체') };
 
-    const msgs = buildDownloadResultMessages_(kind, zone, built, envExcluded);
+    const msgs = buildDownloadResultMessages_(kind, zone, built, safety);
     const resultEl = $('#download-result');
     resultEl.innerHTML = `<p class="download-result-title">${escapeHtml(meta.label)}</p>` +
       msgs.map((m, i) => `<p class="${i === 0 ? 'download-result-main' : 'download-result-note'}">${escapeHtml(m)}</p>`).join('') +

@@ -471,6 +471,13 @@ function isEnvSafetyValue_(s) {
   return ruleNorm_(s) === ruleNorm_(HQ_SAFETY_SUPPLY_VALUE);
 }
 
+// 자재코드 값이 '환경안전용품'인 품목(띄어쓰기·대소문자 무시). 재고 관리 제외 대상:
+// 재고 0이어도 출고되고, 재고 시트 행을 만들거나 현재고를 바꾸지 않으며, 재고 목록·입고대기에 나오지 않는다.
+// 사용설비만 '환경안전용품'이고 자재코드가 실제 코드인 품목은 대상이 아니다(지금처럼 재고 관리).
+function isEnvSafetyCode_(code) {
+  return isEnvSafetyValue_(code);
+}
+
 // 출고·거래명세서용: 자재코드가 '환경안전용품'이거나, 사용자재 시트 사용설비가 '환경안전용품'인 품목.
 function isEnvSafetyItem_(code, equipment) {
   return isEnvSafetyValue_(code) || isEnvSafetyValue_(equipment);
@@ -538,6 +545,25 @@ function applyHqSafetySupplyFromMenu() {
     lock.releaseLock();
   }
   const msg = '환경안전팀 지급 품목 재고사용 처리\n\n' + lines.join('\n');
+  Logger.log(msg);
+  try { SpreadsheetApp.getUi().alert(msg); } catch (e) { /* 편집기 실행 */ }
+  return msg;
+}
+
+// "자재관리 > 환경안전용품 재고 행 확인" 메뉴: 사이트 재고 시트에 남아 있는 자재코드 '환경안전용품' 행을
+// 목록으로만 보여준다(지우거나 고치지 않음 — 정리는 사람이 판단). 이 품목은 재고 관리 제외라 새 행은 생기지 않는다.
+function listEnvSafetyStockRowsFromMenu() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const lines = [];
+  SITES.forEach(site => {
+    const sheet = ss.getSheetByName(stockSheetName_(site));
+    if (!sheet) { lines.push(site + ': (재고 시트 없음)'); return; }
+    const rows = readAll_(sheet).filter(r => isEnvSafetyCode_(r['자재코드']));
+    if (!rows.length) { lines.push(site + ': 없음'); return; }
+    rows.forEach(r => lines.push(site + ' ' + r._row + '행: ' + r['자재코드'] + ' / ' + (r['자재명'] || '') +
+      ' / 현재고 ' + (Number(r['현재고']) || 0)));
+  });
+  const msg = '재고 시트의 환경안전용품(자재코드) 행 — 재고 관리 제외 품목, 값은 바꾸지 않았습니다.\n\n' + lines.join('\n');
   Logger.log(msg);
   try { SpreadsheetApp.getUi().alert(msg); } catch (e) { /* 편집기 실행 */ }
   return msg;

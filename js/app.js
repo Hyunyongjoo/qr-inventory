@@ -878,7 +878,8 @@
         debugSetLookup('자재 + 현재 사이트 재고 조회 중...');
         const result = await Api.get('scanLookupOut', { site: state.site, code });
         const availableQty = Number(result.quantity) || 0;
-        if (availableQty <= 0) {
+        // 자재코드 '환경안전용품'(result.stockExempt)은 재고 관리 제외 품목이라 재고 0이어도 출고한다.
+        if (availableQty <= 0 && !result.stockExempt) {
           // 재고가 없는 자재는 카드를 띄우지 않고 토스트만 표시한 뒤, 곧바로 다음 스캔을 받는다
           // (마이너스 재고 출고를 애초에 막고, currentScanItem을 채우지 않아 연속 스캔이 이어진다).
           debugSetLookup(`조회 성공: ${result.item.ItemName} (${result.item.ItemID}), 재고 없음`);
@@ -924,6 +925,11 @@
 
   // 출고 화면: 자재코드/품명/규격 + 현재 로그인한 사이트의 재고만 보여준다
   // (구매발주 매칭은 입고 전용이라 표시하지 않음. 다른 사이트 재고는 조회하지 않는다).
+  // 자재코드 '환경안전용품'(띄어쓰기·대소문자 무시) = 재고 관리 제외 품목. 서버 isEnvSafetyCode_(Erp.gs)와 같은 기준.
+  function isEnvSafetyCode_(code) {
+    return String(code == null ? '' : code).normalize('NFC').replace(/\s+/g, '').toUpperCase() === '환경안전용품';
+  }
+
   function renderScanResultOut(item, quantity) {
     $('#scan-result-card').classList.remove('hidden');
     $('#scan-item-title').classList.add('hidden');
@@ -932,7 +938,9 @@
     $('#in-item-name').textContent = item.ItemName;
     $('#in-item-spec').textContent = item.Spec || '-';
     $('#in-item-stock-row').classList.remove('hidden');
-    $('#in-item-stock').textContent = `${Number(quantity).toLocaleString()}${item.Unit ? ' ' + item.Unit : ''}`;
+    $('#in-item-stock').textContent = isEnvSafetyCode_(item.ItemID)
+      ? '재고 관리 제외(환경안전용품)'
+      : `${Number(quantity).toLocaleString()}${item.Unit ? ' ' + item.Unit : ''}`;
 
     $('#scan-quantity').value = '';
     $('#scan-quantity').disabled = false;
@@ -3456,7 +3464,7 @@
         ${r.note ? `<div class="inbound-card-set-tag">${escapeHtml(r.note)}</div>` : ''}
         <div class="inbound-card-qty">
           <div class="iq-item"><span class="iq-label">요청수량</span><span class="iq-value">${Number(r.requestedQty).toLocaleString()}</span></div>
-          <div class="iq-item"><span class="iq-label">재고수량</span><span class="iq-value">${Number(r.stockQty).toLocaleString()}</span></div>
+          <div class="iq-item"><span class="iq-label">재고수량</span><span class="iq-value">${(r.stockExempt || isEnvSafetyCode_(r.itemId)) ? '관리 제외' : Number(r.stockQty).toLocaleString()}</span></div>
           <div class="iq-item"><span class="iq-label">입고대기</span><span class="iq-value">${Number(r.pendingQty).toLocaleString()}</span></div>
           <div class="iq-item"><span class="iq-label">입고수량</span><span class="iq-value">${Number(r.cumulativeQty).toLocaleString()}</span></div>
           <div class="iq-item"><span class="iq-label">출고수량</span><span class="iq-value">${Number(r.shippedQty).toLocaleString()}</span></div>
@@ -3680,8 +3688,10 @@
   // 넘으면 확인을 막고, 서버도 1·2단계에서 같은 기준으로 다시 거부한다(부분 출고로 조용히 줄이지 않음).
   function openInboundShipModal(row) {
     const available = shippableOf_(row);
+    const stockExempt = !!row.stockExempt || isEnvSafetyCode_(row.itemId);
     const stockQty = Math.max(0, Number(row.stockQty) || 0);
-    const shippable = Math.min(available, stockQty);
+    // 재고 관리 제외 품목(자재코드 환경안전용품)은 재고와 관계없이 출고 가능 수량까지 출고한다.
+    const shippable = stockExempt ? available : Math.min(available, stockQty);
     const isStockUse = String(row.stockUse || '').trim().toUpperCase() === 'O';
     const basis = isStockUse
       ? `요청 ${Number(row.requestedQty).toLocaleString()}`
@@ -3690,7 +3700,7 @@
       <div class="modal-sheet">
         <h3>출고완료 처리</h3>
         <p class="muted">${escapeHtml(row.itemName)} (${escapeHtml(row.itemId)})</p>
-        <p class="muted">요청수량 ${Number(row.requestedQty).toLocaleString()} · 입고수량 ${Number(row.cumulativeQty).toLocaleString()} · 재고수량 ${stockQty.toLocaleString()} · 출고수량 ${Number(row.shippedQty).toLocaleString()}</p>
+        <p class="muted">요청수량 ${Number(row.requestedQty).toLocaleString()} · 입고수량 ${Number(row.cumulativeQty).toLocaleString()} · 재고수량 ${stockExempt ? '관리 제외' : stockQty.toLocaleString()} · 출고수량 ${Number(row.shippedQty).toLocaleString()}</p>
         <p class="muted">출고 가능 수량: ${shippable.toLocaleString()} (${basis} − 기출고 ${Number(row.shippedQty).toLocaleString()}${shippable < available ? ', 재고 부족으로 재고수량까지만' : ''})</p>
         <label class="field-label">출고 수량</label>
         <input type="number" id="inbound-ship-qty" class="input" min="1" max="${shippable}" step="1" inputmode="numeric" placeholder="수량" ${shippable > 0 ? '' : 'disabled'} />
@@ -3774,7 +3784,9 @@
     const label = isInboundEdit ? '입고 수량' : '출고 수량';
     const maxQty = isInboundEdit
       ? requested
-      : Math.min(shipLimitOf_(row), currentQty + Math.max(0, Number(row.stockQty) || 0));
+      : ((row.stockExempt || isEnvSafetyCode_(row.itemId))
+        ? shipLimitOf_(row) // 재고 관리 제외 품목은 재고수량 제한 없음
+        : Math.min(shipLimitOf_(row), currentQty + Math.max(0, Number(row.stockQty) || 0)));
     const limitHint = isInboundEdit
       ? `요청수량 ${requested.toLocaleString()}`
       : `요청수량 ${requested.toLocaleString()} · 입고수량 ${Number(row.cumulativeQty).toLocaleString()} · 출고 가능 수량(누적): ${maxQty.toLocaleString()}`;

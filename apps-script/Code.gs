@@ -48,7 +48,7 @@ const MANAGER_ROLES = ['자재담당자', '관리자', '자재관리자'];
 const STOCK_USAGE_LOCKED_STATUSES = ['구매완료', '부분입고', '입고완료', '부분출고', '출고완료'];
 // 입고확인 화면 검색 결과가 (필터링 후) 요청일자 최신순으로 한 번에 돌려주는 최대 건수.
 // 상태별 강제 배분은 하지 않는다 — 이 건수 안에서 상태가 자연스럽게 섞여 들어간다.
-const INBOUND_CHECK_MAX_ROWS = 200;
+const INBOUND_CHECK_MAX_ROWS = 300;
 // 입출고 화면의 "자재코드 직접 입력" 부분 일치 검색이 한 번에 돌려주는 최대 건수.
 const SCAN_CODE_SEARCH_MAX = 30;
 // 사이트간 이관 원장 시트명 (Setup.gs에서 생성). 사이트별로 나누지 않고 한 시트에서 관리한다.
@@ -690,6 +690,7 @@ function listStock_(site, query) {
 
   let rows = stockRows
     .filter(s => Number(s['현재고']) !== 0)
+    .filter(s => !isEnvSafetyCode_(s['자재코드'])) // 자재코드 '환경안전용품'은 재고 관리 제외(이미 있는 행도 목록에 안 보임)
     .filter(s => !!itemMap[String(s['자재코드'])]) // Items 시트에 없는(삭제된) 자재는 목록에서 제외. 재고 시트 데이터 자체는 건드리지 않음.
     .map(s => {
       const item = itemMap[String(s['자재코드'])];
@@ -719,6 +720,8 @@ function listStock_(site, query) {
 // item을 넘기면 재고 시트에 자재명/규격도 함께 저장한다. 월초재고/스냅샷("YY-MM-DD 재고") 열은 건드리지 않는다.
 function setStockQuantity_(site, itemId, newQuantity, item) {
   if (scriptLockDepth_ === 0) throw new Error('현재고는 스크립트 락 안에서만 변경할 수 있습니다.');
+  // 자재코드 '환경안전용품'은 재고 관리 제외: 재고 시트에 행을 만들지 않고 현재고도 바꾸지 않는다.
+  if (isEnvSafetyCode_(itemId)) return;
   const sheet = sheet_(stockSheetName_(site));
   const rows = readAll_(sheet);
   const existing = rows.find(s => String(s['자재코드']) === String(itemId));
@@ -746,7 +749,7 @@ function calculateExpectedStockMap_(site) {
   const map = {};
   const add = (itemId, qty) => {
     const key = String(itemId || '').trim();
-    if (!key) return;
+    if (!key || isEnvSafetyCode_(key)) return; // 재고 관리 제외 품목은 대사하지 않는다
     map[key] = (map[key] || 0) + qty;
   };
 
@@ -794,6 +797,7 @@ function reconcileStock_(site) {
 // 데이터의 누락/중복 등으로 인한 드리프트가 현재고에 반영되지 않는다. 락(scriptLock_)으로 감싼
 // 함수 안에서만 호출해 동시 요청에 의한 중복 차감을 막는다.
 function decrementStockQuantity_(site, itemId, qty, item) {
+  if (isEnvSafetyCode_(itemId)) return 0; // 재고 관리 제외 품목(setStockQuantity_ 참고)
   const current = getStockQty_(site, itemId);
   const newQty = current - qty;
   setStockQuantity_(site, itemId, newQty, item);
@@ -804,6 +808,7 @@ function decrementStockQuantity_(site, itemId, qty, item) {
 // 사이트간 이관 승인/반납에서 상대 사이트 재고를 늘릴 때 사용한다. 재고 시트에 그 자재 행이
 // 없으면 setStockQuantity_가 새 행을 추가한다. 락 안에서만 호출한다.
 function incrementStockQuantity_(site, itemId, qty, item) {
+  if (isEnvSafetyCode_(itemId)) return 0; // 재고 관리 제외 품목(setStockQuantity_ 참고)
   const current = getStockQty_(site, itemId);
   const newQty = current + qty;
   setStockQuantity_(site, itemId, newQty, item);
@@ -943,7 +948,7 @@ function findOpenPurchaseOrders_(site, itemId) {
   const code = normalizeMaterialCode_(itemId);
   const rows = readAll_(sheet_(poInSheetName_(site)));
   return rows
-    .filter(r => normalizeMaterialCode_(r['자재코드']) === code && isReceivableRow_(r))
+    .filter(r => normalizeMaterialCode_(r['자재코드']) === code && !isEnvSafetyCode_(r['자재코드']) && isReceivableRow_(r))
     .sort(poSortComparator_);
 }
 
@@ -1030,9 +1035,10 @@ function scanLookupForStockOut_(site, code) {
 
   const stockRows = readAll_(sheet_(stockSheetName_(site)));
   const stockRow = stockRows.find(s => String(s['자재코드']) === String(item.ItemID));
-  const quantity = stockRow ? Number(stockRow['현재고']) || 0 : 0;
+  const stockExempt = isEnvSafetyCode_(item.ItemID);
+  const quantity = (!stockExempt && stockRow) ? Number(stockRow['현재고']) || 0 : 0;
 
-  return { item: stripRow_(item), quantity };
+  return { item: stripRow_(item), quantity, stockExempt };
 }
 
 // 날짜만 비교할 수 있게 시/분/초를 제거한 Date를 반환한다. 값이 비어있거나 날짜로
@@ -1225,7 +1231,8 @@ function poRowToInboundView_(site, po, stockMap, pendingMap) {
   const shipped = Number(po['누적출고수량']) || 0;
   const info = computeInboundStatus_(po);
   const itemId = po['자재코드'] || '';
-  const stockQty = stockMap ? (stockMap[String(itemId)] || 0) : getStockQty_(site, itemId);
+  const stockExempt = isEnvSafetyCode_(itemId);
+  const stockQty = stockExempt ? 0 : (stockMap ? (stockMap[String(itemId)] || 0) : getStockQty_(site, itemId));
   const pendingQty = pendingMap ? (pendingMap[String(itemId)] || 0) : getPendingInboundQty_(site, itemId);
   return {
     rowIndex: po._row,
@@ -1237,6 +1244,7 @@ function poRowToInboundView_(site, po, stockMap, pendingMap) {
     spec: po['규격'] || '',
     requestedQty: requested,
     stockQty: stockQty,
+    stockExempt: stockExempt,
     pendingQty: pendingQty,
     cumulativeQty: cumulative,
     remainingQty: requested - cumulative,
@@ -1265,6 +1273,7 @@ function poRowToInboundView_(site, po, stockMap, pendingMap) {
 // 재고확인중/구매대기(구매요청번호 미등록)·재고사용·구매보류·취소·출고완료 건은 제외된다 —
 // computeInboundStatus_()가 화면에 보여주는 status와 정확히 같은 정의를 그대로 사용한다.
 function isPendingInboundRow_(r) {
+  if (isEnvSafetyCode_(r['자재코드'])) return false; // 재고 관리 제외 품목은 입고 대상이 아니다
   const info = computeInboundStatus_(r);
   return info.status === '구매완료' || info.status === '부분입고';
 }
@@ -2099,8 +2108,9 @@ function checkOutboundQty_(body) {
   assertWithinOutboundLimit_(row, (Number(row['누적출고수량']) || 0) + qty);
 
   const itemId = row['자재코드'];
-  const stockQty = getStockQty_(site, itemId);
-  if (qty > stockQty) {
+  const stockExempt = isEnvSafetyCode_(itemId);
+  const stockQty = stockExempt ? 0 : getStockQty_(site, itemId);
+  if (!stockExempt && qty > stockQty) {
     throw new Error(`재고 부족: 현재고 ${stockQty}, 출고 요청 ${qty}`);
   }
 
@@ -2109,7 +2119,7 @@ function checkOutboundQty_(body) {
   const shippedCumulative = shippedBefore + qty;
   const status = shippedCumulative < requestedQty ? '부분출고' : '출고완료';
   const shipLimitQty = outboundLimitQty_(row);
-  return { stockQty, requestedQty, shippedBefore, shippedCumulative, status,
+  return { stockQty, stockExempt, requestedQty, shippedBefore, shippedCumulative, status,
     shipLimitQty, shippableQty: Math.max(0, shipLimitQty - shippedCumulative) };
 }
 
@@ -2152,9 +2162,12 @@ function outboundComplete_(body) {
     // 출고수량은 현재 재고수량을 초과할 수 없다(stockOut_/stockOutByOrder_와 동일한 검증).
     // 이전에는 재고수량보다 많이 입력해도 재고수량만큼 조용히 부분 출고 처리했는데, 담당자가
     // 실제로 얼마나 출고됐는지 모른 채 넘어갈 수 있어 명시적으로 막고 재입력을 요구한다.
-    const current = getStockQty_(site, itemId);
-    if (current < qty) {
-      throw new Error(`재고 부족: 현재고 ${current}${item.Unit || ''}, 출고 요청 ${qty}${item.Unit || ''}`);
+    // 자재코드 '환경안전용품'은 재고 관리 제외라 재고 0이어도 출고한다(차감도 하지 않음).
+    if (!isEnvSafetyCode_(itemId)) {
+      const current = getStockQty_(site, itemId);
+      if (current < qty) {
+        throw new Error(`재고 부족: 현재고 ${current}${item.Unit || ''}, 출고 요청 ${qty}${item.Unit || ''}`);
+      }
     }
 
     logTransaction_(site, {
@@ -2212,7 +2225,11 @@ function editInboundQty_(body) {
         !isFinite(qty) || qty < 0) {
       throw new Error('올바른 수량을 입력하세요.');
     }
-    const item = assertItemExists_(row['자재코드']);
+    const stockExempt = isEnvSafetyCode_(row['자재코드']);
+    // 재고 관리 제외 품목(자재코드 '환경안전용품')은 Items 시트에 없을 수 있어 행 값으로 대신한다.
+    const item = stockExempt
+      ? { ItemID: row['자재코드'], ItemName: row['자재명'] || '', Spec: row['규격'] || '', Unit: '' }
+      : assertItemExists_(row['자재코드']);
 
     if (info.status === '입고완료') {
       if (qty > requested) qty = requested;
@@ -2238,7 +2255,7 @@ function editInboundQty_(body) {
       const shippedBefore = Number(row['누적출고수량']) || 0;
       // 출고를 늘리는 수정은 늘어난 만큼 재고가 있어야 한다(출고 처리와 동일한 재고 검증).
       const increase = qty - shippedBefore;
-      if (increase > 0) {
+      if (increase > 0 && !stockExempt) {
         const current = getStockQty_(site, row['자재코드']);
         if (current < increase) {
           throw new Error(`재고 부족: 현재고 ${current}${item.Unit || ''}, 추가 출고 ${increase}${item.Unit || ''}`);
@@ -2274,6 +2291,7 @@ function stockIn_(body) {
     const { itemId, quantity, pin } = body;
     const qty = Number(quantity);
     if (!qty || qty <= 0) throw new Error('입고 수량은 0보다 커야 합니다.');
+    if (isEnvSafetyCode_(itemId)) throw new Error('환경안전용품은 재고 관리 제외 품목이라 입고하지 않습니다.');
     const item = assertItemExists_(itemId);
     handleLogin_(pin);
 
@@ -2366,8 +2384,10 @@ function stockOut_(body) {
     const item = assertItemExists_(itemId);
     const worker = handleLogin_(pin);
 
-    const current = getStockQty_(site, itemId);
-    if (current < qty) throw new Error(`재고 부족: 현재고 ${current}${item.Unit || ''}, 출고 요청 ${qty}${item.Unit || ''}`);
+    if (!isEnvSafetyCode_(itemId)) { // 환경안전용품(자재코드)은 재고 관리 제외라 재고 0이어도 출고
+      const current = getStockQty_(site, itemId);
+      if (current < qty) throw new Error(`재고 부족: 현재고 ${current}${item.Unit || ''}, 출고 요청 ${qty}${item.Unit || ''}`);
+    }
 
     // 스캔한 수량만큼, 같은 자재+라인의 구매요청 건들을 선입선출로 "출고됨" 처리하고(구매발주및입고
     // 시트의 누적출고수량/출고여부 갱신), 각 건에서 차감된 수량(+라인구매번호)을 돌려받는다.
@@ -2421,7 +2441,7 @@ function stockOutByOrder_(body) {
       if (!itemId || !qty || qty <= 0) return;
       const item = assertItemExists_(itemId);
 
-      const current = getStockQty_(site, itemId);
+      const current = isEnvSafetyCode_(itemId) ? Infinity : getStockQty_(site, itemId); // 환경안전용품은 재고 확인 안 함
       if (current < qty) {
         throw new Error(`재고 부족: ${item.ItemName}(${itemId}) 현재고 ${current}${item.Unit || ''}, 출고 요청 ${qty}${item.Unit || ''}`);
       }
@@ -2961,7 +2981,7 @@ function getSupplySiteStock_(site, query) {
   const q = (query || '').toString().trim().toLowerCase();
 
   let rows = stockRows
-    .filter(s => (Number(s['현재고']) || 0) > 0)
+    .filter(s => (Number(s['현재고']) || 0) > 0 && !isEnvSafetyCode_(s['자재코드']))
     .map(s => {
       const item = itemMap[String(s['자재코드'])];
       return {

@@ -690,6 +690,7 @@ function onOpen() {
     .addItem('유형 제안 진단', 'diagnoseTypeProposalFromMenu')
     .addItem('휴일 시트 만들기 · 공휴일 확인', 'setupHolidaySheetFromMenu')
     .addItem('환경안전팀 지급 품목 재고사용 처리', 'applyHqSafetySupplyFromMenu')
+    .addItem('환경안전용품 재고 행 확인', 'listEnvSafetyStockRowsFromMenu')
     .addItem('구매경로 열 채우기(화성 세부사이트 H1~H4)', 'fillPurchaseRouteColumnFromMenu')
     .addItem('화성 세부사이트 · 구매경로 테스트', 'testSubSiteSafetySupply')
     .addItem('특이사항 단어 규칙 정리(백업 후)', 'applyNoteWordRulesFromMenu')
